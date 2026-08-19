@@ -88,6 +88,12 @@ struct ChatView: View {
                 .id(appModel.activeConversationID)
                 .animation(.easeOut(duration: 0.16), value: appModel.activeConversationID)
             }
+            // Fullscreen has no titlebar clearance at all since the toolbar
+            // removal — without this the first message clips under the
+            // screen's top edge / menu-bar reveal strip.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Color.clear.frame(height: chrome.isFullScreen ? 32 : 0)
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 composer
             }

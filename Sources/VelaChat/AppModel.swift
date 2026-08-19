@@ -755,6 +755,46 @@ final class AppModel {
     /// failure is also logged (visible in Console.app/stderr), so a
     /// pattern of silent automatic failures is at least diagnosable
     /// instead of invisible.
+    /// The at-send fast path: names the chat from the opening message
+    /// alone, in parallel with the reply. The post-reply refinement
+    /// (`generateTitleIfNeeded`) still runs and may improve it.
+    private func generateInstantTitle(for conversation: Conversation, userText: String, profile: ProviderProfile) {
+        let model = conversation.model.isEmpty ? providers.effectiveModel(for: profile) : conversation.model
+        let credential = providers.credential(for: profile)
+        let prompt = """
+        Give this new chat a short title from the user's opening message. 3-6 words, no quotes, no trailing punctuation, no markdown.
+
+        User: \(userText.prefix(500))
+        """
+        Task { [weak self, weak conversation] in
+            guard let self, let conversation else { return }
+            var titleText = ""
+            do {
+                let events = CompatibleChatClient.shared.streamChatEvents(
+                    profile: profile,
+                    credential: credential,
+                    model: model,
+                    thinking: .auto,
+                    messages: [ChatMessage(role: "user", content: prompt)]
+                )
+                for try await event in events {
+                    if case .delta(let content, _) = event { titleText += content }
+                }
+            } catch {
+                print("[VelaChat] Instant title failed: \(error)")
+                return
+            }
+            guard !conversation.titleIsCustom else { return }
+            let cleaned = titleText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'.“”"))
+            guard !cleaned.isEmpty, !Self.looksLikeBadTitle(cleaned) else { return }
+            conversation.title = String(cleaned.prefix(60))
+            conversation.titleIsCustom = false
+            self.saveHistory()
+        }
+    }
+
     private func generateTitleIfNeeded(for conversation: Conversation, profile: ProviderProfile, model: String, credential: ProviderCredential, force: Bool = false) {
         // `force` bypasses both the "already custom" and "exactly two
         // messages" gates — an explicit user request should always run.
@@ -1141,9 +1181,16 @@ final class AppModel {
         if conversation.model.isEmpty {
             conversation.model = providers.effectiveModel(for: profile)
         }
-        if conversation.realMessages.isEmpty, !conversation.titleIsCustom {
+        let isFirstMessage = conversation.realMessages.isEmpty
+        if isFirstMessage, !conversation.titleIsCustom {
             let titleSource = text.isEmpty ? (attachments.first?.filename ?? text) : text
             conversation.title = titleSource.count > 54 ? String(titleSource.prefix(54)) + "…" : titleSource
+            // A real title starts generating NOW, in parallel with the
+            // reply, from the user's message alone — it typically lands in
+            // the sidebar while the reply is still streaming.
+            if isAutoTitleEnabled, profile.kind != .preview, !text.isEmpty {
+                generateInstantTitle(for: conversation, userText: text, profile: profile)
+            }
         }
         conversation.messages.append(ChatMessage(role: "user", content: text, attachments: attachments))
         conversation.updatedAt = Date()
