@@ -29,7 +29,7 @@ struct ProviderEditorView: View {
                 Form {
                     Section {
                         HStack(spacing: 12) {
-                            ProviderLogo(kind: profile.kind, size: 38)
+                            ProviderLogoView(kind: profile.kind, endpoint: profile.endpoint, size: 38)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(profile.name)
                                     .font(.title3.weight(.semibold))

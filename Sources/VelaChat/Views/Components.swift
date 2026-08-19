@@ -24,12 +24,61 @@ struct VelaMark: View {
     }
 }
 
+/// The provider's real fetched logo when available, the hand-drawn vector
+/// mark otherwise. Custom endpoints derive their host from the base URL
+/// (skipping localhost/private ranges, which have no public logo).
+struct ProviderLogoView: View {
+    let kind: ProviderKind
+    var endpoint: String? = nil
+    var size: CGFloat = 26
+
+    private var host: String? {
+        if kind == .compatible, let endpoint, let host = URL(string: endpoint)?.host {
+            let lowered = host.lowercased()
+            let isPrivate = lowered == "localhost"
+                || lowered.hasSuffix(".local")
+                || lowered.hasPrefix("127.")
+                || lowered.hasPrefix("10.")
+                || lowered.hasPrefix("192.168.")
+                || lowered.hasPrefix("0.")
+            return isPrivate ? nil : lowered
+        }
+        return kind.logoDomain
+    }
+
+    var body: some View {
+        Group {
+            if let host, let image = RemoteLogoLoader.shared.images[host] {
+                RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                    .fill(Theme.controlBackground)
+                    .overlay {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: size * 0.72, height: size * 0.72)
+                            .clipShape(RoundedRectangle(cornerRadius: size * 0.14, style: .continuous))
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                            .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+                    }
+                    .frame(width: size, height: size)
+            } else {
+                ProviderLogo(kind: kind, size: size)
+            }
+        }
+        .task(id: host) {
+            if let host { await RemoteLogoLoader.shared.ensure(host: host) }
+        }
+    }
+}
+
 struct ProviderMark: View {
     let kind: ProviderKind
     var size: CGFloat = 18
 
     var body: some View {
-        ProviderLogo(kind: kind, size: size)
+        ProviderLogoView(kind: kind, size: size)
     }
 }
 

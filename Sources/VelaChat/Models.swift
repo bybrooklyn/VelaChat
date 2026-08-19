@@ -174,6 +174,27 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var isLocal: Bool { self == .ollama || self == .lmStudio }
 
+    /// Where the provider's real logo lives — fetched at runtime by
+    /// `RemoteLogoLoader` (own site first, Google favicons fallback).
+    /// `nil` means hand-drawn mark only.
+    var logoDomain: String? {
+        switch self {
+        case .openAI, .codex: "openai.com"
+        case .anthropic: "anthropic.com"
+        case .google: "gemini.google.com"
+        case .deepSeek: "deepseek.com"
+        case .openRouter: "openrouter.ai"
+        case .groq: "groq.com"
+        case .mistral: "mistral.ai"
+        case .xai: "x.ai"
+        case .perplexity: "perplexity.ai"
+        case .ollama: "ollama.com"
+        case .lmStudio: "lmstudio.ai"
+        case .blockrun: "blockrun.ai"
+        case .preview, .compatible: nil
+        }
+    }
+
     var nativeWebSearch: NativeWebSearch {
         switch self {
         case .perplexity: .always

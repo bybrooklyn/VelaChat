@@ -567,7 +567,7 @@ private struct ProviderSettingsRow: View {
 
     var body: some View {
         HStack(spacing: 11) {
-            ProviderLogo(kind: profile.kind, size: 26)
+            ProviderLogoView(kind: profile.kind, endpoint: profile.endpoint, size: 26)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
