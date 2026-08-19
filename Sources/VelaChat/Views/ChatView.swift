@@ -196,7 +196,7 @@ private struct PinnedMessagesButton: View {
                         input.wrappedValue = suggestion
                         inputFocused = true
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(VelaControlButtonStyle(tint: Theme.secondaryText))
                 }
             }
             .padding(.top, 5)
@@ -775,7 +775,7 @@ private struct MessageRow: View {
                                 .foregroundStyle(Theme.danger)
                             if alternateIndex == 0 {
                                 Button("Try Again") { appModel.retryLastMessage() }
-                                    .buttonStyle(.bordered)
+                                    .buttonStyle(VelaControlButtonStyle(tint: Theme.danger))
                             }
                         }
                     } else if alternateIndex == 0, let ask = displayedMessage.askQuestion {

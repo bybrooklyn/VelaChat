@@ -14,6 +14,9 @@ struct ProviderEditorView: View {
     @State private var apiKey = ""
     @State private var isTesting = false
     @State private var message: String?
+    /// True once the user types in the key field — from then on, background
+    /// catalog refreshes stop resyncing (and overwriting) it.
+    @State private var apiKeyEdited = false
     @State private var pullModelName = ""
 
     private var profile: ProviderProfile? {
@@ -37,7 +40,22 @@ struct ProviderEditorView: View {
                             Spacer(minLength: 0)
                         }
                         .padding(.vertical, 4)
-                        ConnectionPill(status: appModel.providers.status(for: profile.id))
+                        HStack(spacing: 10) {
+                            ConnectionPill(status: appModel.providers.status(for: profile.id))
+                            Spacer(minLength: 0)
+                            if appModel.providers.selectedID == profile.id {
+                                Label("Active", systemImage: "checkmark.circle.fill")
+                                    .font(.callout.weight(.medium))
+                                    .foregroundStyle(Theme.accent)
+                            } else {
+                                Button {
+                                    appModel.providers.select(profile.id)
+                                } label: {
+                                    Label("Use This Provider", systemImage: "checkmark.circle")
+                                }
+                                .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                            }
+                        }
                     }
 
                     Section("Connection") {
@@ -46,9 +64,15 @@ struct ProviderEditorView: View {
                         }
                         TextField("Base endpoint", text: $endpoint)
                             .textContentType(.URL)
+                        if profile.kind == .codex {
+                            Text("Codex login requests go to ChatGPT's fixed backend — this endpoint only applies when a manual API key is used.")
+                                .font(.caption)
+                                .foregroundStyle(Theme.tertiaryText)
+                        }
 
                         if profile.kind.requiresKey {
                             SecureField(profile.kind == .codex ? "Manual API key (optional)" : "API key", text: $apiKey)
+                                .onChange(of: apiKey) { _, _ in apiKeyEdited = true }
                             if let console = profile.kind.consoleURL {
                                 Link(destination: console) {
                                     Label("Get a key from \(console.host ?? "the provider")", systemImage: "arrow.up.right.square")
@@ -92,7 +116,7 @@ struct ProviderEditorView: View {
                     providerDetails(profile)
                 }
                 .formStyle(.grouped)
-                .frame(maxWidth: 720)
+                .frame(maxWidth: Theme.Layout.settingsWidth)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .navigationTitle(profile.name)
                 .toolbar {
@@ -397,16 +421,28 @@ struct ProviderEditorView: View {
         name = profile.name
         endpoint = profile.endpoint
         model = profile.model
-        apiKey = appModel.providers.apiKey(for: profile.id)
-        message = nil
+        // The key field syncs from storage only until the user starts
+        // typing — a background catalog refresh re-running this used to
+        // overwrite a half-typed key with the stored (often empty) value.
+        if !apiKeyEdited {
+            apiKey = appModel.providers.apiKey(for: profile.id)
+        }
         appModel.providers.discoverIfNeeded(id: profile.id)
     }
 
     private func save(_ profile: ProviderProfile) {
         appModel.providers.update(id: profile.id, endpoint: endpoint, model: model, name: profile.kind == .compatible ? name : nil)
         let keySaved = appModel.providers.setAPIKey(apiKey, for: profile.id)
-        appModel.providers.select(profile.id)
+        apiKeyEdited = false
         message = keySaved ? "Saved" : "Saved, but the API key could not be written to Keychain"
+        if keySaved {
+            // Self-clearing — a permanent "Saved" next to the buttons read
+            // as stuck UI.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                if message == "Saved" { message = nil }
+            }
+        }
     }
 
     private func test(_ profile: ProviderProfile) async {

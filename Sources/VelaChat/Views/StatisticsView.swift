@@ -109,7 +109,7 @@ struct StatisticsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Statistics")
-        .frame(maxWidth: 640)
+        .frame(maxWidth: Theme.Layout.settingsWidth)
         .frame(maxWidth: .infinity, alignment: .center)
     }
 }

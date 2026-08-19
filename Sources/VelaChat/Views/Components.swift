@@ -211,15 +211,42 @@ struct ContextButton: View {
     @Environment(AppModel.self) private var appModel
     @State private var isPresented = false
 
+    /// Fraction of the detected context window in use — `nil` when the
+    /// window is unknown (the ring falls back to the dotted glyph).
+    private var fraction: Double? {
+        guard let window = appModel.contextWindow, window > 0 else { return nil }
+        return min(1, Double(appModel.contextTokenEstimate) / Double(window))
+    }
+
     var body: some View {
         Button {
             isPresented.toggle()
         } label: {
-            Image(systemName: "circle.dotted")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Theme.text)
-                .frame(width: 30, height: 30)
-                .glassCircle(tint: Theme.accent)
+            // The button shows its state: a filled progress ring, warning-
+            // tinted past 80% — no click needed to learn you're nearly full.
+            // Fill tint is accentStrong (like Send), not the pale foreground
+            // accent that used to render this as a blown-out white disc.
+            ZStack {
+                if let fraction {
+                    Circle()
+                        .stroke(Theme.accentForeground.opacity(0.25), lineWidth: 2)
+                    Circle()
+                        .trim(from: 0, to: max(0.02, fraction))
+                        .stroke(
+                            fraction > 0.8 ? Theme.warning : Theme.accentForeground,
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+                } else {
+                    Image(systemName: "circle.dotted")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Theme.accentForeground)
+                }
+            }
+            .frame(width: 14, height: 14)
+            .frame(width: 30, height: 30)
+            .glassCircle(tint: Theme.accentStrong)
+            .animation(.easeOut(duration: 0.35), value: fraction)
         }
         .buttonStyle(.plain)
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {

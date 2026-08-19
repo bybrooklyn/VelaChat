@@ -152,9 +152,19 @@ enum Theme {
     static let accentForeground = Color(hex: 0x071416)
     static let controlStroke = Color(hex: 0x2C4548)
 
-    static let success = Color(nsColor: .systemGreen)
-    static let warning = Color(nsColor: .systemOrange)
-    static let danger = Color(nsColor: .systemRed)
+    // Palette-tuned status colors — the raw NSColor.system* values are
+    // full-saturation sRGB and read overexposed against this dark, muted
+    // background; these sit in the same family as the rest of the theme.
+    static let success = Color(hex: 0x7FCB8F)
+    static let warning = Color(hex: 0xE0B36A)
+    static let danger = Color(hex: 0xE08787)
+
+    /// Shared layout constants — one source of truth instead of per-view
+    /// magic numbers that drift (Settings was 760, Providers 720,
+    /// Changelog/Statistics 640, all in one navigation stack).
+    enum Layout {
+        static let settingsWidth: CGFloat = 1000
+    }
 
     /// A single shared corner-radius scale so rounding reads as one system
     /// instead of ad hoc per-view values.

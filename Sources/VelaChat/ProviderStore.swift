@@ -272,15 +272,18 @@ final class ProviderStore {
         saveProfiles()
     }
 
-    func addCompatible() -> UUID {
+    /// Creates without selecting — adding an endpoint you haven't finished
+    /// configuring must never silently become the app's active provider.
+    func createCompatible(name: String, endpoint: String) -> UUID {
+        let fallbackName = "Custom endpoint \(profiles.filter { $0.kind == .compatible }.count + 1)"
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let profile = ProviderProfile(
             kind: .compatible,
-            name: "Local endpoint \(profiles.filter { $0.kind == .compatible }.count + 1)",
-            endpoint: "http://127.0.0.1:8000/v1"
+            name: trimmedName.isEmpty ? fallbackName : trimmedName,
+            endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         profiles.append(profile)
         saveProfiles()
-        select(profile.id)
         return profile.id
     }
 

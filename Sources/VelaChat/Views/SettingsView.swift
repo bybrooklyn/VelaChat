@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var confirmReset = false
     @State private var editingProfileID: UUID?
     @State private var isAddingSnippet = false
+    @State private var isAddingProvider = false
     @State private var newMemoryText = ""
     @State private var accentPreset = AccentPreset.current
 
@@ -46,9 +47,9 @@ struct SettingsView: View {
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.text)
+                    .foregroundStyle(Theme.accentForeground)
                     .frame(width: 30, height: 30)
-                    .glassCircle(tint: Theme.accent)
+                    .glassCircle(tint: Theme.accentStrong)
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
@@ -85,8 +86,9 @@ struct SettingsView: View {
             // separate "Connections" screen.
             Section {
                 ForEach(visibleProfiles) { profile in
+                    // Viewing a provider must not switch to it — selection
+                    // is an explicit action inside the editor now.
                     Button {
-                        appModel.providers.select(profile.id)
                         editingProfileID = profile.id
                     } label: {
                         ProviderSettingsRow(
@@ -109,7 +111,7 @@ struct SettingsView: View {
                 }
 
                 Button {
-                    editingProfileID = appModel.providers.addCompatible()
+                    isAddingProvider = true
                 } label: {
                     Label("Add a custom OpenAI-compatible endpoint", systemImage: "plus.circle")
                 }
@@ -175,7 +177,7 @@ struct SettingsView: View {
                         appModel.addMemory(newMemoryText)
                         newMemoryText = ""
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
                     .disabled(newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             } header: {
@@ -320,10 +322,6 @@ struct SettingsView: View {
             }
 
             Section {
-                LabeledContent("Appearance") {
-                    Label("Dark", systemImage: "moon.fill")
-                        .foregroundStyle(Theme.secondaryText)
-                }
                 LabeledContent("Accent color") {
                     HStack(spacing: 7) {
                         ForEach(AccentPreset.allCases) { preset in
@@ -385,40 +383,59 @@ struct SettingsView: View {
             }
 
             Section {
-                LabeledContent("Version") {
-                    Text(AppModel.appVersion)
-                        .foregroundStyle(Theme.secondaryText)
-                }
-                NavigationLink {
-                    ChangelogView()
-                } label: {
-                    Label("What's New", systemImage: "sparkles")
-                }
                 NavigationLink {
                     StatisticsView()
                 } label: {
                     Label("Statistics", systemImage: "chart.bar.xaxis")
                 }
-                LabeledContent("License") {
-                    Text("MIT")
-                        .foregroundStyle(Theme.secondaryText)
+            } header: {
+                Text("Statistics")
+            } footer: {
+                Text("Lifetime messages, tokens, and per-model usage.")
+            }
+
+            Section {
+                HStack(spacing: 12) {
+                    VelaMark(size: 34)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("VelaChat")
+                            .font(.headline)
+                        Text("Version \(Self.bundleVersion)")
+                            .font(.caption)
+                            .foregroundStyle(Theme.secondaryText)
+                    }
                 }
-                Link(destination: URL(string: "https://opensource.org/license/mit")!) {
-                    Label("Read the MIT license", systemImage: "arrow.up.right.square")
+                .padding(.vertical, 4)
+                NavigationLink {
+                    ChangelogView()
+                } label: {
+                    Label("What's New", systemImage: "sparkles")
+                }
+                Link(destination: URL(string: "https://opensource.org/license/mit") ?? URL(fileURLWithPath: "/")) {
+                    Label("MIT license \u{2014} free and open source", systemImage: "arrow.up.right.square")
                 }
                 .foregroundStyle(Theme.accent)
             } header: {
-                Text("About VelaChat")
-            } footer: {
-                Text("Free and open source \u{2014} use it, fork it, ship it.")
+                Text("About")
             }
         }
         .formStyle(.grouped)
-        .frame(maxWidth: 760)
+        .frame(maxWidth: Theme.Layout.settingsWidth)
         .frame(maxWidth: .infinity, alignment: .center)
         .sheet(isPresented: $isAddingSnippet) {
             AddSnippetSheet(isPresented: $isAddingSnippet)
         }
+        .sheet(isPresented: $isAddingProvider) {
+            AddProviderSheet(isPresented: $isAddingProvider) { newID in
+                editingProfileID = newID
+            }
+        }
+    }
+
+    /// The real bundle version — the hardcoded constant is only the
+    /// fallback for `swift run`, where no bundle exists.
+    private static var bundleVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? AppModel.appVersion
     }
 
     private var memoryTopics: [String] {
@@ -450,6 +467,59 @@ struct SettingsView: View {
         panel.message = "Choose a folder containing a SKILL.md file."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         appModel.skills.addCustomFolder(url.path)
+    }
+}
+
+/// A real draft: Cancel creates nothing, and nothing is selected until the
+/// user explicitly chooses to use the endpoint — adding no longer instantly
+/// switched the whole app to an unconfigured localhost profile.
+private struct AddProviderSheet: View {
+    @Environment(AppModel.self) private var appModel
+    @Binding var isPresented: Bool
+    let onCreate: (UUID) -> Void
+
+    @State private var name = ""
+    @State private var endpoint = "http://127.0.0.1:8000/v1"
+    @State private var apiKey = ""
+
+    private var canSave: Bool {
+        URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
+            && !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("New Endpoint")
+                .font(.title3.weight(.semibold))
+            TextField("Name (e.g. \u{201C}vLLM on my server\u{201D})", text: $name)
+                .textFieldStyle(.plain)
+                .flatFieldStyle()
+            TextField("Base endpoint (\u{2026}/v1)", text: $endpoint)
+                .textFieldStyle(.plain)
+                .flatFieldStyle()
+                .textContentType(.URL)
+            SecureField("API key (optional)", text: $apiKey)
+                .textFieldStyle(.plain)
+                .flatFieldStyle()
+            HStack {
+                Spacer()
+                Button("Cancel") { isPresented = false }
+                    .buttonStyle(.bordered)
+                Button("Add") {
+                    let id = appModel.providers.createCompatible(name: name, endpoint: endpoint)
+                    if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        _ = appModel.providers.setAPIKey(apiKey, for: id)
+                    }
+                    isPresented = false
+                    onCreate(id)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accentStrong)
+                .disabled(!canSave)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 }
 
@@ -537,9 +607,10 @@ private struct ProviderSettingsRow: View {
     @ViewBuilder
     private var readiness: some View {
         if profile.kind.requiresKey && !hasKey {
-            Text("Needs key")
-                .font(.caption2.weight(.medium))
+            Image(systemName: "key.slash")
+                .font(.caption)
                 .foregroundStyle(Theme.warning)
+                .help("Needs an API key")
         } else if case .connecting = status {
             ProgressView()
                 .controlSize(.mini)
@@ -600,7 +671,7 @@ struct ChangelogView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("What's New")
-        .frame(maxWidth: 640)
+        .frame(maxWidth: Theme.Layout.settingsWidth)
         .frame(maxWidth: .infinity, alignment: .center)
     }
 }
