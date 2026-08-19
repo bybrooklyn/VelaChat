@@ -157,6 +157,10 @@ final class AppModel {
     /// and the timeline order always matches what actually happened.
     private var revealQueues: [UUID: [RevealOp]] = [:]
     private var revealTasks: [UUID: Task<Void, Never>] = [:]
+    /// Messages whose stream has ended but whose reveal queue is still
+    /// draining — finish work (isStreaming flip, save, notify) runs when
+    /// the drain empties instead of snapping the buffer in one frame.
+    private var pendingFinish: Set<UUID> = []
     private var historySaveTask: Task<Void, Never>?
 
     init() {
@@ -1152,12 +1156,38 @@ final class AppModel {
                 guard let self, let conversation else { return }
                 guard var queue = self.revealQueues[assistantID], !queue.isEmpty else {
                     self.revealTasks[assistantID] = nil
+                    // The stream ended while text was still draining — the
+                    // deferred finish work runs now that it's all on screen.
+                    if self.pendingFinish.remove(assistantID) != nil {
+                        self.completeGeneration(for: conversation, assistantID: assistantID)
+                    }
                     return
                 }
                 guard let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) else {
                     self.revealTasks[assistantID] = nil
                     self.revealQueues[assistantID] = nil
+                    self.pendingFinish.remove(assistantID)
                     return
+                }
+                // Adaptive pace: the drain speeds up smoothly as backlog
+                // grows instead of ever letting `finishGeneration` dump the
+                // rest in one frame — the end-of-reply SNAP is gone. Once
+                // the stream has finished (`pendingFinish`), the remaining
+                // buffer drains in well under a second.
+                let backlogCharacters = queue.reduce(0) { partial, op in
+                    switch op {
+                    case .text(let pending), .reasoning(let pending): partial + pending.count
+                    case .activity, .activityUpdate: partial
+                    }
+                }
+                let finishing = self.pendingFinish.contains(assistantID)
+                func delay(base: UInt64) -> UInt64 {
+                    var value = base
+                    if backlogCharacters > 400 {
+                        value = max(6_000_000, base * 400 / UInt64(backlogCharacters))
+                    }
+                    if finishing { value = min(value, 10_000_000) }
+                    return value
                 }
                 switch queue[0] {
                 case .text(var pending):
@@ -1165,7 +1195,7 @@ final class AppModel {
                     if pending.isEmpty { queue.removeFirst() } else { queue[0] = .text(pending) }
                     self.revealQueues[assistantID] = queue
                     conversation.messages[index].appendTimelineText(chunk)
-                    try? await Task.sleep(nanoseconds: 28_000_000)
+                    try? await Task.sleep(nanoseconds: delay(base: 28_000_000))
                 case .reasoning(var pending):
                     // Faster drip than the answer text — reasoning chains
                     // run long, and the answer shouldn't wait behind them.
@@ -1173,7 +1203,7 @@ final class AppModel {
                     if pending.isEmpty { queue.removeFirst() } else { queue[0] = .reasoning(pending) }
                     self.revealQueues[assistantID] = queue
                     conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + chunk
-                    try? await Task.sleep(nanoseconds: 8_000_000)
+                    try? await Task.sleep(nanoseconds: delay(base: 8_000_000))
                 case .activity(let record):
                     queue.removeFirst()
                     self.revealQueues[assistantID] = queue
@@ -1214,6 +1244,7 @@ final class AppModel {
     private func flushReveal(for assistantID: UUID, conversation: Conversation) {
         revealTasks[assistantID]?.cancel()
         revealTasks[assistantID] = nil
+        pendingFinish.remove(assistantID)
         guard let queue = revealQueues.removeValue(forKey: assistantID), !queue.isEmpty else { return }
         guard let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) else { return }
         for op in queue {
@@ -1228,6 +1259,14 @@ final class AppModel {
                 conversation.messages[index].updateActivity(id: id, result: result, isError: isError)
             }
         }
+    }
+
+    /// True while the head of a message's reveal queue is reasoning —
+    /// drives the "Thinking…" shimmer even between tool rounds, where
+    /// content already exists but the model is thinking again.
+    func isRevealingReasoning(_ id: UUID) -> Bool {
+        if case .reasoning = revealQueues[id]?.first { return true }
+        return false
     }
 
     private func apply(_ event: ChatStreamEvent, to conversation: Conversation, assistantID: UUID) {
@@ -1271,9 +1310,24 @@ final class AppModel {
 
     private func finishGeneration(for conversation: Conversation?, assistantID: UUID) {
         guard let conversation else { return }
+        // If the reveal is still catching up, don't dump the buffer — let
+        // the drain finish at its (accelerated) pace and run the finish
+        // work from there. Stop and failure keep the instant flush.
+        if revealQueues[assistantID]?.isEmpty == false, revealTasks[assistantID] != nil {
+            pendingFinish.insert(assistantID)
+            return
+        }
+        completeGeneration(for: conversation, assistantID: assistantID)
+    }
+
+    private func completeGeneration(for conversation: Conversation, assistantID: UUID) {
         flushReveal(for: assistantID, conversation: conversation)
-        if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
-            conversation.messages[index].isStreaming = false
+        // The end-of-reply state changes (streaming indicator out, action
+        // row and usage label in) fade rather than popping in one frame.
+        withAnimation(.easeOut(duration: 0.3)) {
+            if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
+                conversation.messages[index].isStreaming = false
+            }
         }
         conversation.updatedAt = Date()
         // Only touch shared generation state (`isGenerating`/`generationTask`)

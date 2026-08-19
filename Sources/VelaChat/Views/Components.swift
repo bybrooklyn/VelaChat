@@ -61,10 +61,17 @@ struct ActivityRow<Detail: View>: View {
                         .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                         .symbolEffect(.pulse, isActive: isActive)
 
-                    Text(title)
-                        .font(.callout)
-                        .foregroundStyle(Theme.secondaryText)
-                        .lineLimit(1)
+                    // Active rows shimmer instead of showing a spinner —
+                    // the app-wide "something is happening" treatment.
+                    if isActive {
+                        ShimmerText(text: title, font: .callout)
+                            .lineLimit(1)
+                    } else {
+                        Text(title)
+                            .font(.callout)
+                            .foregroundStyle(Theme.secondaryText)
+                            .lineLimit(1)
+                    }
 
                     if isExpandable {
                         Image(systemName: "chevron.right")

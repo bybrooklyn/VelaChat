@@ -89,7 +89,9 @@ struct ChatView: View {
             }
             .onChange(of: appModel.activeConversation?.messages.last?.content.count ?? 0) { _, _ in
                 let now = Date()
-                guard now.timeIntervalSince(lastScrollAt) > 0.12 else { return }
+                // Matches the reveal cadence — 4x slower (the old 0.12s)
+                // let text run off the bottom edge and then jump.
+                guard now.timeIntervalSince(lastScrollAt) > 0.03 else { return }
                 lastScrollAt = now
                 scrollToLast(proxy, animated: false)
             }
@@ -755,7 +757,8 @@ private struct MessageRow: View {
                     if let reasoning = displayedMessage.reasoning, !reasoning.isEmpty {
                         ReasoningDisclosure(
                             reasoning: reasoning,
-                            isThinking: alternateIndex == 0 && message.isStreaming && displayedMessage.content.isEmpty,
+                            isThinking: alternateIndex == 0 && message.isStreaming
+                                && (displayedMessage.content.isEmpty || appModel.isRevealingReasoning(message.id)),
                             isExpanded: $showingReasoning
                         )
                     }
@@ -1637,7 +1640,9 @@ private struct ReasoningDisclosure: View {
             if let startedAt {
                 elapsedWhenFinished = max(1, Int(Date().timeIntervalSince(startedAt)))
             }
-            isExpanded = false
+            // Deliberately does NOT collapse here — snapping the disclosure
+            // shut while the user reads along was the single most annoying
+            // reasoning behavior in the app.
         }
     }
 
