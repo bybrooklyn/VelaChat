@@ -1,5 +1,26 @@
 # VelaChat — working notes
 
+## 2026-08-19 — Round 3 (bc153a4..HEAD; GitHub: private bybrooklyn/VelaChat)
+
+S1a instant titles (fired at send from the first message; fullscreen
+top-clip fix); S1b Apple Intelligence (FoundationModels verified from the
+SDK swiftinterface — on-device utility brain for titles/compaction/
+handoff + full "Apple Intelligence" chat provider; image input deferred,
+framework is text-only); S2a usage ledger (hourly per-provider buckets,
+5h/day/week/month, $ only from real pricing, per-reply $ in token row);
+S2b live quota headers → sidebar gauge popover + Statistics section;
+S3a branch-from-message + Markdown/PDF export (CTFramesetter);
+S3b ⌘F find-in-chat (sidebar search → ⇧⌘F); S3c model favorites/recents,
+native scroll edge fades (toggleable), Settings glass cards; S3d quick
+chat upgrade (model picker, attach, screenshot via screencapture -i);
+S4 get_schedule (EventKit, SDK-verified full-access API) + read_clipboard
+tools w/ toggles + Info.plist usage strings; S5 basic MCP (stdio JSON-RPC
+client actor, mcpServers-JSON config + import, Settings card, tools
+merged per-send as mcp_<server>_<tool>, activity lines, stopAll on quit).
+Needs human verification: Apple Intelligence availability on this
+machine (ad-hoc signing may report ineligible → falls back), calendar
+permission prompt, an end-to-end MCP server, quick-chat screenshot.
+
 ## 2026-08-19 — Round 2 (R1–R9, one commit each; d1ddf37..2417520)
 
 R1 quick fixes (send glyph regression, real scroll-to-bottom sentinel,
