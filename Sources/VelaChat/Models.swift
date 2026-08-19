@@ -1023,11 +1023,33 @@ struct SavedConversation: Codable {
 /// when the provider sends them (Anthropic's anthropic-ratelimit-*,
 /// OpenAI-style x-ratelimit-*). Session-only — never persisted.
 struct QuotaSnapshot: Sendable, Equatable {
+    /// A subscription-style usage window (Codex/ChatGPT plans): percent
+    /// used of a rolling window, e.g. 5-hour and weekly.
+    struct Window: Sendable, Equatable {
+        var usedPercent: Double
+        var windowMinutes: Int?
+        var resetAt: Date?
+
+        var label: String {
+            switch windowMinutes {
+            case .some(let minutes) where minutes >= 10_000: return "Weekly limit"
+            case .some(let minutes) where minutes >= 60: return "\(minutes / 60)-hour limit"
+            case .some(let minutes): return "\(minutes)-minute limit"
+            case nil: return "Usage limit"
+            }
+        }
+    }
+
     var requestsRemaining: Int?
     var requestsLimit: Int?
     var tokensRemaining: Int?
     var tokensLimit: Int?
     var resetAt: Date?
+    /// Codex subscription windows, verified live against the real
+    /// backend's x-codex-* headers.
+    var primaryWindow: Window?
+    var secondaryWindow: Window?
+    var planName: String?
     var capturedAt = Date()
 
     init?(headers rawHeaders: [AnyHashable: Any]) {
@@ -1054,7 +1076,20 @@ struct QuotaSnapshot: Sendable, Equatable {
                 break
             }
         }
-        if requestsRemaining == nil, tokensRemaining == nil, resetAt == nil { return nil }
+        func codexWindow(_ prefix: String) -> Window? {
+            guard let used = headers["x-codex-\(prefix)-used-percent"].flatMap(Double.init) else { return nil }
+            let minutes = headers["x-codex-\(prefix)-window-minutes"].flatMap(Int.init)
+            if minutes == 0 { return nil }
+            let reset = headers["x-codex-\(prefix)-reset-at"].flatMap(Double.init).map { Date(timeIntervalSince1970: $0) }
+            return Window(usedPercent: used, windowMinutes: minutes, resetAt: reset)
+        }
+        primaryWindow = codexWindow("primary")
+        secondaryWindow = codexWindow("secondary")
+        if let plan = headers["x-codex-plan-type"], !plan.isEmpty {
+            planName = plan.capitalized
+        }
+        if requestsRemaining == nil, tokensRemaining == nil, resetAt == nil,
+           primaryWindow == nil, secondaryWindow == nil { return nil }
     }
 
     /// OpenAI reset strings look like "1s", "6m0s", "7.66s".

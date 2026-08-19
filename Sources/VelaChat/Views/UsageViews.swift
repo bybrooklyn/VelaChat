@@ -64,7 +64,18 @@ struct UsagePopover: View {
 
     @ViewBuilder
     private func quotaSection(_ quota: QuotaSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 8) {
+            if let plan = quota.planName {
+                Text("\(plan) plan")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.secondaryText)
+            }
+            if let window = quota.primaryWindow {
+                windowRow(window)
+            }
+            if let window = quota.secondaryWindow {
+                windowRow(window)
+            }
             if let fraction = quota.usedFraction {
                 Gauge(value: fraction) { EmptyView() }
                     .gaugeStyle(.accessoryLinearCapacity)
@@ -89,6 +100,28 @@ struct UsagePopover: View {
         }
         .padding(10)
         .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+    }
+
+    private func windowRow(_ window: QuotaSnapshot.Window) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(window.label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.text)
+                Spacer(minLength: 8)
+                Text("\(Int(window.usedPercent))% used")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+            }
+            Gauge(value: min(max(window.usedPercent / 100, 0), 1)) { EmptyView() }
+                .gaugeStyle(.accessoryLinearCapacity)
+                .tint(window.usedPercent > 80 ? Theme.warning : Theme.accent)
+            if let resetAt = window.resetAt {
+                Text("resets \(resetAt, style: .relative)")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+        }
     }
 
     private func meterRow(_ title: String, _ window: UsageWindow) -> some View {
