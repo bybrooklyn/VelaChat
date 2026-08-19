@@ -533,19 +533,9 @@ private struct PinnedMessagesButton: View {
             }
             return
         }
-        guard let data = try? Data(contentsOf: url) else { return }
-        let ext = url.pathExtension.lowercased()
-        let filename = url.lastPathComponent
-        if ["png", "jpg", "jpeg", "gif", "webp", "heic"].contains(ext), let attachment = imageAttachment(data: data, filename: filename) {
-            draftAttachments.wrappedValue.append(attachment)
-            warnIfNoVisionSupport()
-        } else if ext == "pdf", let attachment = Attachment.fromPDF(filename: filename, data: data) {
-            draftAttachments.wrappedValue.append(attachment)
-        } else if let text = String(data: data, encoding: .utf8) {
-            let kind: Attachment.Kind = Attachment.codeKind(forExtension: ext) ? .code : .text
-            let mime = kind == .code ? "text/x-\(ext)" : "text/plain"
-            draftAttachments.wrappedValue.append(.fromText(filename: filename, kind: kind, content: text, mimeType: mime))
-        }
+        guard let attachment = Attachment.fromFile(url: url) else { return }
+        draftAttachments.wrappedValue.append(attachment)
+        if attachment.kind == .image { warnIfNoVisionSupport() }
     }
 
     private func warnIfNoVisionSupport() {

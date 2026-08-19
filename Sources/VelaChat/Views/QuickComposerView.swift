@@ -32,7 +32,60 @@ struct QuickComposerView: View {
                 .focused($focused)
                 .onSubmit(send)
 
-            HStack {
+            if let conversation = appModel.activeConversation, !conversation.draftAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(conversation.draftAttachments) { attachment in
+                            HStack(spacing: 4) {
+                                Image(systemName: attachment.kind == .image ? "photo" : "doc")
+                                    .font(.system(size: 9))
+                                Text(attachment.filename)
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                                Button {
+                                    conversation.draftAttachments.removeAll { $0.id == attachment.id }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 9))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .foregroundStyle(Theme.secondaryText)
+                            .background(Theme.controlBackground.opacity(0.7), in: Capsule())
+                        }
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                ModelPickerButton()
+                Button {
+                    attachFile()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.secondaryText)
+                .background(Theme.controlBackground.opacity(0.7), in: Circle())
+                .help("Attach a file")
+                Button {
+                    captureScreenshot()
+                } label: {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.secondaryText)
+                .background(Theme.controlBackground.opacity(0.7), in: Circle())
+                .help("Capture a screenshot and attach it (space = whole window)")
+
+                Spacer()
+
                 Button("Open VelaChat") {
                     openMainWindow()
                 }
@@ -40,10 +93,8 @@ struct QuickComposerView: View {
                 .foregroundStyle(Theme.accent)
                 .font(.caption)
 
-                Spacer()
-
                 Button("Send") { send() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
                     .tint(Theme.accentStrong)
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || appModel.isGenerating)
             }
@@ -71,6 +122,37 @@ struct QuickComposerView: View {
 
     private func openMainWindow() {
         AppWindowRouter.raiseMainWindow()
+    }
+
+    private func attachFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        let conversation = appModel.activeConversation ?? appModel.newConversation()
+        for url in panel.urls {
+            if let attachment = Attachment.fromFile(url: url) {
+                conversation.draftAttachments.append(attachment)
+            }
+        }
+    }
+
+    /// Interactive capture (drag a region; space = window) straight into
+    /// the draft. Cancel and a denied Screen Recording permission both
+    /// produce no file — the neutral notice covers either.
+    private func captureScreenshot() {
+        let path = NSTemporaryDirectory() + "velachat-capture-\(UUID().uuidString).png"
+        Task {
+            _ = await AppModel.runProcess("/usr/sbin/screencapture", ["-i", path])
+            let url = URL(fileURLWithPath: path)
+            defer { try? FileManager.default.removeItem(at: url) }
+            guard let attachment = Attachment.fromFile(url: url) else {
+                appModel.postNotice("No screenshot was captured. If you expected one, grant Screen Recording in System Settings → Privacy & Security.")
+                return
+            }
+            let conversation = appModel.activeConversation ?? appModel.newConversation()
+            conversation.draftAttachments.append(attachment)
+        }
     }
 }
 

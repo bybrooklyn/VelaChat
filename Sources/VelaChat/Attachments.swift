@@ -72,6 +72,26 @@ struct Attachment: Identifiable, Codable, Equatable {
         return Attachment(kind: kind, filename: filename, mimeType: mimeType, data: Data(text.utf8), originalByteCount: full.count)
     }
 
+    /// Shared file loader (composer + quick chat): image/PDF/text/code by
+    /// extension; nil for directories and undecodable binaries.
+    static func fromFile(url: URL) -> Attachment? {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue,
+              let data = try? Data(contentsOf: url) else { return nil }
+        let ext = url.pathExtension.lowercased()
+        let filename = url.lastPathComponent
+        let imageMimes = ["png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp", "heic": "image/heic"]
+        if let mime = imageMimes[ext] {
+            return Attachment(kind: .image, filename: filename, mimeType: mime, data: data)
+        }
+        if ext == "pdf" { return fromPDF(filename: filename, data: data) }
+        if let text = String(data: data, encoding: .utf8) {
+            let kind: Kind = codeKind(forExtension: ext) ? .code : .text
+            return .fromText(filename: filename, kind: kind, content: text, mimeType: kind == .code ? "text/x-\(ext)" : "text/plain")
+        }
+        return nil
+    }
+
     static func fromPDF(filename: String, data pdfData: Data) -> Attachment? {
         guard let document = PDFDocument(data: pdfData) else { return nil }
         var text = ""

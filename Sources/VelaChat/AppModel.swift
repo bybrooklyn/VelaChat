@@ -579,7 +579,7 @@ final class AppModel {
         return found
     }
 
-    private static func runProcess(_ launchPath: String, _ arguments: [String]) async -> (status: Int32, stdout: String, stderr: String) {
+    static func runProcess(_ launchPath: String, _ arguments: [String]) async -> (status: Int32, stdout: String, stderr: String) {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
