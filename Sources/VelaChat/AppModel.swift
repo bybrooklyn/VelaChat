@@ -152,6 +152,15 @@ final class AppModel {
     var isEdgeBlurEnabled = true {
         didSet { UserDefaults.standard.set(isEdgeBlurEnabled, forKey: "velachat.edge-blur-enabled") }
     }
+    /// get_schedule tool (EventKit read) — the system permission prompt is
+    /// the real gate; this just removes the tool entirely.
+    var isScheduleToolEnabled = true {
+        didSet { UserDefaults.standard.set(isScheduleToolEnabled, forKey: "velachat.schedule-tool-enabled") }
+    }
+    /// read_clipboard tool — clipboard content goes to the provider.
+    var isClipboardToolEnabled = true {
+        didSet { UserDefaults.standard.set(isClipboardToolEnabled, forKey: "velachat.clipboard-tool-enabled") }
+    }
     var searchByMessage: [UUID: WebSearchRecord] = [:]
     /// Latest live quota headers seen per provider this session.
     var quotaByProvider: [UUID: QuotaSnapshot] = [:]
@@ -240,6 +249,12 @@ final class AppModel {
         }
         if UserDefaults.standard.object(forKey: "velachat.edge-blur-enabled") != nil {
             isEdgeBlurEnabled = UserDefaults.standard.bool(forKey: "velachat.edge-blur-enabled")
+        }
+        if UserDefaults.standard.object(forKey: "velachat.schedule-tool-enabled") != nil {
+            isScheduleToolEnabled = UserDefaults.standard.bool(forKey: "velachat.schedule-tool-enabled")
+        }
+        if UserDefaults.standard.object(forKey: "velachat.clipboard-tool-enabled") != nil {
+            isClipboardToolEnabled = UserDefaults.standard.bool(forKey: "velachat.clipboard-tool-enabled")
         }
         isWebSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.web-search-enabled")
         hasOnboarded = UserDefaults.standard.bool(forKey: "velachat.has-onboarded")
@@ -1292,6 +1307,8 @@ final class AppModel {
             tools.append(ToolCatalog.currentDatetime)
             tools.append(ToolCatalog.calculator)
             tools.append(contentsOf: [ToolCatalog.saveMemory, ToolCatalog.searchMemory, ToolCatalog.editMemory])
+            if isScheduleToolEnabled { tools.append(ToolCatalog.getSchedule) }
+            if isClipboardToolEnabled { tools.append(ToolCatalog.readClipboard) }
             if isWorkspaceEnabled {
                 tools.append(contentsOf: [ToolCatalog.writeFile, ToolCatalog.readFile, ToolCatalog.listWorkspaceFiles])
             }
@@ -1342,7 +1359,7 @@ final class AppModel {
             hasMemories: modelSupportsTools
         )))
         requestMessages.insert(contentsOf: systemMessages, at: 0)
-        let toolContext = ToolCatalog.ExecutionContext(
+        var toolContext = ToolCatalog.ExecutionContext(
             conversationSummaries: conversations
                 .filter { $0.id != conversation.id }
                 .map { conv in
@@ -1353,17 +1370,36 @@ final class AppModel {
                     )
                 },
             searchEndpoint: trimmedSearchEndpoint,
-            workspaceDirectory: SandboxManager.directory(for: conversation.id),
-            attachmentTexts: attachmentTexts,
-            memory: ToolCatalog.MemoryAccess(
-                snapshot: memories.map { ToolCatalog.MemorySnapshot(id: $0.id, content: $0.content, topic: $0.topic) },
-                mutate: { [weak self] mutation in
-                    await MainActor.run { [weak self] in
-                        self?.applyMemoryMutation(mutation) ?? "Error: memory is unavailable."
-                    }
-                }
-            )
+            workspaceDirectory: SandboxManager.directory(for: conversation.id)
         )
+        toolContext.attachmentTexts = attachmentTexts
+        toolContext.memory = ToolCatalog.MemoryAccess(
+            snapshot: memories.map { ToolCatalog.MemorySnapshot(id: $0.id, content: $0.content, topic: $0.topic) },
+            mutate: { [weak self] mutation in
+                await MainActor.run { [weak self] in
+                    self?.applyMemoryMutation(mutation) ?? "Error: memory is unavailable."
+                }
+            }
+        )
+        if isScheduleToolEnabled {
+            toolContext.schedule = { days in
+                await ScheduleReader.schedule(days: days)
+            }
+        }
+        if isClipboardToolEnabled {
+            toolContext.clipboard = {
+                await MainActor.run { () -> String in
+                    let pasteboard = NSPasteboard.general
+                    if let text = pasteboard.string(forType: .string), !text.isEmpty {
+                        return text.count > 8_192 ? String(text.prefix(8_192)) + "\n[Truncated.]" : text
+                    }
+                    if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
+                        return "Files on the clipboard:\n" + urls.map(\.path).joined(separator: "\n")
+                    }
+                    return "The clipboard is empty or non-text."
+                }
+            }
+        }
         // Providers/models without real tool-calling support keep the old
         // pre-fetch behavior exactly as before — nothing regresses for them.
         let shouldPrefetchSearch = isWebSearchEnabled

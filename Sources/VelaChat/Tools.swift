@@ -99,6 +99,21 @@ enum ToolCatalog {
         guidance: "Cheap — call it rather than guessing filenames."
     )
 
+    static let getSchedule = Definition(
+        name: "get_schedule",
+        description: "Read the user's upcoming calendar events and open reminders (read-only, from the system Calendar and Reminders). The first call may trigger a one-time system permission prompt.",
+        parametersJSON: #"{"type":"object","properties":{"days":{"type":"integer","description":"How many days ahead to look, 1-7 (default 7)"}}}"#,
+        summary: "read the user's upcoming calendar events and reminders",
+        guidance: "Use for anything about the user's schedule, availability, or todos. If access was denied, relay that honestly instead of guessing."
+    )
+    static let readClipboard = Definition(
+        name: "read_clipboard",
+        description: "Read the user's current clipboard (text or file names). Use when they reference what they just copied.",
+        parametersJSON: #"{"type":"object","properties":{}}"#,
+        summary: "read the current clipboard",
+        guidance: "\"What do you think of this?\" right after a copy usually means the clipboard — read it instead of asking them to paste."
+    )
+
     static let saveMemory = Definition(
         name: "save_memory",
         description: "Save a durable fact about the user to your persistent memory — it will be available in every future conversation. One short, standalone sentence per call, with a topic for grouping (reuse existing topics from search_memory when one fits).",
@@ -136,6 +151,11 @@ enum ToolCatalog {
         /// The memory tools' window into `AppModel.memories` — a read
         /// snapshot plus a MainActor-hopping mutator.
         var memory: MemoryAccess? = nil
+        /// System capabilities, injected as MainActor-hopping closures so
+        /// EventKit/NSPasteboard stay out of this Sendable context. nil =
+        /// disabled in Settings.
+        var schedule: (@Sendable (Int) async -> String)? = nil
+        var clipboard: (@Sendable () async -> String)? = nil
     }
 
     struct MemorySnapshot: Sendable {
@@ -210,6 +230,13 @@ enum ToolCatalog {
         case readAttachment.name:
             guard let filename = arguments?["filename"] as? String, !filename.isEmpty else { return "Error: \"filename\" is required." }
             return readAttachmentResult(filename: filename, context: context)
+        case getSchedule.name:
+            guard let schedule = context.schedule else { return "Error: the schedule tool is disabled in Settings." }
+            let days = (arguments?["days"] as? Int) ?? Int(arguments?["days"] as? Double ?? 7)
+            return await schedule(days)
+        case readClipboard.name:
+            guard let clipboard = context.clipboard else { return "Error: the clipboard tool is disabled in Settings." }
+            return await clipboard()
         case saveMemory.name:
             guard let memory = context.memory else { return "Error: memory is unavailable." }
             guard let content = arguments?["content"] as? String,

@@ -5,6 +5,7 @@ import Foundation
 enum ActivityKind: String, Codable, Sendable {
     case webSearch, conversationSearch, fetchURL, fileRead, fileWrite, fileList
     case datetime, calculation, attachment, note
+    case schedule, clipboard
     case memory, memorySave, memorySearch, memoryEdit
 
     static func from(toolName: String) -> ActivityKind {
@@ -18,6 +19,8 @@ enum ActivityKind: String, Codable, Sendable {
         case ToolCatalog.currentDatetime.name: .datetime
         case ToolCatalog.calculator.name: .calculation
         case ToolCatalog.readAttachment.name: .attachment
+        case ToolCatalog.getSchedule.name: .schedule
+        case ToolCatalog.readClipboard.name: .clipboard
         case "save_memory": .memorySave
         case "search_memory": .memorySearch
         case "edit_memory": .memoryEdit
@@ -36,6 +39,8 @@ enum ActivityKind: String, Codable, Sendable {
         case .datetime: "clock"
         case .calculation: "plus.forwardslash.minus"
         case .attachment: "paperclip"
+        case .schedule: "calendar"
+        case .clipboard: "doc.on.clipboard"
         case .memory, .memorySave, .memorySearch, .memoryEdit: "brain"
         case .note: "info.circle"
         }
@@ -54,6 +59,8 @@ enum ActivityKind: String, Codable, Sendable {
         case .datetime: return "Checking the time"
         case .calculation: return "Calculating"
         case .attachment: return "Reading \(argument.isEmpty ? "an attachment" : argument)"
+        case .schedule: return "Checking the calendar"
+        case .clipboard: return "Reading the clipboard"
         case .memory: return "Working with memory"
         case .memorySave: return "Saving a memory"
         case .memorySearch: return "Searching memory"
@@ -75,6 +82,8 @@ enum ActivityKind: String, Codable, Sendable {
         case .datetime: return "Checked the time"
         case .calculation: return "Calculated \(argument)"
         case .attachment: return "Read \(argument.isEmpty ? "an attachment" : argument)"
+        case .schedule: return "Checked the calendar"
+        case .clipboard: return "Read the clipboard"
         case .memory: return "Updated memory"
         case .memorySave: return "Saved a memory"
         case .memorySearch: return "Recalled from memory"
@@ -98,6 +107,8 @@ enum ActivityKind: String, Codable, Sendable {
         case .datetime: return "checked the time"
         case .calculation: return "\(count) calculation\(plural)"
         case .attachment: return "read \(count) attachment\(plural)"
+        case .schedule: return "checked the calendar"
+        case .clipboard: return "read the clipboard"
         case .memory, .memorySave, .memoryEdit: return "\(count) memory update\(plural)"
         case .memorySearch: return "\(count) memory lookup\(plural)"
         case .note: return "\(count) note\(plural)"
