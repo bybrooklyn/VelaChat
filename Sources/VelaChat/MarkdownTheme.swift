@@ -112,7 +112,26 @@ private struct VelaCodeBlock: View {
     let configuration: CodeBlockConfiguration
     let isUser: Bool
     @Environment(ArtifactPresenter.self) private var artifactPresenter
+    @Environment(AppModel.self) private var appModel
     @State private var copied = false
+    @State private var savedFilename: String?
+
+    /// A plausible filename for the block, from its language. Code the
+    /// model wrote in chat is often worth keeping without asking it to
+    /// write the file again.
+    private var suggestedFilename: String {
+        let language = configuration.language?.lowercased() ?? ""
+        let extensions = [
+            "swift": "swift", "python": "py", "py": "py", "javascript": "js", "js": "js",
+            "typescript": "ts", "ts": "ts", "bash": "sh", "sh": "sh", "zsh": "sh",
+            "ruby": "rb", "go": "go", "rust": "rs", "rs": "rs", "java": "java",
+            "c": "c", "cpp": "cpp", "html": "html", "css": "css", "json": "json",
+            "yaml": "yml", "yml": "yml", "sql": "sql", "markdown": "md", "md": "md",
+        ]
+        let ext = extensions[language] ?? "txt"
+        let stamp = Int(Date().timeIntervalSince1970) % 100_000
+        return "snippet-\(stamp).\(ext)"
+    }
 
     private var languageLabel: String {
         guard let language = configuration.language, !language.isEmpty else { return "Code" }
@@ -155,6 +174,25 @@ private struct VelaCodeBlock: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Theme.accent)
                 }
+                // Not every snippet belongs in a file, so the model is told
+                // to keep short one-off code in chat — this is how the user
+                // promotes one when they decide it's worth keeping.
+                Button {
+                    savedFilename = appModel.saveSnippetToWorkspace(
+                        configuration.content,
+                        filename: suggestedFilename
+                    )
+                    if savedFilename != nil {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { savedFilename = nil }
+                    }
+                } label: {
+                    Label(savedFilename.map { "Saved \($0)" } ?? "Save", systemImage: savedFilename == nil ? "folder.badge.plus" : "checkmark")
+                        .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(savedFilename == nil ? Theme.tertiaryText : Theme.success)
+                .help("Save this block into the conversation's workspace")
+
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(configuration.content, forType: .string)

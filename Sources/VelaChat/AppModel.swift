@@ -1516,6 +1516,31 @@ final class AppModel {
         saveHistory()
     }
 
+    /// Writes a chat code block into the active conversation's workspace,
+    /// returning the filename actually used. Never overwrites: a repeated
+    /// save gets its own file rather than silently replacing the last one.
+    @discardableResult
+    func saveSnippetToWorkspace(_ content: String, filename: String) -> String? {
+        let conversation = activeConversation ?? newConversation()
+        let root = conversation.workspaceRoot
+        var name = filename
+        var attempt = 2
+        while FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path) {
+            let base = (filename as NSString).deletingPathExtension
+            let ext = (filename as NSString).pathExtension
+            name = ext.isEmpty ? "\(base)-\(attempt)" : "\(base)-\(attempt).\(ext)"
+            attempt += 1
+        }
+        guard let url = SandboxManager.resolve(name, in: root) else { return nil }
+        do {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            return name
+        } catch {
+            postNotice("Couldn't save that snippet: \(error.localizedDescription)", to: conversation)
+            return nil
+        }
+    }
+
     func clearWorkspaceRoot(for conversation: Conversation) {
         conversation.workspaceRootPath = nil
         saveHistory()
