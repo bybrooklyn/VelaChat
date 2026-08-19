@@ -862,9 +862,9 @@ struct AskUserQuestionPayload: Decodable, Equatable {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            label = try container.decode(String.self, forKey: .label)
+            label = try AskUserQuestionPayload.lenientString(container, forKey: .label)
             description = try container.decodeIfPresent(String.self, forKey: .description)
-            recommended = try container.decodeIfPresent(Bool.self, forKey: .recommended) ?? false
+            recommended = AskUserQuestionPayload.lenientBool(container, forKey: .recommended, default: false)
         }
     }
 
@@ -891,7 +891,7 @@ struct AskUserQuestionPayload: Decodable, Equatable {
             header = try container.decodeIfPresent(String.self, forKey: .header)
             question = try container.decode(String.self, forKey: .question)
             options = try container.decodeIfPresent([Option].self, forKey: .options) ?? []
-            multiSelect = try container.decodeIfPresent(Bool.self, forKey: .multiSelect) ?? false
+            multiSelect = AskUserQuestionPayload.lenientBool(container, forKey: .multiSelect, default: false)
         }
     }
 
@@ -918,44 +918,130 @@ struct AskUserQuestionPayload: Decodable, Equatable {
         }
     }
 
+    /// Rebuilds a payload with a trimmed `questions` list — used by `parse`
+    /// to drop individually-malformed questions without needing a public
+    /// memberwise initializer (this type otherwise only decodes).
+    private init(questions: [Question], allowNotes: Bool) {
+        self.questions = questions
+        self.allowNotes = allowNotes
+    }
+
+    /// A real payload was once rejected outright and fell through to the
+    /// generic Markdown code-block renderer (raw JSON in a box titled
+    /// "Ask-User") because a *type*, not a shape, was off: a model emitted
+    /// `"recommended": "true"` (a string) or `"multiSelect": 1` instead of a
+    /// real JSON boolean. `JSONDecoder` fails a whole `decode` call on one
+    /// such mismatch — there's no partial-credit — so one wrong-shaped field
+    /// three questions deep sank an otherwise well-formed card. Confirmed
+    /// with a standalone harness against `JSONDecoder` directly before
+    /// writing this: `"true"`/`"1"`/`"yes"` (any case) and nonzero ints all
+    /// decode as `true` here instead of throwing.
+    private static func lenientBool<Key: CodingKey>(
+        _ container: KeyedDecodingContainer<Key>,
+        forKey key: Key,
+        default defaultValue: Bool
+    ) -> Bool {
+        if let bool = try? container.decodeIfPresent(Bool.self, forKey: key) { return bool }
+        if let text = try? container.decodeIfPresent(String.self, forKey: key) {
+            return ["true", "1", "yes"].contains(text.lowercased())
+        }
+        if let number = try? container.decodeIfPresent(Int.self, forKey: key) { return number != 0 }
+        return defaultValue
+    }
+
+    /// Same idea for a required string field — an option `label` sometimes
+    /// arrives as a bare JSON number (`3` instead of `"3"`) when the choices
+    /// themselves are numeric. Genuinely missing/malformed input still
+    /// throws the real decode error via the final fallback, rather than
+    /// being masked.
+    private static func lenientString<Key: CodingKey>(_ container: KeyedDecodingContainer<Key>, forKey key: Key) throws -> String {
+        if let text = try? container.decode(String.self, forKey: key) { return text }
+        if let integer = try? container.decode(Int.self, forKey: key) { return String(integer) }
+        if let number = try? container.decode(Double.self, forKey: key) {
+            return number.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(number)) : String(number)
+        }
+        return try container.decode(String.self, forKey: key)
+    }
+
+    /// The opening tag: case-insensitive and tolerant of 4+ backtick fences
+    /// (a model nesting an example inside its own description sometimes
+    /// widens the outer fence) — but still anchored to the *start of a
+    /// line* with nothing else on it besides optional trailing whitespace.
+    /// That anchor is deliberately not relaxed further: it's what stops a
+    /// sentence like "use ```ask-user to signal a question" from opening a
+    /// card, and loosening it to tolerate JSON glued onto the same line
+    /// would reopen exactly that hole. A fully single-line block (fence,
+    /// JSON, and closing fence with no line breaks at all) is therefore
+    /// still correctly left as plain text — a much rarer shape than any of
+    /// the cases fixed below, and not worth that trade.
+    private static let openFencePattern = #"(?mi)^`{3,}[ \t]*ask-user[ \t]*$"#
+    /// The well-formed close: 3+ backticks alone at the start of a line.
+    /// Unlike the old pattern, trailing content glued onto that same line
+    /// (a model continuing its sentence right after the fence, with no
+    /// blank line) no longer prevents a match — it just becomes part of the
+    /// suffix, which was already being preserved for the newline-separated
+    /// case.
+    private static let closeFenceAtLineStartPattern = #"(?m)^`{3,}"#
+    /// Fallback for a model that closes the block on the very same line the
+    /// JSON ends on (no newline between `}` and the closing fence at all,
+    /// so it isn't at a line start). Only ever consulted after a real
+    /// ```ask-user open has already matched, so it can't turn unrelated
+    /// prose elsewhere in the message into a false positive.
+    private static let closeFenceAnywherePattern = #"`{3,}"#
+
+    private static func closingFenceRange(in content: String, after openEnd: String.Index) -> Range<String.Index>? {
+        let searchRange = openEnd..<content.endIndex
+        if let match = content.range(of: closeFenceAtLineStartPattern, options: .regularExpression, range: searchRange) {
+            return match
+        }
+        return content.range(of: closeFenceAnywherePattern, options: .regularExpression, range: searchRange)
+    }
+
     /// Fences must sit at the start of a line — prose that merely *mentions*
     /// the ```ask-user format (e.g. the model explaining the convention) no
     /// longer swallows the whole reply into a card. Text after the closing
     /// fence is preserved, not silently dropped.
     static func parse(from content: String) -> (prefix: String, payload: AskUserQuestionPayload, suffix: String)? {
-        guard let openMatch = content.range(of: #"(?m)^```ask-user[ \t]*$"#, options: .regularExpression),
-              let closeMatch = content.range(of: #"(?m)^```[ \t]*$"#, options: .regularExpression, range: openMatch.upperBound..<content.endIndex) else {
+        guard let openMatch = content.range(of: openFencePattern, options: .regularExpression),
+              let closeMatch = closingFenceRange(in: content, after: openMatch.upperBound) else {
             return nil
         }
         let jsonText = content[openMatch.upperBound..<closeMatch.lowerBound]
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let data = jsonText.data(using: .utf8),
               let payload = try? JSONDecoder().decode(AskUserQuestionPayload.self, from: data),
-              !payload.questions.isEmpty,
-              payload.questions.allSatisfy({ !$0.question.isEmpty && $0.options.count >= 2 }) else {
+              !payload.questions.isEmpty else {
             return nil
         }
+        // One malformed question (missing/too-few options) used to sink the
+        // whole card even when the rest were fine — drop just the bad ones
+        // and keep going as long as at least one real question survives.
+        let validQuestions = payload.questions.filter { !$0.question.isEmpty && $0.options.count >= 2 }
+        guard !validQuestions.isEmpty else { return nil }
+        let usable = validQuestions.count == payload.questions.count
+            ? payload
+            : AskUserQuestionPayload(questions: validQuestions, allowNotes: payload.allowNotes)
         let prefix = String(content[content.startIndex..<openMatch.lowerBound])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let suffix = String(content[closeMatch.upperBound...])
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (prefix, payload, suffix)
+        return (prefix, usable, suffix)
     }
 
     /// True while a line-start ```ask-user fence has opened but not closed —
     /// the streaming state where the raw JSON must be hidden behind a
     /// placeholder instead of typing itself out on screen.
     static func hasUnterminatedFence(in content: String) -> Bool {
-        guard let openMatch = content.range(of: #"(?m)^```ask-user[ \t]*$"#, options: .regularExpression) else {
+        guard let openMatch = content.range(of: openFencePattern, options: .regularExpression) else {
             return false
         }
-        return content.range(of: #"(?m)^```[ \t]*$"#, options: .regularExpression, range: openMatch.upperBound..<content.endIndex) == nil
+        return closingFenceRange(in: content, after: openMatch.upperBound) == nil
     }
 
     /// The prose before an unterminated fence — shown above the
     /// "Preparing a question…" placeholder while streaming.
     static func prefixBeforeUnterminatedFence(in content: String) -> String {
-        guard let openMatch = content.range(of: #"(?m)^```ask-user[ \t]*$"#, options: .regularExpression) else {
+        guard let openMatch = content.range(of: openFencePattern, options: .regularExpression) else {
             return content
         }
         return String(content[content.startIndex..<openMatch.lowerBound])

@@ -58,4 +58,21 @@ enum Limits {
     static let maxAutoContinues = 2
     /// Automatic retries for transient failures before the error surfaces.
     static let maxTransientRetries = 2
+
+    // MARK: - Retry backoff (seconds)
+
+    /// Delay before the first automatic retry. The old schedule was
+    /// `attempt² * 2` (≈2s then ≈8s, ≈11s total for two retries) — long
+    /// enough that a failing provider read as a hung app rather than one
+    /// that was trying again. This is short enough that a human waits
+    /// through it rather than assuming it's broken, while still giving a
+    /// blip (a dropped packet, a momentary 503) a real chance to clear.
+    static let transientRetryFirstDelay: TimeInterval = 1.0
+    /// Delay before the second automatic retry — longer than the first
+    /// because a failure that survived one retry is more likely to need
+    /// real recovery time (e.g. a provider mid-restart), not just a blip.
+    static let transientRetryFollowupDelay: TimeInterval = 3.0
+    /// Random spread added to each retry delay so many concurrent tabs
+    /// hitting the same flaky provider don't all retry in lockstep.
+    static let transientRetryJitter: TimeInterval = 0.5
 }

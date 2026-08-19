@@ -145,6 +145,9 @@ extension AppModel {
             if isAgentToolsEnabled {
                 tools.append(ToolCatalog.updatePlan)
             }
+            // Always available on a tool-capable model: asking is not an
+            // "agent ability", it's how the model avoids guessing.
+            tools.append(ToolCatalog.askUser)
             if isCommandToolEnabled {
                 tools.append(ToolCatalog.runCommand)
             }
@@ -300,6 +303,11 @@ extension AppModel {
             await MainActor.run { [weak self] in self?.mcp }?.call(prefixedName: name, argumentsJSON: argumentsJSON)
                 ?? "Error: MCP is unavailable."
         }
+        let askConversationID = conversation.id
+        toolContext.askUser = { [weak self] payloadJSON in
+            await self?.askUser(payloadJSON, conversationID: askConversationID)
+                ?? "Error: the app is shutting down."
+        }
         if isClipboardToolEnabled {
             toolContext.clipboard = {
                 await MainActor.run { () -> String in
@@ -364,7 +372,22 @@ extension AppModel {
             // so this stays silent when nothing genuinely matches rather
             // than padding every request with vaguely-related history.
             if let self, self.isMemoryAllowed(for: profile) {
-                let hits = await MemoryStore.shared.recall(query: text, excluding: conversation.id)
+                // The message alone is often not enough to retrieve on: a
+                // follow-up like "what about the second one?" carries none
+                // of the conversation's actual subject, so searching it
+                // verbatim returned nothing. The last few turns supply that
+                // subject, and `recall` weights them below the query's own
+                // terms so context can only ever break a tie, never
+                // outrank what the user actually just asked.
+                let recentContext = conversation.realMessages
+                    .suffix(4)
+                    .map { String($0.content.prefix(500)) }
+                    .joined(separator: "\n")
+                let hits = await MemoryStore.shared.recall(
+                    query: text,
+                    context: recentContext,
+                    excluding: conversation.id
+                )
                 let recalled = hits.map { hit -> MemoryRecall in
                     switch hit.source {
                     case .fact(let factID):
@@ -436,6 +459,13 @@ extension AppModel {
                     while true {
                         var deliveredEvents = false
                         var attempt = 0
+                        // Set the moment the first retry is scheduled, so
+                        // the whole retry sequence resolves through one
+                        // note instead of the "one line per try" spam
+                        // `noteRetrySummary` used to produce (and only on
+                        // success — a provider that never recovers used to
+                        // leave no trace of the retries at all).
+                        var retryNoteID: UUID?
                         while true {
                             do {
                                 if let self, !self.isOnline {
@@ -470,15 +500,24 @@ extension AppModel {
                                 if !batch.isEmpty {
                                     self?.apply(batch, to: conversation, assistantID: assistantID)
                                 }
-                                // Only worth mentioning once it actually
-                                // worked — and as one line, not one per try.
-                                self?.noteRetrySummary(attempts: attempt, to: conversation, assistantID: assistantID)
+                                if let self, let retryNoteID {
+                                    self.resolveRetryNote(retryNoteID, isError: false, to: conversation, assistantID: assistantID)
+                                }
                                 break
                             } catch is CancellationError {
                                 throw CancellationError()
                             } catch where !deliveredEvents && attempt < Limits.maxTransientRetries && Self.isTransientFailure(error) {
                                 attempt += 1
-                                let delay = Double(attempt * attempt) * 2 + Double.random(in: 0...0.5)
+                                // Visible the instant the retry is
+                                // scheduled, not after it eventually works
+                                // — a blank bubble for the whole backoff is
+                                // exactly the "is this even doing anything"
+                                // complaint this exists to fix.
+                                if let self, retryNoteID == nil {
+                                    retryNoteID = self.postRetryNote("Retrying after a connection failure", to: conversation, assistantID: assistantID)
+                                }
+                                let baseDelay = attempt == 1 ? Limits.transientRetryFirstDelay : Limits.transientRetryFollowupDelay
+                                let delay = baseDelay + Double.random(in: 0...Limits.transientRetryJitter)
                                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                             } catch {
                                 // Retries exhausted (or the failure was never
@@ -486,6 +525,9 @@ extension AppModel {
                                 // real error — a silently empty reply after
                                 // two invisible retries is the worst
                                 // possible outcome.
+                                if let self, let retryNoteID {
+                                    self.resolveRetryNote(retryNoteID, isError: true, to: conversation, assistantID: assistantID)
+                                }
                                 throw attempt > 0
                                     ? APIError.message("\(error.localizedDescription) (after \(attempt) automatic \(attempt == 1 ? "retry" : "retries"))")
                                     : error
@@ -515,6 +557,35 @@ extension AppModel {
         }
     }
 
+    /// The `ask_user` tool's gate: decodes the payload, puts a real
+    /// question card on screen, and suspends the tool call until the user
+    /// answers. Mirrors `confirmSubagents` — same continuation + one-shot
+    /// `DecisionGuard` shape, so a double-tap can never resume twice.
+    ///
+    /// A malformed payload comes back as a normal tool error rather than
+    /// throwing: the model can then re-ask correctly instead of the whole
+    /// reply dying on a bad question.
+    func askUser(_ payloadJSON: String, conversationID: UUID) async -> String {
+        guard let data = payloadJSON.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(AskUserQuestionPayload.self, from: data),
+              !payload.questions.isEmpty else {
+            return "Error: the questions payload was malformed. Re-send it with 1-4 questions, each with at least 2 options."
+        }
+        let answer: String? = await withCheckedContinuation { continuation in
+            let box = DecisionGuard()
+            pendingQuestion = PendingQuestion(conversationID: conversationID, payload: payload) { response in
+                guard !box.answered else { return }
+                box.answered = true
+                continuation.resume(returning: response)
+            }
+        }
+        pendingQuestion = nil
+        guard let answer, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "The user dismissed the question without answering. Continue with your best judgement and say which assumption you made."
+        }
+        return answer
+    }
+
     /// Subagent fan-out confirmation — same pause-and-decide shape as a
     /// command approval, since it also spends real requests.
     func confirmSubagents(count: Int, summary: String, conversationID: UUID) async -> Bool {
@@ -537,30 +608,49 @@ extension AppModel {
         return true
     }
 
-    /// A quiet, self-resolving activity line for retry/offline waits —
-    /// the same visual language as tool calls, per the no-invisible-magic
-    /// rule.
-    private func postRetryNote(_ label: String, to conversation: Conversation, assistantID: UUID, finish: String) {
+    /// A quiet activity line for retry/offline waits — the same visual
+    /// language as tool calls, per the no-invisible-magic rule.
+    ///
+    /// When `finish` is given (the offline-wait and length-cap-continue
+    /// callers, which already know how their own wait ends) the note
+    /// resolves immediately, same as before. When it's omitted (the
+    /// transient-retry caller, which doesn't know the outcome yet when the
+    /// note is posted) the caller resolves it later via `resolveRetryNote`
+    /// — returning the id is what makes that possible.
+    @discardableResult
+    private func postRetryNote(_ label: String, to conversation: Conversation, assistantID: UUID, finish: String? = nil) -> UUID {
         var record = ActivityRecord(id: UUID(), kind: .note, toolName: "note", argument: label)
         record.isRunning = true
         enqueue(.activity(record), for: assistantID, conversation: conversation)
-        enqueue(.activityUpdate(id: record.id, result: finish, isError: false), for: assistantID, conversation: conversation)
+        if let finish {
+            enqueue(.activityUpdate(id: record.id, result: finish, isError: false), for: assistantID, conversation: conversation)
+        }
+        return record.id
     }
 
-    /// One line for a whole retry sequence rather than a stack of notes:
-    /// a reply that limped through three attempts should read as "this
-    /// connection is flaky", not as three separate events.
-    private func noteRetrySummary(attempts: Int, to conversation: Conversation, assistantID: UUID) {
-        guard attempts > 0 else { return }
-        let label = attempts == 1 ? "Retried once — connection unstable" : "Retried \(attempts) times — connection unstable"
-        var record = ActivityRecord(id: UUID(), kind: .note, toolName: "note", argument: label)
-        record.isRunning = false
-        record.result = "The provider or network failed before the reply started; VelaChat retried automatically."
-        enqueue(.activity(record), for: assistantID, conversation: conversation)
+    /// Resolves a note started by `postRetryNote(_:to:assistantID:)` once
+    /// its real outcome is known. One line for the whole retry sequence —
+    /// a reply that limped through two attempts reads as "this connection
+    /// is flaky", not as a stack of per-attempt events — whether it
+    /// eventually worked or the retries ran out and the failure is about
+    /// to surface as a real error.
+    private func resolveRetryNote(_ id: UUID, isError: Bool, to conversation: Conversation, assistantID: UUID) {
+        let result = isError
+            ? "Retries ran out — the failure is being reported instead."
+            : "The provider or network failed before the reply started; VelaChat retried automatically."
+        enqueue(.activityUpdate(id: id, result: result, isError: isError), for: assistantID, conversation: conversation)
     }
 
     func stopGeneration(for conversation: Conversation? = nil) {
         guard let conversation = conversation ?? activeConversation else { return }
+        // An `ask_user` call suspends on a continuation that only the card
+        // resumes. Cancelling the task does not touch it, so a Stop pressed
+        // while a question is on screen would strand that continuation
+        // forever — and leak the card. Resolve it as unanswered first.
+        if let question = pendingQuestion, question.conversationID == conversation.id {
+            question.respond(nil)
+            pendingQuestion = nil
+        }
         conversation.generationTask?.cancel()
         conversation.generationTask = nil
         if let index = conversation.messages.lastIndex(where: { $0.isStreaming }) {
@@ -628,6 +718,22 @@ extension AppModel {
         // screen yet for it to pace against.
         flushFirstReveal(for: assistantID, conversation: conversation)
         revealTasks[assistantID] = Task { [weak self, weak conversation] in
+            // Once `finishGeneration` defers to this loop (`pendingFinish`),
+            // this loop *owns* the end-of-generation transition — and it had
+            // three exits that returned without performing it: the message
+            // going missing, the task being cancelled mid-sleep, and the
+            // weak refs going away. Any of those left `isGenerating` true
+            // forever, which is the send button staying a stop button after
+            // the reply visibly finished. Resolving it in one `defer` means
+            // every exit, including ones added later, settles the state.
+            defer {
+                if let self, self.pendingFinish.remove(assistantID) != nil {
+                    self.revealTasks[assistantID] = nil
+                    if let conversation {
+                        self.completeGeneration(for: conversation, assistantID: assistantID)
+                    }
+                }
+            }
             while !Task.isCancelled {
                 guard let self, let conversation else { return }
                 guard var queue = self.revealQueues[assistantID], !queue.isEmpty else {
@@ -642,7 +748,9 @@ extension AppModel {
                 guard let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) else {
                     self.revealTasks[assistantID] = nil
                     self.revealQueues[assistantID] = nil
-                    self.pendingFinish.remove(assistantID)
+                    // `defer` completes the generation — the reply is gone
+                    // from the transcript, but the conversation must still
+                    // stop reporting itself as generating.
                     return
                 }
                 // Adaptive pace: the drain speeds up smoothly as backlog

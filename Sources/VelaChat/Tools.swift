@@ -117,6 +117,20 @@ enum ToolCatalog {
         summary: "run a shell command in the workspace",
         guidance: "Prefer rg over grep and small, composable commands. The user may deny a command — if so, read their reason and adapt. Never assume a command ran; check the exit code in the result."
     )
+    /// The real-tool half of asking the user a question. The fenced
+    /// ```ask-user block still exists for providers without tool calling
+    /// (see `AppModel.askUserQuestionInstruction`), but it can only end the
+    /// turn and wait for a fresh user message. This pauses the generation
+    /// instead, so the model can ask and then keep working in the same
+    /// reply. Only one of the two is ever advertised at a time.
+    static let askUser = Definition(
+        name: "ask_user",
+        description: "Ask the user one to four multiple-choice questions and wait for their answer before continuing. The generation pauses on an interactive card and their selections come back as the tool result, so you can keep working in the same reply. Use it for a real decision or genuine ambiguity about what they want — never for something a tool or the conversation itself can answer, and never to ask permission to use a tool.",
+        parametersJSON: #"{"type":"object","properties":{"questions":{"type":"array","description":"1-4 questions, each with 2-4 mutually distinct options","items":{"type":"object","properties":{"header":{"type":"string","description":"Very short chip label, max ~12 chars (e.g. \"Scope\", \"Auth\")"},"question":{"type":"string","description":"The full question"},"multiSelect":{"type":"boolean","description":"true only when several options genuinely combine"},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string","description":"Short option name"},"description":{"type":"string","description":"One-sentence explanation"},"recommended":{"type":"boolean","description":"At most ONE per question, listed first"}},"required":["label","description"]}}},"required":["question","options"]}},"allowNotes":{"type":"boolean","description":"Let the user attach a free-text note"}},"required":["questions"]}"#,
+        summary: "ask the user a multiple-choice question and wait for the answer",
+        guidance: "Batch related decisions into ONE call rather than asking across several replies. Mark at most one option per question as recommended and list it first. Reserve this for choices that genuinely change what you do next — routine work should just proceed."
+    )
+
     static let updatePlan = Definition(
         name: "update_plan",
         description: "Maintain a visible step-by-step plan for a multi-step task. Each step is a short phrase (5-7 words) with a status: pending, in_progress, or completed. Keep exactly one step in_progress until everything is done. Call again to advance the plan as you work.",
@@ -217,6 +231,12 @@ enum ToolCatalog {
         var runCommand: (@Sendable (String) async -> String)? = nil
         /// update_plan sink — hands the parsed steps to the UI layer.
         var updatePlan: (@Sendable ([PlanStep]) async -> String)? = nil
+        /// ask_user gate — presents the question card and suspends until the
+        /// user answers. Takes the raw arguments JSON so the payload shape
+        /// stays defined in exactly one place (`AskUserQuestionPayload`).
+        /// nil = the model has no tool-calling, so the fenced block is in
+        /// play instead.
+        var askUser: (@Sendable (String) async -> String)? = nil
         /// spawn_agents runner (name, prompt) pairs → combined result.
         var spawnAgents: (@Sendable ([(name: String, prompt: String)]) async -> String)? = nil
     }
@@ -351,6 +371,12 @@ enum ToolCatalog {
             guard let command = arguments?["command"] as? String, !command.isEmpty else { return "Error: \"command\" is required." }
             guard let runner = context.runCommand else { return "Error: running commands is disabled. The user can enable it in Settings → Agent abilities." }
             return await runner(command)
+        case askUser.name:
+            guard let asker = context.askUser else { return "Error: asking the user isn't available on this provider." }
+            // The raw arguments JSON is forwarded untouched: it already IS
+            // the payload shape, so decoding it here would mean a second
+            // definition of the same structure drifting from the first.
+            return await asker(argumentsJSON)
         case Subagents.definition.name:
             guard let rawTasks = arguments?["tasks"] as? [[String: Any]], !rawTasks.isEmpty else {
                 return "Error: \"tasks\" is required and must contain at least one task."
@@ -483,7 +509,14 @@ enum ToolCatalog {
             return "Error: \"\(urlString)\" is not a valid http(s) URL."
         }
         var request = URLRequest(url: url)
-        request.timeoutInterval = Limits.probeTimeout
+        // `probeTimeout` is documented as "cheap probes whose failure is
+        // never fatal" (quota headers, warm-up) — 15s. Reading a real page
+        // is the opposite: its failure is exactly what the user notices, and
+        // `toolTimeout`'s own comment already says it exists "without
+        // cutting off slow-but-real work like a large fetch". Big pages
+        // behind a slow CDN were being cut off at 15s and reported as
+        // failures.
+        request.timeoutInterval = Limits.toolTimeout
         // Browser-shaped headers: many sites 403 anything that doesn't
         // look like a real browser. Redirects follow by default.
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")

@@ -178,4 +178,213 @@ final class MemoryStoreTests: XCTestCase {
         let hits = await store.recall(query: "   ")
         XCTAssertTrue(hits.isEmpty)
     }
+
+    /// The case that motivated ranking terms by value instead of position:
+    /// truncating to the first 8 tokens used to keep filler ("look",
+    /// "stuff") and throw away the actual subject.
+    func testSearchTermsSelectsHighValueTermsNotJustFirstEight() {
+        let terms = MemoryStore.searchTerms("can you look for budgets and stuff, do real research")
+        XCTAssertTrue(terms.contains("budgets"), "the actual subject must survive")
+        XCTAssertTrue(terms.contains("research"))
+        XCTAssertFalse(terms.contains("look"), "filler should be filtered, not just deprioritized")
+        XCTAssertFalse(terms.contains("stuff"))
+    }
+
+    /// With more than 8 real candidates, the longest (most specific) ones
+    /// should win the 8 slots rather than whichever came first.
+    func testSearchTermsCapsAtEightByLength() {
+        let terms = MemoryStore.searchTerms(
+            "quarterly infrastructure budget reconciliation spreadsheet deployment pipeline observability dashboard rollout schedule"
+        )
+        XCTAssertEqual(terms.count, 8)
+        XCTAssertTrue(terms.contains("reconciliation"))
+        XCTAssertTrue(terms.contains("infrastructure"))
+        XCTAssertTrue(terms.contains("observability"))
+    }
+
+    func testSearchTermsDeduplicates() {
+        let terms = MemoryStore.searchTerms("budget budget budget report")
+        XCTAssertEqual(terms.filter { $0 == "budget" }.count, 1)
+    }
+
+    /// The whole point of the `context` parameter: a follow-up whose own
+    /// words carry no topic ("second one" is generic) still has to find
+    /// what a direct query about the same subject would find, as long as
+    /// the subject is present in the recent conversation passed as context.
+    func testContextEnablesFollowUpRecall() async {
+        let store = makeStore()
+        let subject = "The quarterly budget report for project atlas needs review before Friday."
+        await store.index(
+            messageID: UUID(), conversationID: UUID(), role: "user",
+            text: subject, createdAt: Date()
+        )
+
+        let direct = await store.recall(query: "quarterly budget report project atlas")
+        XCTAssertFalse(direct.isEmpty, "a direct query should find it")
+        XCTAssertTrue(direct.contains { $0.text.contains("atlas") })
+
+        let followUp = await store.recall(query: "what about the second one?", context: subject)
+        XCTAssertFalse(followUp.isEmpty, "context should rescue a follow-up with no topic of its own")
+        XCTAssertTrue(followUp.contains { $0.text.contains("atlas") })
+
+        // Without context, the same follow-up finds nothing — proving the
+        // context is doing the work, not some other signal.
+        let withoutContext = await store.recall(query: "what about the second one?")
+        XCTAssertTrue(withoutContext.isEmpty)
+    }
+
+    /// A candidate the query itself matched must still outrank one found
+    /// only through context, even if both surface the same underlying
+    /// text — context is a guess, not a statement of what was asked.
+    func testContextTermsRankBelowQueryTerms() async {
+        let store = makeStore()
+        await store.index(
+            messageID: UUID(), conversationID: UUID(), role: "user",
+            text: "The deployment key for project atlas lives in the ops vault.",
+            createdAt: Date()
+        )
+        await store.index(
+            messageID: UUID(), conversationID: UUID(), role: "user",
+            text: "Unrelated note about the office coffee machine being broken again.",
+            createdAt: Date()
+        )
+        let hits = await store.recall(query: "deployment key", context: "coffee machine office broken")
+        XCTAssertFalse(hits.isEmpty)
+        // The query-matched hit about the deployment key must sort first.
+        XCTAssertTrue(hits.first?.text.contains("atlas") ?? false)
+    }
+
+    // MARK: - Passage splitting
+
+    func testShortTextIsOnePassage() {
+        let text = "This is a short message that does not need splitting."
+        XCTAssertEqual(MemoryStore.passages(for: text), [text])
+    }
+
+    func testEmptyTextProducesNoPassages() {
+        XCTAssertEqual(MemoryStore.passages(for: "   "), [])
+    }
+
+    /// Long text must split at paragraph boundaries rather than staying
+    /// one giant chunk whose embedding would be dominated by its opening.
+    func testLongTextSplitsAtParagraphBoundaries() {
+        let paragraph = String(repeating: "word ", count: 200) // ~1000 chars
+        let text = [paragraph, paragraph, paragraph].joined(separator: "\n\n")
+        let passages = MemoryStore.passages(for: text)
+        XCTAssertGreaterThan(passages.count, 1, "a message this long must not stay one passage")
+        for passage in passages {
+            XCTAssertLessThanOrEqual(passage.count, 2000, "each passage should stay near the embedder's cap")
+        }
+    }
+
+    /// Splitting must not lose or reorder content — every passage
+    /// concatenated back together should reproduce the paragraphs.
+    func testPassageSplittingPreservesContent() {
+        let paragraphs = (1...10).map { "Paragraph number \($0) with some real content in it to give it length." }
+        let text = paragraphs.joined(separator: "\n\n")
+        let passages = MemoryStore.passages(for: text)
+        let recombined = passages.joined(separator: "\n\n")
+        for paragraph in paragraphs {
+            XCTAssertTrue(recombined.contains(paragraph))
+        }
+    }
+
+    /// Indexing a long message must produce multiple searchable chunks,
+    /// not one — this is the actual behavior passage splitting exists for.
+    func testIndexingLongMessageCreatesMultiplePassages() async {
+        let store = makeStore()
+        let messageID = UUID()
+        let conversationID = UUID()
+        let earlyParagraph = String(repeating: "filler content about nothing in particular. ", count: 40)
+        let lateParagraph = "The unique deployment token for project nightingale lives in the ops vault."
+        let text = earlyParagraph + "\n\n" + String(repeating: "more filler text goes here too. ", count: 40) + "\n\n" + lateParagraph
+        await store.index(messageID: messageID, conversationID: conversationID, role: "assistant", text: text, createdAt: Date())
+
+        // A passage buried well past the embedder's 2000-char opening
+        // cap must still be keyword-findable — that's only possible if it
+        // became its own chunk row rather than being absorbed into one
+        // giant chunk for the whole message.
+        let hits = await store.recall(query: "nightingale deployment token", excluding: UUID())
+        XCTAssertTrue(hits.contains { $0.text.contains("nightingale") })
+        await store.forgetConversation(conversationID)
+    }
+
+    // MARK: - Fact tiers
+
+    func testInferredFactsRankBelowConfirmedFacts() async {
+        let store = makeStore()
+        _ = await store.saveInferredFact(content: "Brooklyn might prefer teal accents.", topic: nil, sourceConversationID: nil)
+        _ = await store.saveFact(content: "Brooklyn confirmed they prefer teal accents.", topic: nil, sourceConversationID: nil)
+
+        let hits = await store.recall(query: "teal accents preference")
+        XCTAssertGreaterThanOrEqual(hits.count, 2)
+        guard let confirmedIndex = hits.firstIndex(where: { $0.text.contains("confirmed") }),
+              let inferredIndex = hits.firstIndex(where: { $0.text.contains("might") }) else {
+            return XCTFail("expected to recall both facts")
+        }
+        XCTAssertLessThan(confirmedIndex, inferredIndex, "confirmed fact must rank above the inferred one")
+    }
+
+    func testInferredFactsAreStillRetrievable() async {
+        let store = makeStore()
+        _ = await store.saveInferredFact(content: "Brooklyn seems to work mostly in Swift.", topic: nil, sourceConversationID: nil)
+        let hits = await store.recall(query: "what language does Brooklyn work in")
+        XCTAssertTrue(hits.contains { $0.text.contains("Swift") })
+    }
+
+    // MARK: - Rollups
+
+    func testRollupLifecycle() async {
+        let store = makeStore()
+        let conversationID = UUID()
+        XCTAssertNil(await store.rollup(for: conversationID))
+
+        let ok = await store.upsertRollup(conversationID: conversationID, content: "Discussed the project atlas budget timeline.")
+        XCTAssertTrue(ok)
+        let saved = await store.rollup(for: conversationID)
+        XCTAssertEqual(saved?.content, "Discussed the project atlas budget timeline.")
+
+        await store.upsertRollup(conversationID: conversationID, content: "Updated summary about project atlas launch plans.")
+        let updated = await store.rollup(for: conversationID)
+        XCTAssertEqual(updated?.content, "Updated summary about project atlas launch plans.")
+
+        await store.deleteRollup(for: conversationID)
+        XCTAssertNil(await store.rollup(for: conversationID))
+    }
+
+    /// The whole point: `recall` must surface a rollup through its normal
+    /// keyword path, with no rollup-specific retrieval call.
+    func testRecallFindsRollupsThroughTheSameFTSIndex() async {
+        let store = makeStore()
+        let conversationID = UUID()
+        await store.upsertRollup(conversationID: conversationID, content: "Summary: migrated the deployment pipeline to project nightingale.")
+
+        let hits = await store.recall(query: "nightingale deployment pipeline summary")
+        XCTAssertTrue(hits.contains { $0.text.contains("nightingale") })
+    }
+
+    func testForgetConversationAlsoRemovesItsRollup() async {
+        let store = makeStore()
+        let conversationID = UUID()
+        await store.upsertRollup(conversationID: conversationID, content: "Summary about project nightingale rollout plans.")
+        await store.forgetConversation(conversationID)
+
+        XCTAssertNil(await store.rollup(for: conversationID))
+        let hits = await store.recall(query: "nightingale rollout plans")
+        XCTAssertFalse(hits.contains { $0.text.contains("nightingale") })
+    }
+
+    func testIndexedMessageCountExcludesRollups() async {
+        let store = makeStore()
+        let conversationID = UUID()
+        await store.index(
+            messageID: UUID(), conversationID: conversationID, role: "user",
+            text: "A real message long enough to actually get indexed by the store.",
+            createdAt: Date()
+        )
+        let beforeRollup = await store.indexedMessageCount()
+        await store.upsertRollup(conversationID: conversationID, content: "Summary of the conversation above.")
+        let afterRollup = await store.indexedMessageCount()
+        XCTAssertEqual(beforeRollup, afterRollup, "a rollup is not a message the user sent")
+    }
 }

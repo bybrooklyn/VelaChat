@@ -111,6 +111,23 @@ struct ChatView: View {
             // toolbar that reads as a stray frosted strip across the top,
             // so the transcript opts out of it explicitly.
             .scrollEdgeEffectHidden(true, for: .top)
+            // …but opting out left nothing at all between scrolled text and
+            // the traffic lights: a half-cut line of the reply rendered
+            // straight through the window chrome. A short gradient in the
+            // pane's own background colour is the middle ground — content
+            // fades out before it reaches the lights, with none of the
+            // frosted-strip edge that made the system effect look like a
+            // stray toolbar.
+            .overlay(alignment: .top) {
+                LinearGradient(
+                    colors: [Theme.background, Theme.background.opacity(0)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: chrome.isFullScreen ? 0 : 34)
+                .ignoresSafeArea(.container, edges: .top)
+                .allowsHitTesting(false)
+            }
             .onChange(of: appModel.activeConversation?.messages.count ?? 0) { _, _ in
                 scrollToLast(proxy)
             }
@@ -126,10 +143,12 @@ struct ChatView: View {
             .onChange(of: appModel.activeConversation?.messages.last?.content.count ?? 0) { _, _ in
                 let now = Date()
                 // Matches the reveal cadence — 4x slower (the old 0.12s)
-                // let text run off the bottom edge and then jump.
+                // let text run off the bottom edge and then jump. Dropping a
+                // tick here is worse than following it: the next accepted
+                // one has twice as far to travel.
                 guard now.timeIntervalSince(lastScrollAt) > 0.03 else { return }
                 lastScrollAt = now
-                scrollToLast(proxy, animated: false)
+                followLast(proxy)
             }
             .overlay {
                 if let approval = appModel.pendingApproval,
@@ -146,6 +165,33 @@ struct ChatView: View {
                 }
             }
             .animation(.easeOut(duration: 0.18), value: appModel.pendingApproval?.id)
+            .overlay {
+                if let question = appModel.pendingQuestion,
+                   question.conversationID == appModel.activeConversationID {
+                    // Same in-place modal shape as a command approval, for
+                    // the same reason: the reply really is suspended on this
+                    // answer, and a card that could scroll out of view would
+                    // leave the model waiting on something the user can no
+                    // longer see.
+                    ZStack {
+                        Color.black.opacity(0.18)
+                            .ignoresSafeArea()
+                        AskUserQuestionCard(
+                            payload: question.payload,
+                            interactive: true,
+                            onAnswer: { question.respond($0) }
+                        )
+                        .frame(maxWidth: 560)
+                        .padding(20)
+                        .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+                        .glassChip(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+                        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous), emphasis: 0.5)
+                        .id(question.id)
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: appModel.pendingQuestion?.id)
             .overlay(alignment: .top) {
                 if appModel.isChatFindShown, let conversation = appModel.activeConversation {
                     ChatFindBar(conversation: conversation, proxy: proxy)
@@ -464,9 +510,10 @@ struct ChatView: View {
                 handleDrop(providers)
             }
         }
-        // 18 + the pill's 16 inner inset = 34, the transcript's own inset —
-        // the paperclip and message text share a left edge now.
-        .padding(.horizontal, 18)
+        // 34 is the transcript's own text inset, so the composer's outer
+        // edge lines up with the column of messages above it rather than
+        // running 16pt wider than everything else in the pane.
+        .padding(.horizontal, 34)
         .padding(.top, 10)
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity)
@@ -611,6 +658,23 @@ struct ChatView: View {
             if animated {
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("vela.bottom", anchor: .bottom) }
             } else {
+                proxy.scrollTo("vela.bottom", anchor: .bottom)
+            }
+        }
+    }
+
+    /// Scroll-follow while text is streaming in.
+    ///
+    /// This used to be an unanimated `scrollTo` per reveal tick. That looks
+    /// fine at a slow token rate, where each tick appends a word or two, but
+    /// the reveal drain scales `wordsPerTick` with its backlog — so a fast
+    /// model appends a large block every 33ms and the transcript teleports
+    /// downward thirty times a second. Interpolating each step over roughly
+    /// one tick turns the same sequence of jumps into continuous motion; the
+    /// destination is identical, only the path between them changes.
+    private func followLast(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            withAnimation(.linear(duration: 0.034)) {
                 proxy.scrollTo("vela.bottom", anchor: .bottom)
             }
         }
