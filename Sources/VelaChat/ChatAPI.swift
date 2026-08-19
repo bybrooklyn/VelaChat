@@ -264,7 +264,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         try Self.requireCredential(profile: profile, credential: credential)
 
         if profile.kind == .codex && credential.isCodexOAuth {
-            try await streamCodex(model: model, credential: credential, thinking: thinking, messages: messages, onEvent: onEvent)
+            try await streamCodex(model: model, credential: credential, thinking: thinking, messages: messages, tools: tools, toolContext: toolContext, onEvent: onEvent)
             return
         }
 
@@ -384,6 +384,25 @@ final class CompatibleChatClient: @unchecked Sendable {
         guard !tools.isEmpty else { return encoded }
         guard var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else { return encoded }
         object["tools"] = tools.map(toolWireObject)
+        return try JSONSerialization.data(withJSONObject: object)
+    }
+
+    /// The Responses API takes FLAT tool objects — `{"type":"function",
+    /// "name":…,"parameters":…}` — not chat-completions' nested `function`
+    /// wrapper. Same post-encode JSON merge as `encodeWithTools`.
+    private static func encodeCodexBody(_ body: CodexResponsesBody, tools: [ToolCatalog.Definition]) throws -> Data {
+        let encoded = try JSONEncoder().encode(body)
+        guard !tools.isEmpty else { return encoded }
+        guard var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else { return encoded }
+        object["tools"] = tools.map { tool -> [String: Any] in
+            let parameters = (try? JSONSerialization.jsonObject(with: Data(tool.parametersJSON.utf8))) as? [String: Any] ?? [:]
+            return [
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": parameters
+            ]
+        }
         return try JSONSerialization.data(withJSONObject: object)
     }
 
@@ -567,75 +586,117 @@ final class CompatibleChatClient: @unchecked Sendable {
         credential: ProviderCredential,
         thinking: ThinkingLevel,
         messages: [ChatMessage],
+        tools: [ToolCatalog.Definition] = [],
+        toolContext: ToolCatalog.ExecutionContext? = nil,
         onEvent: @escaping @Sendable (ChatStreamEvent) -> Void
     ) async throws {
         guard let url = URL(string: "https://chatgpt.com/backend-api/codex/responses") else {
             throw APIError.message("Invalid Codex endpoint")
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 3_600
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        addHeaders(to: &request, profile: ProviderProfile(kind: .codex, name: "Codex", endpoint: "", model: model), credential: credential)
-        request.httpBody = try JSONEncoder().encode(CodexResponsesBody(
-            model: model,
-            thinking: thinking,
-            input: messages.map { message in
-                // The Responses API requires "output_text" for model-authored
-                // turns being replayed as history, and "input_text" for
-                // everything else — sending "input_text" unconditionally
-                // (as before) made every conversation fail on message two,
-                // the moment a prior assistant reply entered the replay.
-                let isOutput = message.role == "assistant"
-                var contents: [CodexInputContent] = isOutput
-                    ? []
-                    : message.imageAttachments.map { .image($0.dataURL) }
-                let text = message.contentForRequest
-                if !text.isEmpty || contents.isEmpty {
-                    contents.append(.text(text, isOutput: isOutput))
-                }
-                return CodexInputMessage(
-                    role: message.role == "system" ? "developer" : message.role,
-                    content: contents
-                )
+        var inputItems: [CodexInputItem] = messages.map { message in
+            // The Responses API requires "output_text" for model-authored
+            // turns being replayed as history, and "input_text" for
+            // everything else — sending "input_text" unconditionally
+            // (as before) made every conversation fail on message two,
+            // the moment a prior assistant reply entered the replay.
+            let isOutput = message.role == "assistant"
+            var contents: [CodexInputContent] = isOutput
+                ? []
+                : message.imageAttachments.map { .image($0.dataURL) }
+            let text = message.contentForRequest
+            if !text.isEmpty || contents.isEmpty {
+                contents.append(.text(text, isOutput: isOutput))
             }
-        ))
+            return .message(
+                role: message.role == "system" ? "developer" : message.role,
+                content: contents
+            )
+        }
 
-        let (bytes, response) = try await session.bytes(for: request)
-        try await Self.checkStream(response: response, bytes: bytes)
-        var consecutiveParseFailures = 0
-        for try await line in bytes.lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.hasPrefix("data:") else { continue }
-            let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            guard payload != "[DONE]", !payload.isEmpty,
-                  let data = payload.data(using: .utf8) else { continue }
-            if let message = GenericErrorEnvelope.message(from: data), !message.isEmpty {
-                throw APIError.message(message)
-            }
-            // Matches the generic OpenAI-compatible path's escape hatch
-            // (below) — without this, a persistently malformed stream just
-            // finished silently with an empty reply instead of a real error.
-            guard let event = try? decoder.decode(CodexResponseEvent.self, from: data) else {
-                consecutiveParseFailures += 1
-                if consecutiveParseFailures >= 3 {
-                    throw APIError.message("The response stream could not be parsed.")
+        // Same multi-round tool loop as the other two paths — the Responses
+        // API's variant: flat `{"type":"function",…}` tool objects (NOT
+        // chat-completions' nested `function` wrapper), calls streamed via
+        // `response.output_item.added` + `response.function_call_arguments.
+        // delta`, and replayed as typed `function_call` /
+        // `function_call_output` input items keyed by `call_id`.
+        let maxRounds = 5
+        for round in 0..<maxRounds {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 3_600
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            addHeaders(to: &request, profile: ProviderProfile(kind: .codex, name: "Codex", endpoint: "", model: model), credential: credential)
+            request.httpBody = try Self.encodeCodexBody(
+                CodexResponsesBody(model: model, thinking: thinking, input: inputItems),
+                tools: tools
+            )
+
+            let (bytes, response) = try await session.bytes(for: request)
+            try await Self.checkStream(response: response, bytes: bytes)
+            var consecutiveParseFailures = 0
+            // Calls accumulate keyed by the stream's item id; order of
+            // arrival is preserved for execution/replay.
+            var pendingCalls: [(itemID: String, callID: String, name: String, arguments: String)] = []
+            for try await line in bytes.lines {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.hasPrefix("data:") else { continue }
+                let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                guard payload != "[DONE]", !payload.isEmpty,
+                      let data = payload.data(using: .utf8) else { continue }
+                if let message = GenericErrorEnvelope.message(from: data), !message.isEmpty {
+                    throw APIError.message(message)
                 }
-                continue
-            }
-            consecutiveParseFailures = 0
-            switch event.type {
-            case "response.output_text.delta":
-                if let delta = event.delta, !delta.isEmpty { onEvent(.delta(content: delta, reasoning: "")) }
-            case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
-                if let delta = event.delta, !delta.isEmpty { onEvent(.delta(content: "", reasoning: delta)) }
-            case "response.completed":
-                if let usage = event.response?.usage {
-                    onEvent(.usage(prompt: usage.inputTokens, completion: usage.outputTokens, cachedTokens: nil))
+                // Matches the generic OpenAI-compatible path's escape hatch
+                // (below) — without this, a persistently malformed stream just
+                // finished silently with an empty reply instead of a real error.
+                guard let event = try? decoder.decode(CodexResponseEvent.self, from: data) else {
+                    consecutiveParseFailures += 1
+                    if consecutiveParseFailures >= 3 {
+                        throw APIError.message("The response stream could not be parsed.")
+                    }
+                    continue
                 }
-            default:
-                continue
+                consecutiveParseFailures = 0
+                switch event.type {
+                case "response.output_text.delta":
+                    if let delta = event.delta, !delta.isEmpty { onEvent(.delta(content: delta, reasoning: "")) }
+                case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+                    if let delta = event.delta, !delta.isEmpty { onEvent(.delta(content: "", reasoning: delta)) }
+                case "response.output_item.added":
+                    if let item = event.item, item.type == "function_call" {
+                        pendingCalls.append((itemID: item.id ?? "", callID: item.callId ?? item.id ?? "", name: item.name ?? "", arguments: item.arguments ?? ""))
+                    }
+                case "response.function_call_arguments.delta":
+                    if let delta = event.delta, let itemID = event.itemId,
+                       let index = pendingCalls.firstIndex(where: { $0.itemID == itemID }) {
+                        pendingCalls[index].arguments += delta
+                    }
+                case "response.output_item.done":
+                    // The completed item carries the sealed arguments —
+                    // prefer them over whatever deltas accumulated.
+                    if let item = event.item, item.type == "function_call",
+                       let index = pendingCalls.firstIndex(where: { $0.itemID == (item.id ?? "") }) {
+                        if let sealed = item.arguments, !sealed.isEmpty { pendingCalls[index].arguments = sealed }
+                        if let callID = item.callId, !callID.isEmpty { pendingCalls[index].callID = callID }
+                    }
+                case "response.completed":
+                    if let usage = event.response?.usage {
+                        onEvent(.usage(prompt: usage.inputTokens, completion: usage.outputTokens, cachedTokens: nil))
+                    }
+                default:
+                    continue
+                }
+            }
+
+            guard !pendingCalls.isEmpty, let toolContext, round < maxRounds - 1 else { return }
+            for call in pendingCalls {
+                inputItems.append(.functionCall(callID: call.callID, name: call.name, arguments: call.arguments))
+            }
+            for call in pendingCalls {
+                let result = await ToolCatalog.execute(name: call.name, argumentsJSON: call.arguments, context: toolContext)
+                onEvent(.toolUse(name: call.name, query: ToolCatalog.displayArgument(from: call.arguments), result: result))
+                inputItems.append(.functionCallOutput(callID: call.callID, output: result))
             }
         }
     }
@@ -1186,7 +1247,7 @@ private struct StreamChunk: Decodable {
 
 private struct CodexResponsesBody: Encodable {
     let model: String
-    let input: [CodexInputMessage]
+    let input: [CodexInputItem]
     let stream = true
     let store = false
     let reasoning: CodexReasoning?
@@ -1195,7 +1256,7 @@ private struct CodexResponsesBody: Encodable {
         case model, input, stream, store, reasoning
     }
 
-    init(model: String, thinking: ThinkingLevel, input: [CodexInputMessage]) {
+    init(model: String, thinking: ThinkingLevel, input: [CodexInputItem]) {
         self.model = model
         self.reasoning = thinking == .auto ? nil : CodexReasoning(effort: thinking.codexValue)
         self.input = input
@@ -1216,9 +1277,37 @@ private struct CodexReasoning: Encodable {
     let summary = "auto"
 }
 
-private struct CodexInputMessage: Encodable {
-    let role: String
-    let content: [CodexInputContent]
+/// A Responses-API `input` item: a plain chat message, or a replayed tool
+/// exchange — `function_call` (what the model asked for) followed by
+/// `function_call_output` (what came back), matched by `call_id`.
+private enum CodexInputItem: Encodable {
+    case message(role: String, content: [CodexInputContent])
+    case functionCall(callID: String, name: String, arguments: String)
+    case functionCallOutput(callID: String, output: String)
+
+    private enum CodingKeys: String, CodingKey {
+        case type, role, content, name, arguments, output
+        case callID = "call_id"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .message(let role, let content):
+            try container.encode("message", forKey: .type)
+            try container.encode(role, forKey: .role)
+            try container.encode(content, forKey: .content)
+        case .functionCall(let callID, let name, let arguments):
+            try container.encode("function_call", forKey: .type)
+            try container.encode(callID, forKey: .callID)
+            try container.encode(name, forKey: .name)
+            try container.encode(arguments, forKey: .arguments)
+        case .functionCallOutput(let callID, let output):
+            try container.encode("function_call_output", forKey: .type)
+            try container.encode(callID, forKey: .callID)
+            try container.encode(output, forKey: .output)
+        }
+    }
 }
 
 private struct CodexInputContent: Encodable {
@@ -1251,9 +1340,28 @@ private struct CodexResponseEvent: Decodable {
         }
         let usage: Usage?
     }
+    /// A streamed output item — only `function_call` items are read.
+    struct Item: Decodable {
+        let type: String?
+        let id: String?
+        let callId: String?
+        let name: String?
+        let arguments: String?
+        enum CodingKeys: String, CodingKey {
+            case type, id, name, arguments
+            case callId = "call_id"
+        }
+    }
     let type: String
     let delta: String?
     let response: Response?
+    let item: Item?
+    let itemId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type, delta, response, item
+        case itemId = "item_id"
+    }
 }
 
 /// Plain string `content` with no images (the common case), otherwise

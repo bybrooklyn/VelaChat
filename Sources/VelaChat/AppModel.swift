@@ -137,9 +137,6 @@ final class AppModel {
     var canUseWebSearch: Bool {
         guard let kind = selectedProvider?.kind else { return false }
         if !isNativeSearchNone(kind.nativeWebSearch) { return true }
-        // The Codex OAuth path can't carry tools on the wire yet — showing
-        // the toggle there would promise a search that never happens.
-        guard kind != .codex else { return false }
         let hasEndpoint = !searchEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let supportsTools = selectedModelInfo?.supportsTools
             ?? RemoteModel(id: currentModelID).supportsTools
@@ -879,9 +876,7 @@ final class AppModel {
         // Catalog entry when there is one, ID-based inference otherwise —
         // an uncataloged compatible endpoint or a manual model override used
         // to silently lose all tools because `modelInfo` came back nil.
-        // The Codex OAuth path has no tool support on the wire yet, so it
-        // reports none rather than attaching tools that get dropped.
-        let modelSupportsTools = (modelInfo ?? RemoteModel(id: model)).supportsTools && profile.kind != .codex
+        let modelSupportsTools = (modelInfo ?? RemoteModel(id: model)).supportsTools
         var tools: [ToolCatalog.Definition] = []
         if modelSupportsTools {
             if isConversationSearchEnabled {
