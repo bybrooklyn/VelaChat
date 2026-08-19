@@ -28,7 +28,7 @@ struct QuickComposerView: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
                 .padding(8)
-                .background(Theme.controlBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
                 .focused($focused)
                 .onSubmit(send)
 
@@ -53,7 +53,7 @@ struct QuickComposerView: View {
                             .padding(.horizontal, 7)
                             .padding(.vertical, 4)
                             .foregroundStyle(Theme.secondaryText)
-                            .background(Theme.controlBackground.opacity(0.7), in: Capsule())
+                            .background(Theme.surfaceHigh, in: Capsule())
                         }
                     }
                 }
@@ -70,7 +70,7 @@ struct QuickComposerView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.secondaryText)
-                .background(Theme.controlBackground.opacity(0.7), in: Circle())
+                .background(Theme.surfaceHigh, in: Circle())
                 .help("Attach a file")
                 Button {
                     captureScreenshot()
@@ -81,7 +81,7 @@ struct QuickComposerView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.secondaryText)
-                .background(Theme.controlBackground.opacity(0.7), in: Circle())
+                .background(Theme.surfaceHigh, in: Circle())
                 .help("Capture a screenshot and attach it (space = whole window)")
 
                 Spacer()

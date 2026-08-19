@@ -100,7 +100,7 @@ struct OnboardingView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.controlBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
     }
 
     private var start: some View {

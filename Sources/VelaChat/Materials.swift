@@ -2,6 +2,16 @@ import SwiftUI
 import AppKit
 
 extension View {
+    /// The app's standard hairline around a control or surface. This
+    /// pattern appeared 18 times with six different opacities; one
+    /// modifier keeps depth reading as a system, and gives light mode a
+    /// single place to change later.
+    func velaBorder(_ shape: some InsettableShape, emphasis: Double = 0.6) -> some View {
+        overlay {
+            shape.stroke(Theme.controlStroke.opacity(emphasis), lineWidth: 1)
+        }
+    }
+
     /// Liquid Glass is reserved for functional layers: the composer, compact
     /// controls, and the sidebar's utility header.
     func nativeMaterial(cornerRadius: CGFloat = 10) -> some View {
@@ -19,11 +29,8 @@ extension View {
         self
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(Theme.controlBackground.opacity(0.75), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
-                    .stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1)
-            }
+            .background(Theme.surfaceHigh, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+            .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
     }
 
     /// Tinted capsule chrome — floating badges.

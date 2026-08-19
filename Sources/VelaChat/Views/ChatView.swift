@@ -1364,11 +1364,8 @@ private struct AttachmentChip: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(Theme.controlBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
-                .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
-        }
+        .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous), emphasis: 0.5)
     }
 
     private var symbol: String {
@@ -1512,7 +1509,7 @@ private struct ArtifactPanel: View {
                 .font(.system(size: 12.5, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(8)
-                .background(Theme.controlBackground.opacity(0.35))
+                .background(Theme.surfaceLow)
         } else {
             switch artifact.kind {
             case .markdown:
@@ -1607,10 +1604,7 @@ private struct SlashCommandList: View {
             .padding(6)
         }
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1)
-        }
+        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .frame(maxHeight: 240)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -1680,7 +1674,7 @@ private struct NoticeCard: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Theme.controlBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+        .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
                 .stroke(tint.opacity(0.25), lineWidth: 1)
@@ -1865,11 +1859,8 @@ private struct PlanCard: View {
         }
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.controlBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
-                .stroke(Theme.controlStroke.opacity(0.4), lineWidth: 1)
-        }
+        .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous), emphasis: 0.4)
         .animation(.easeOut(duration: 0.2), value: steps)
         .onChange(of: isWorking) { _, working in
             // Fold the scaffolding away once the work is finished.
@@ -1956,7 +1947,7 @@ private struct AskUserQuestionCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.controlBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .stroke(Theme.accent.opacity(0.2), lineWidth: 1)
@@ -2483,7 +2474,7 @@ private struct SearchResultsDisclosure: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 8)
-                        .background(Theme.controlBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                        .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
                         }
                         .buttonStyle(.plain)
                     }

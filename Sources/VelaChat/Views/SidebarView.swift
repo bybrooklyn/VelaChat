@@ -137,7 +137,7 @@ struct SidebarView: View {
                 .foregroundStyle(tint == nil ? Theme.secondaryText : Theme.accentForeground)
                 .frame(width: 34, height: 34)
                 .background(
-                    tint ?? Theme.controlBackground.opacity(0.75),
+                    tint ?? Theme.surfaceHigh,
                     in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                 )
                 .overlay {
@@ -180,7 +180,7 @@ struct SidebarView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Theme.secondaryText)
                 .frame(width: 28, height: 28)
-                .background(Theme.controlBackground.opacity(0.75), in: Circle())
+                .background(Theme.surfaceHigh, in: Circle())
                 .overlay {
                     Circle().stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1)
                 }
@@ -285,11 +285,8 @@ struct SidebarView: View {
                 // a standalone `glassEffect` here (see Materials.swift)
                 // rendered its own halo/shadow ring against those flat
                 // siblings, reading as a stray box-in-a-box outline.
-                .background(Theme.controlBackground.opacity(0.75), in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                        .stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1)
-                }
+                .background(Theme.surfaceHigh, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+                .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
         }
         .buttonStyle(.plain)
         .keyboardShortcut("f", modifiers: [.command, .shift])
@@ -327,7 +324,7 @@ struct SidebarView: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 34)
-        .background(Theme.controlBackground.opacity(0.75), in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+        .background(Theme.surfaceHigh, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                 .stroke(searchFocused ? Theme.accent.opacity(0.45) : Theme.controlStroke.opacity(0.6), lineWidth: 1)

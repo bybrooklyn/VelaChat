@@ -179,7 +179,7 @@ private struct ChatGPTTokenPasteSheet: View {
                 .font(.system(.caption, design: .monospaced))
                 .frame(minHeight: 110)
                 .scrollContentBackground(.hidden)
-                .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
             HStack {
                 Spacer()
                 Button("Cancel") { onCancel() }

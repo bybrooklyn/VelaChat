@@ -68,12 +68,9 @@ private struct SettingsCard<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // Liquid glass under a faint tint — large surfaces, so the small-
         // chip halo failure mode doesn't apply; theme colors unchanged.
-        .background(Theme.controlBackground.opacity(0.3), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .glassChip(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
-        }
+        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous), emphasis: 0.5)
         .id(section)
         .background {
             GeometryReader { geometry in
@@ -283,7 +280,7 @@ struct SettingsView: View {
                     .font(.body)
                     .frame(minHeight: 90, maxHeight: 180)
                     .scrollContentBackground(.hidden)
-                    .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                    .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
                     }
 
 
@@ -727,7 +724,7 @@ private struct McpServersCard: View {
                     .font(.system(size: 12, design: .monospaced))
                     .frame(minHeight: 140)
                     .scrollContentBackground(.hidden)
-                    .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                    .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
                 if let importError {
                     Text(importError)
                         .font(.caption)
@@ -789,7 +786,7 @@ private struct McpServerSheet: View {
                     .font(.system(size: 12, design: .monospaced))
                     .frame(height: 60)
                     .scrollContentBackground(.hidden)
-                    .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                    .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
             }
             HStack {
                 Spacer()
@@ -908,7 +905,7 @@ private struct AddSnippetSheet: View {
                 .font(.body)
                 .frame(minHeight: 120)
                 .scrollContentBackground(.hidden)
-                .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
             HStack {
                 Spacer()
                 Button("Cancel") { isPresented = false }

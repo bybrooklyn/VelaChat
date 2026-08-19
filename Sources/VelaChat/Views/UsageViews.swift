@@ -22,11 +22,8 @@ struct UsageGaugeButton: View {
                     .frame(width: 34, height: 34)
                     // Flat, matching its row siblings — a standalone glass chip
                     // here rendered a stray halo (documented lesson).
-                    .background(Theme.controlBackground.opacity(0.75), in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                            .stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1)
-                    }
+                    .background(Theme.surfaceHigh, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+                    .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
             }
             .buttonStyle(.plain)
             .help("Usage for the current provider")
@@ -161,7 +158,7 @@ struct UsagePopover: View {
                 .foregroundStyle(Theme.tertiaryText)
         }
         .padding(10)
-        .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+        .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
     }
 
     private func windowRow(_ window: QuotaSnapshot.Window) -> some View {

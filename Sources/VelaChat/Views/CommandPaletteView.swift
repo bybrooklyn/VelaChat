@@ -87,10 +87,7 @@ struct CommandPaletteView: View {
         }
         .frame(width: 480)
         .nativeMaterial(cornerRadius: Theme.Radius.card)
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1)
-        }
+        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .onAppear {
             searchFocused = true
             selectedID = filteredItems.first?.id

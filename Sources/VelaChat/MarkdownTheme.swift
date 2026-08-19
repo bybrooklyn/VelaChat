@@ -190,11 +190,8 @@ private struct VelaCodeBlock: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .background(Theme.controlBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
-        }
+        .background(Theme.surfaceHigh, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous), emphasis: 0.5)
         .markdownMargin(top: 4, bottom: 10)
     }
 }

@@ -130,6 +130,19 @@ enum Theme {
     static let separator = Color(nsColor: .separatorColor)
     static let controlBackground = Color(hex: 0x182627)
 
+    /// Three named surface levels instead of nine hand-picked opacities of
+    /// `controlBackground`. Depth was being expressed as 0.3/0.35/0.4/
+    /// 0.45/0.5/0.55/0.6/0.7/0.75 scattered across the views, which reads
+    /// as noise rather than a system and makes any future appearance work
+    /// (light mode) impossible to do consistently.
+    ///
+    /// - `surfaceLow`: large passive areas — cards, panels, disclosures.
+    /// - `surfaceMid`: grouped content and hover states.
+    /// - `surfaceHigh`: interactive controls — buttons, fields, chips.
+    static let surfaceLow = controlBackground.opacity(0.4)
+    static let surfaceMid = controlBackground.opacity(0.6)
+    static let surfaceHigh = controlBackground.opacity(0.75)
+
     // The identity is nautical without turning the interface into a themed
     // dashboard: seafoam for action, horizon blue for model state, and coral
     // for a small amount of human warmth.

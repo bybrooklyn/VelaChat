@@ -134,7 +134,7 @@ struct ActivityRow<Detail: View>: View {
                 .padding(.vertical, 4)
                 .padding(.horizontal, 6)
                 .background(
-                    isHovering && isExpandable ? Theme.controlBackground.opacity(0.5) : Color.clear,
+                    isHovering && isExpandable ? Theme.surfaceMid : Color.clear,
                     in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
                 )
                 .contentShape(Rectangle())
@@ -299,7 +299,7 @@ struct ContextButton: View {
             }
             .frame(width: 14, height: 14)
             .frame(width: 30, height: 30)
-            .background(Theme.controlBackground.opacity(0.75), in: Circle())
+            .background(Theme.surfaceHigh, in: Circle())
             .overlay { Circle().stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1) }
             .animation(.easeOut(duration: 0.35), value: fraction)
         }
@@ -407,7 +407,7 @@ struct VelaControlButtonStyle: ButtonStyle {
             // neutral fill (tinted only by its own icon/text, matching the
             // sidebar's already-fixed search-toggle button) keeps each pill
             // a clearly distinct box.
-            .background(Theme.controlBackground.opacity(0.75), in: Capsule())
+            .background(Theme.surfaceHigh, in: Capsule())
             .overlay {
                 Capsule().stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1)
             }
@@ -543,11 +543,8 @@ private struct ModelPaletteView: View {
             }
             .padding(6)
         }
-        .background(Theme.controlBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
-        }
+        .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous), emphasis: 0.5)
     }
 
     var body: some View {
@@ -707,11 +704,8 @@ private struct ModelPaletteGroup: View {
                 .padding(6)
             }
         }
-        .background(Theme.controlBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
-        }
+        .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous), emphasis: 0.5)
     }
 }
 
@@ -809,7 +803,7 @@ private struct ModelPaletteRow: View {
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
             .background(
-                selected ? Theme.accentSoft.opacity(0.82) : (isHovering ? Theme.controlBackground.opacity(0.55) : Color.clear),
+                selected ? Theme.accentSoft.opacity(0.82) : (isHovering ? Theme.surfaceMid : Color.clear),
                 in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
             )
             .contentShape(Rectangle())
