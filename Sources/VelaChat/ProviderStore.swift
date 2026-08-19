@@ -34,6 +34,34 @@ final class ProviderStore {
             defaults.set(contextWindowOverrides, forKey: contextOverridesKey)
         }
     }
+    /// Starred models ("providerID|modelID") pinned atop the picker.
+    private(set) var favoriteModelKeys: Set<String> = [] {
+        didSet { defaults.set(Array(favoriteModelKeys), forKey: "velachat.model-favorites") }
+    }
+    /// Most-recently-selected models, newest first, capped at 5.
+    private(set) var recentModelKeys: [String] = [] {
+        didSet { defaults.set(recentModelKeys, forKey: "velachat.model-recents") }
+    }
+
+    static func modelKey(_ providerID: UUID, _ modelID: String) -> String {
+        providerID.uuidString + "|" + modelID
+    }
+
+    func isFavorite(providerID: UUID, modelID: String) -> Bool {
+        favoriteModelKeys.contains(Self.modelKey(providerID, modelID))
+    }
+
+    func toggleFavorite(providerID: UUID, modelID: String) {
+        let key = Self.modelKey(providerID, modelID)
+        if favoriteModelKeys.contains(key) { favoriteModelKeys.remove(key) } else { favoriteModelKeys.insert(key) }
+    }
+
+    func noteRecent(providerID: UUID, modelID: String) {
+        let key = Self.modelKey(providerID, modelID)
+        recentModelKeys.removeAll { $0 == key }
+        recentModelKeys.insert(key, at: 0)
+        if recentModelKeys.count > 5 { recentModelKeys.removeLast(recentModelKeys.count - 5) }
+    }
     var selectedID: UUID
     var statusByID: [UUID: Status] = [:]
     var modelsByID: [UUID: [RemoteModel]] = [:]
@@ -61,6 +89,8 @@ final class ProviderStore {
     private let refreshInterval: TimeInterval = 15 * 60
 
     init() {
+        favoriteModelKeys = Set(defaults.stringArray(forKey: "velachat.model-favorites") ?? [])
+        recentModelKeys = defaults.stringArray(forKey: "velachat.model-recents") ?? []
         let loadedProfiles: [ProviderProfile]
         if let data = defaults.data(forKey: profilesKey),
            let saved = try? JSONDecoder().decode([ProviderProfile].self, from: data),

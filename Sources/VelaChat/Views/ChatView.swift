@@ -97,6 +97,7 @@ struct ChatView: View {
                 .id(appModel.activeConversationID)
                 .animation(.easeOut(duration: 0.16), value: appModel.activeConversationID)
             }
+            .velaEdgeFade(appModel.isEdgeBlurEnabled)
             // Fullscreen has no titlebar clearance at all since the toolbar
             // removal — without this the first message clips under the
             // screen's top edge / menu-bar reveal strip.

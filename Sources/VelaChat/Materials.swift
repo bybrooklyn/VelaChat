@@ -2,6 +2,20 @@ import SwiftUI
 import AppKit
 
 extension View {
+    /// The soft blur-fade at scroll edges (the "gradient but for blurring"
+    /// effect) — macOS 26's native scroll edge effect, gated by the user's
+    /// toggle.
+    @ViewBuilder
+    func velaEdgeFade(_ enabled: Bool) -> some View {
+        if enabled {
+            self
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .scrollEdgeEffectStyle(.soft, for: .bottom)
+        } else {
+            self
+        }
+    }
+
     /// Liquid Glass is reserved for functional layers: the composer, compact
     /// controls, and the sidebar's utility header.
     func nativeMaterial(cornerRadius: CGFloat = 10) -> some View {

@@ -148,6 +148,10 @@ final class AppModel {
     var isHoverTimestampsEnabled = true {
         didSet { UserDefaults.standard.set(isHoverTimestampsEnabled, forKey: "velachat.hover-timestamps-enabled") }
     }
+    /// Soft blur-fades at scroll edges (sidebar + transcript).
+    var isEdgeBlurEnabled = true {
+        didSet { UserDefaults.standard.set(isEdgeBlurEnabled, forKey: "velachat.edge-blur-enabled") }
+    }
     var searchByMessage: [UUID: WebSearchRecord] = [:]
     /// Latest live quota headers seen per provider this session.
     var quotaByProvider: [UUID: QuotaSnapshot] = [:]
@@ -233,6 +237,9 @@ final class AppModel {
         }
         if UserDefaults.standard.object(forKey: "velachat.hover-timestamps-enabled") != nil {
             isHoverTimestampsEnabled = UserDefaults.standard.bool(forKey: "velachat.hover-timestamps-enabled")
+        }
+        if UserDefaults.standard.object(forKey: "velachat.edge-blur-enabled") != nil {
+            isEdgeBlurEnabled = UserDefaults.standard.bool(forKey: "velachat.edge-blur-enabled")
         }
         isWebSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.web-search-enabled")
         hasOnboarded = UserDefaults.standard.bool(forKey: "velachat.has-onboarded")
@@ -451,6 +458,7 @@ final class AppModel {
             selectProvider(profile)
         }
         providers.update(id: profile.id, model: model.id)
+        providers.noteRecent(providerID: profile.id, modelID: model.id)
         activeConversation?.model = model.id
         if !availableThinkingLevels.contains(thinkingLevel) {
             thinkingLevel = .auto

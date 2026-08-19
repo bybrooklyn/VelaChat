@@ -64,7 +64,10 @@ private struct SettingsCard<Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.controlBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        // Liquid glass under a faint tint — large surfaces, so the small-
+        // chip halo failure mode doesn't apply; theme colors unchanged.
+        .background(Theme.controlBackground.opacity(0.3), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .glassChip(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
@@ -531,10 +534,13 @@ struct SettingsView: View {
                     .foregroundStyle(activeSection == section ? Theme.accent : Theme.secondaryText)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 6)
-                    .background(
-                        activeSection == section ? Theme.sidebarSelection.opacity(0.7) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
-                    )
+                    .background {
+                        if activeSection == section {
+                            RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+                                .fill(Theme.sidebarSelection.opacity(0.55))
+                                .glassChip(in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                        }
+                    }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

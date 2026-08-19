@@ -277,6 +277,7 @@ struct SidebarView: View {
                 .padding(.bottom, 8)
             }
             .scrollIndicators(.hidden)
+            .velaEdgeFade(appModel.isEdgeBlurEnabled)
             .frame(maxHeight: .infinity)
         }
     }
@@ -320,6 +321,7 @@ struct SidebarView: View {
                     .padding(.bottom, 8)
                 }
                 .scrollIndicators(.hidden)
+                .velaEdgeFade(appModel.isEdgeBlurEnabled)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)

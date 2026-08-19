@@ -483,6 +483,69 @@ private struct ModelPaletteView: View {
         }
     }
 
+    /// Favorites (starred) and Recents pinned above the provider groups —
+    /// keys resolved against live profiles/catalogs, stale ones skipped.
+    @ViewBuilder
+    private var pinnedGroups: some View {
+        let resolvedFavorites = resolve(keys: Array(appModel.providers.favoriteModelKeys).sorted())
+        let resolvedRecents = resolve(keys: appModel.providers.recentModelKeys)
+            .filter { pair in !resolvedFavorites.contains { $0.1.id == pair.1.id && $0.0.id == pair.0.id } }
+        if !resolvedFavorites.isEmpty {
+            pinnedGroup(title: "Favorites", symbol: "star.fill", pairs: resolvedFavorites)
+        }
+        if !resolvedRecents.isEmpty {
+            pinnedGroup(title: "Recent", symbol: "clock", pairs: resolvedRecents)
+        }
+    }
+
+    private func resolve(keys: [String]) -> [(ProviderProfile, RemoteModel)] {
+        keys.compactMap { key in
+            let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
+            guard parts.count == 2, let providerID = UUID(uuidString: parts[0]),
+                  let profile = groupProfiles.first(where: { $0.id == providerID }),
+                  let model = appModel.providers.models(for: providerID).first(where: { $0.id == parts[1] }) else { return nil }
+            return (profile, model)
+        }
+    }
+
+    private func pinnedGroup(title: String, symbol: String, pairs: [(ProviderProfile, RemoteModel)]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.text)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            Divider()
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(pairs, id: \.1.id) { profile, model in
+                    ModelPaletteRow(
+                        model: model,
+                        selected: profile.id == appModel.selectedProvider?.id && model.id == appModel.currentModelID,
+                        recommended: false,
+                        providerKind: profile.kind,
+                        providerID: profile.id,
+                        action: {
+                            appModel.selectProviderAndModel(profile, model: model)
+                            isPresented = false
+                        }
+                    )
+                }
+            }
+            .padding(6)
+        }
+        .background(Theme.controlBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
@@ -517,6 +580,9 @@ private struct ModelPaletteView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
+                        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            pinnedGroups
+                        }
                         ForEach(visibleGroups) { profile in
                             ModelPaletteGroup(
                                 profile: profile,
@@ -630,6 +696,7 @@ private struct ModelPaletteGroup: View {
                             selected: model.id == selectedModelID,
                             recommended: showRecommended && index == 0 && models.count > 1,
                             providerKind: profile.kind,
+                            providerID: profile.id,
                             action: { action(model) }
                         )
                     }
@@ -646,10 +713,12 @@ private struct ModelPaletteGroup: View {
 }
 
 private struct ModelPaletteRow: View {
+    @Environment(AppModel.self) private var appModel
     let model: RemoteModel
     let selected: Bool
     let recommended: Bool
     var providerKind: ProviderKind = .compatible
+    var providerID: UUID? = nil
     let action: () -> Void
 
     @State private var isHovering = false
@@ -715,6 +784,20 @@ private struct ModelPaletteRow: View {
                     .labelStyle(.titleAndIcon)
                 }
                 Spacer(minLength: 6)
+                if let providerID {
+                    let isFavorite = appModel.providers.isFavorite(providerID: providerID, modelID: model.id)
+                    if isFavorite || isHovering {
+                        Button {
+                            appModel.providers.toggleFavorite(providerID: providerID, modelID: model.id)
+                        } label: {
+                            Image(systemName: isFavorite ? "star.fill" : "star")
+                                .font(.system(size: 11))
+                                .foregroundStyle(isFavorite ? Theme.accent : Theme.tertiaryText)
+                        }
+                        .buttonStyle(.plain)
+                        .help(isFavorite ? "Remove from favorites" : "Add to favorites")
+                    }
+                }
                 if selected {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(Theme.accent)
