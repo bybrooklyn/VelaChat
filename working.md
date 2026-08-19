@@ -1,5 +1,27 @@
 # VelaChat — working notes
 
+## 2026-08-18/19 — deep-audit overhaul round (13 phases, one commit each)
+
+Full plan + audit findings: ~/.claude/plans/the-settings-screen-should-dapper-coral.md.
+P1 correctness (retry/edit data-loss fix, debounced saves, endpoint honoring);
+P2 tool awareness (system-prompt tool inventory, fetch_url/current_datetime/
+calculator/read_attachment, honest gating, conversation-search toggle,
+compaction at 95%); P3 Codex Responses function calling; P4+P5 interleaved
+activity timeline (message segments, reveal-op queue, Claude-web dim lines,
+no spinners, shimmer); P6 model-managed memory (save/search/edit_memory
+tools, relevance injection, topics; remember-card flow removed); P7
+streaming feel (adaptive drain, no end snap, reasoning calm); P8 ask-user
+streaming fix (line-start fences, suffix kept, placeholder); P9 Settings/
+providers rework (1000pt, ring context button, accentStrong chrome, draft
+add sheet, no select-on-view, About rework); P10 remote provider logos
+(RemoteLogoLoader, disk cache, hand-drawn fallback); P11 skills auto-import
+removed (migration for active ones, capped injection); P12 new-chat sidebar
+deferral (pendingConversation, spring insert on first message); P13 polish
+(dead top inset gone, composer aligned, send-button crossfade, accent
+propagation, notice kinds, faster typewriter).
+Not yet live-verified: a real tool-calling chat (blockrun/Codex) — needs a
+human to send a message and watch the activity lines.
+
 Persistent tracking file for the ongoing build-out. Updated as we go instead
 of re-deriving status each session. See also `AGENTS.md` (operational
 lessons) and the original phased plan this grew out of (Phase 0 — the whole
