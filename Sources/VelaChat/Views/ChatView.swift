@@ -97,7 +97,6 @@ struct ChatView: View {
                 .id(appModel.activeConversationID)
                 .animation(.easeOut(duration: 0.16), value: appModel.activeConversationID)
             }
-            .velaEdgeFade(appModel.isEdgeBlurEnabled)
             // Fullscreen has no titlebar clearance at all since the toolbar
             // removal — without this the first message clips under the
             // screen's top edge / menu-bar reveal strip.
@@ -107,6 +106,7 @@ struct ChatView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 composer
             }
+            .velaEdgeFade(appModel.isEdgeBlurEnabled, top: chrome.isFullScreen ? 44 : 30, bottom: 0)
             .onChange(of: appModel.activeConversation?.messages.count ?? 0) { _, _ in
                 scrollToLast(proxy)
             }
