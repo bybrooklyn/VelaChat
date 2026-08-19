@@ -81,6 +81,11 @@ final class AppModel {
     /// `postNotice(_:to:)` instead, so they're never a banner that vanishes
     /// on its own and are always visible in the conversation itself.
     var statusMessage: String?
+    /// A new chat that hasn't earned a sidebar row yet — promoted into
+    /// `conversations` (with a spring insert) on its first message, and
+    /// simply dropped if the user clicks away without using it. Never
+    /// persisted.
+    var pendingConversation: Conversation?
     var thinkingLevel: ThinkingLevel = .auto {
         didSet { UserDefaults.standard.set(thinkingLevel.rawValue, forKey: "velachat.thinking-level") }
     }
@@ -244,7 +249,11 @@ final class AppModel {
 
     var activeConversation: Conversation? {
         guard let activeConversationID else { return nil }
-        return conversations.first { $0.id == activeConversationID }
+        if let listed = conversations.first(where: { $0.id == activeConversationID }) { return listed }
+        // A brand-new chat lives here until its first message — it has a
+        // composer and a welcome screen but no sidebar row yet.
+        if let pendingConversation, pendingConversation.id == activeConversationID { return pendingConversation }
+        return nil
     }
 
     var isGenerating: Bool { activeConversation?.isGenerating ?? false }
@@ -437,18 +446,51 @@ final class AppModel {
     /// sidebar with empty threads, since nothing ever pruned them.
     @discardableResult
     func newConversation() -> Conversation {
-        if let existingEmpty = conversations.first(where: { $0.realMessages.isEmpty && !$0.isPinned }) {
-            activeConversationID = existingEmpty.id
-            return existingEmpty
+        // Reuse only a PRISTINE current pending chat — reusing anything
+        // with a typed draft used to silently drop the user into their
+        // own unsent draft when they asked for a new chat.
+        if let pending = pendingConversation, isPristine(pending) {
+            activeConversationID = pending.id
+            return pending
         }
         let provider = providers.selected
         let conversation = Conversation(providerID: provider?.id, model: provider?.model ?? "")
-        withAnimation(.easeOut(duration: 0.18)) {
-            conversations.insert(conversation, at: 0)
+        // A draft-carrying pending chat survives by joining the list;
+        // an untouched one is simply replaced.
+        if let pending = pendingConversation, !isPristine(pending) {
+            promotePending()
         }
+        pendingConversation = conversation
         activeConversationID = conversation.id
-        saveHistory()
         return conversation
+    }
+
+    private func isPristine(_ conversation: Conversation) -> Bool {
+        conversation.realMessages.isEmpty
+            && !conversation.isPinned
+            && !conversation.titleIsCustom
+            && conversation.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && conversation.draftAttachments.isEmpty
+            && conversation.messages.isEmpty
+    }
+
+    /// Moves the pending chat into the sidebar list — the row springs in.
+    @discardableResult
+    private func promotePending() -> Conversation? {
+        guard let pending = pendingConversation else { return nil }
+        pendingConversation = nil
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            conversations.insert(pending, at: 0)
+        }
+        saveHistory()
+        return pending
+    }
+
+    /// Promotes before anything is appended to a conversation that isn't
+    /// listed yet — first message, first notice, first anything.
+    private func ensureListed(_ conversation: Conversation) {
+        guard pendingConversation?.id == conversation.id else { return }
+        _ = promotePending()
     }
 
     /// Surfaces an error (or any system notice) as a card inline in the
@@ -462,6 +504,7 @@ final class AppModel {
     @discardableResult
     func postNotice(_ message: String, to conversation: Conversation? = nil) -> ChatMessage {
         let target = conversation ?? activeConversation ?? newConversation()
+        ensureListed(target)
         let notice = ChatMessage(role: "notice", content: message)
         target.messages.append(notice)
         target.updatedAt = Date()
@@ -470,6 +513,15 @@ final class AppModel {
     }
 
     func selectConversation(_ conversation: Conversation) {
+        // Leaving a pending chat: a typed draft earns it a row (drafts
+        // survive), an untouched one just evaporates.
+        if let pending = pendingConversation, pending.id != conversation.id {
+            if isPristine(pending) {
+                pendingConversation = nil
+            } else {
+                promotePending()
+            }
+        }
         activeConversationID = conversation.id
         if let providerID = conversation.providerID {
             providers.select(providerID)
@@ -487,13 +539,15 @@ final class AppModel {
     /// drafted, or currently active.
     private func pruneUnusedConversations() {
         let before = conversations.count
-        conversations.removeAll { conversation in
-            conversation.id != activeConversationID
-                && !conversation.isPinned
-                && !conversation.titleIsCustom
-                && conversation.realMessages.isEmpty
-                && conversation.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && conversation.draftAttachments.isEmpty
+        withAnimation(.easeOut(duration: 0.18)) {
+            conversations.removeAll { conversation in
+                conversation.id != activeConversationID
+                    && !conversation.isPinned
+                    && !conversation.titleIsCustom
+                    && conversation.realMessages.isEmpty
+                    && conversation.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && conversation.draftAttachments.isEmpty
+            }
         }
         if conversations.count != before { saveHistory() }
     }
@@ -773,6 +827,7 @@ final class AppModel {
             stopGeneration(for: conversation)
         }
         conversations.removeAll()
+        pendingConversation = nil
         usageByMessage.removeAll()
         searchByMessage.removeAll()
         _ = newConversation()
@@ -909,6 +964,8 @@ final class AppModel {
             postNotice("Already generating a reply.", to: conversation)
             return
         }
+        // First real use: the chat earns its sidebar row now, springing in.
+        ensureListed(conversation)
         if conversation.providerID != profile.id {
             conversation.providerID = profile.id
             conversation.model = profile.model

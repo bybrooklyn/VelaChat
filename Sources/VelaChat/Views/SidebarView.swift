@@ -253,6 +253,10 @@ struct SidebarView: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
+                // Without an animation bound to the list change, the rows'
+                // transitions never actually play — inserts (a new chat
+                // earning its row) and removals both hard-cut.
+                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: appModel.conversations.count)
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
             }
