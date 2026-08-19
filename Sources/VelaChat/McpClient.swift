@@ -49,7 +49,7 @@ actor McpClient {
         var errorDescription: String? {
             switch self {
             case .notRunning(let detail): "MCP server isn't running: \(detail)"
-            case .timeout: "The MCP server didn't answer within 30 seconds."
+            case .timeout: "The MCP server didn't answer in time."
             case .protocolError(let detail): detail
             }
         }
@@ -127,7 +127,9 @@ actor McpClient {
 
     func listTools() async throws -> [McpToolInfo] {
         try await ensureRunning()
-        let result = try await request(method: "tools/list", params: [:])
+        // Shorter than a tool call's budget: a dead server at send time
+        // should cost seconds, not half a minute of stalled reply.
+        let result = try await request(method: "tools/list", params: [:], timeoutSeconds: 10)
         let tools = (result["tools"] as? [[String: Any]]) ?? []
         return tools.compactMap { tool in
             guard let name = tool["name"] as? String else { return nil }
@@ -180,7 +182,7 @@ actor McpClient {
         if stderrLog.count > 4_000 { stderrLog = String(stderrLog.suffix(4_000)) }
     }
 
-    private func request(method: String, params: [String: Any]) async throws -> [String: Any] {
+    private func request(method: String, params: [String: Any], timeoutSeconds: Double = 30) async throws -> [String: Any] {
         let id = nextID
         nextID += 1
         let payload: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
@@ -194,7 +196,7 @@ actor McpClient {
                 return
             }
             Task {
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
                 self.timeOut(id: id)
             }
         }

@@ -741,13 +741,18 @@ final class AppModel {
     /// nothing is lost by dropping it. Keeps anything pinned, renamed,
     /// drafted, or currently active.
     private func pruneUnusedConversations() {
+        // Never prune from underneath the Settings screen — the chat the
+        // user was just looking at must still exist when they come back.
+        guard section != .settings else { return }
         let before = conversations.count
         withAnimation(.easeOut(duration: 0.18)) {
             conversations.removeAll { conversation in
                 conversation.id != activeConversationID
                     && !conversation.isPinned
                     && !conversation.titleIsCustom
-                    && conversation.realMessages.isEmpty
+                    // `messages`, not `realMessages`: a notice-only chat
+                    // still holds an error the user may want to read.
+                    && conversation.messages.isEmpty
                     && conversation.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     && conversation.draftAttachments.isEmpty
             }
@@ -1103,6 +1108,7 @@ final class AppModel {
         withAnimation(.easeOut(duration: 0.18)) {
             conversations.removeAll { $0.id == conversation.id }
         }
+        SandboxManager.cleanup(for: conversation.id)
         if activeConversationID == conversation.id {
             activeConversationID = conversations.first?.id ?? newConversation().id
         }
@@ -1112,6 +1118,9 @@ final class AppModel {
     func clearHistory() {
         for conversation in conversations where conversation.isGenerating {
             stopGeneration(for: conversation)
+        }
+        for conversation in conversations {
+            SandboxManager.cleanup(for: conversation.id)
         }
         conversations.removeAll()
         pendingConversation = nil
@@ -1373,12 +1382,12 @@ final class AppModel {
             skillBudget -= body.count
             systemMessages.append(ChatMessage(role: "system", content: "Skill \"\(skill.name)\":\n\n\(body)"))
         }
-        systemMessages.append(ChatMessage(role: "system", content: SystemPrompt.compose(
-            tools: tools,
-            nativeSearch: usesNativeSearch,
-            hasMemories: modelSupportsTools
-        )))
+        // The tool-inventory system message is composed inside the
+        // generation task, after the MCP merge, so MCP tools get the same
+        // rich inventory treatment as the built-ins instead of a bolted-on
+        // one-liner the model tended to ignore.
         requestMessages.insert(contentsOf: systemMessages, at: 0)
+        let composeInsertIndex = systemMessages.count
         var toolContext = ToolCatalog.ExecutionContext(
             conversationSummaries: conversations
                 .filter { $0.id != conversation.id }
@@ -1440,15 +1449,21 @@ final class AppModel {
             // one can never block the send path.
             var tools = tools
             if modelSupportsTools, let self {
-                let mcpDefinitions = await self.mcp.definitionsForSend()
-                if !mcpDefinitions.isEmpty {
-                    tools.append(contentsOf: mcpDefinitions)
-                    // The system prompt was already composed — append a
-                    // one-line inventory extension for the MCP tools.
-                    let names = mcpDefinitions.map(\.name).joined(separator: ", ")
-                    finalMessages.insert(ChatMessage(role: "system", content: "Additional MCP tools attached to this request: \(names). Use them like any other tool."), at: min(1, finalMessages.count))
+                let hasEnabledServers = self.mcp.servers.contains { $0.enabled && !$0.command.isEmpty }
+                if hasEnabledServers {
+                    // Cold servers spawn here — say so instead of letting
+                    // the reply just sit silent for a few seconds.
+                    self.statusMessage = "Starting MCP servers…"
                 }
+                let mcpDefinitions = await self.mcp.definitionsForSend()
+                if hasEnabledServers { self.statusMessage = nil }
+                tools.append(contentsOf: mcpDefinitions)
             }
+            finalMessages.insert(ChatMessage(role: "system", content: SystemPrompt.compose(
+                tools: tools,
+                nativeSearch: usesNativeSearch,
+                hasMemories: modelSupportsTools
+            )), at: min(composeInsertIndex, finalMessages.count))
             if shouldPrefetchSearch, let self {
                 do {
                     let results = try await CompatibleChatClient.shared.searchWeb(query: text, endpoint: trimmedSearchEndpoint)

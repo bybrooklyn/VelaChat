@@ -109,6 +109,15 @@ struct ChatView: View {
             .onChange(of: appModel.activeConversation?.messages.count ?? 0) { _, _ in
                 scrollToLast(proxy)
             }
+            .onChange(of: appModel.activeConversationID) { _, _ in
+                // The artifact panel, find bar, and scroll position all
+                // belonged to the previous conversation — carrying any of
+                // them across a switch shows stale state.
+                artifactPresenter.close()
+                appModel.isChatFindShown = false
+                appModel.chatFindHighlightID = nil
+                scrollToLast(proxy, animated: false)
+            }
             .onChange(of: appModel.activeConversation?.messages.last?.content.count ?? 0) { _, _ in
                 let now = Date()
                 // Matches the reveal cadence — 4x slower (the old 0.12s)
@@ -140,6 +149,8 @@ struct ChatView: View {
             .overlay(alignment: .top) {
                 if appModel.isChatFindShown, let conversation = appModel.activeConversation {
                     ChatFindBar(conversation: conversation, proxy: proxy)
+                        // Fresh query/match state per conversation.
+                        .id(conversation.id)
                         .padding(.top, chrome.isFullScreen ? 40 : 10)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
@@ -149,7 +160,9 @@ struct ChatView: View {
                 if let conversation = appModel.activeConversation, !conversation.pinnedMessages.isEmpty {
                     PinnedMessagesButton(conversation: conversation, proxy: proxy)
                         .padding(.trailing, 16)
-                        .padding(.top, 10)
+                        // Fullscreen has no titlebar clearance — same bump
+                        // as the find bar, or the chip hugs the screen edge.
+                        .padding(.top, chrome.isFullScreen ? 40 : 10)
                 }
             }
         }
@@ -757,6 +770,9 @@ private struct AttachMenu: View {
         .padding(8)
         .frame(width: 250)
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: page)
+        // Reopening the menu must start at the root, not wherever the
+        // last visit left off.
+        .onAppear { page = .root }
         .task {
             guard !ghChecked else { return }
             ghChecked = true
@@ -1217,8 +1233,15 @@ private struct MessageRow: View {
                         HStack(spacing: 10) {
                             if let summary = appModel.usageByMessage[displayedMessage.id] ?? displayedMessage.usage,
                                let label = summary.label {
+                                // Price against the provider that actually
+                                // produced this reply (stamped by name at
+                                // send time), not whatever is selected now.
+                                let costProviderID = appModel.providers.profiles
+                                    .first(where: { $0.name == displayedMessage.providerName })?.id
+                                    ?? appModel.activeConversation?.providerID
+                                    ?? UUID()
                                 let cost = summary.costUSD(for: appModel.providers.modelInfo(
-                                    for: appModel.activeConversation?.providerID ?? UUID(),
+                                    for: costProviderID,
                                     model: displayedMessage.modelID ?? ""
                                 ))
                                 Text(cost.map { label + String(format: " · $%.4f", $0) } ?? label)

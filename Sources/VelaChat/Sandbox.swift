@@ -36,6 +36,15 @@ enum SandboxManager {
         return base
     }
 
+    /// Deletes a conversation's workspace folder without creating it
+    /// first — `directory(for:)` creates on access, so deleting a
+    /// conversation must not route through it.
+    static func cleanup(for conversationID: UUID) {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("VelaChat/Workspaces/\(conversationID.uuidString)", isDirectory: true)
+        try? FileManager.default.removeItem(at: base)
+    }
+
     /// Resolves a model-provided relative path against the workspace
     /// directory and refuses anything that would escape it — `..`
     /// segments, absolute paths, or a standardized path that no longer has

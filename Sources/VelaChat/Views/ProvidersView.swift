@@ -27,6 +27,22 @@ struct ProviderEditorView: View {
         Group {
             if let profile {
                 Form {
+                    // The window toolbar is deliberately removed app-wide
+                    // (titlebar treatment), so the NavigationStack's own
+                    // back chevron never renders — without this row there
+                    // is no visible way back out of the editor.
+                    Section {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Label("All Providers", systemImage: "chevron.left")
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(Theme.secondaryText)
+                        }
+                        .buttonStyle(.plain)
+                        .keyboardShortcut(.cancelAction)
+                        .help("Back to the provider list (Esc)")
+                    }
                     Section {
                         HStack(spacing: 12) {
                             ProviderLogoView(kind: profile.kind, endpoint: profile.endpoint, size: 38)
@@ -117,23 +133,21 @@ struct ProviderEditorView: View {
                     ollamaModelManager(profile)
                     capabilities(profile)
                     providerDetails(profile)
+                    // In the form, not the toolbar — the removed window
+                    // toolbar would swallow a toolbar-placed button.
+                    if profile.kind == .compatible {
+                        Section {
+                            Button("Remove This Endpoint", role: .destructive) {
+                                appModel.providers.remove(id: profile.id)
+                                dismiss()
+                            }
+                        }
+                    }
                 }
                 .formStyle(.grouped)
                 .frame(maxWidth: Theme.Layout.settingsWidth)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .navigationTitle(profile.name)
-                .toolbar {
-                    if profile.kind == .compatible {
-                        ToolbarItem(placement: .destructiveAction) {
-                            Button(role: .destructive) {
-                                appModel.providers.remove(id: profile.id)
-                                dismiss()
-                            } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                        }
-                    }
-                }
                 .onAppear {
                     syncFields()
                     appModel.providers.discoverIfNeeded(id: profileID)
@@ -426,12 +440,14 @@ struct ProviderEditorView: View {
 
     private func syncFields() {
         guard let profile else { return }
-        name = profile.name
-        endpoint = profile.endpoint
-        model = profile.model
-        // The key field syncs from storage only until the user starts
-        // typing — a background catalog refresh re-running this used to
-        // overwrite a half-typed key with the stored (often empty) value.
+        // Fields sync from storage only while the user hasn't diverged
+        // from it — a background catalog refresh re-running this used to
+        // overwrite half-typed edits (key, name, endpoint, AND model)
+        // with the stored values. A field that still matches storage is
+        // safe to refill; one that differs is an in-progress edit.
+        if name == profile.name || name.isEmpty { name = profile.name }
+        if endpoint == profile.endpoint || endpoint.isEmpty { endpoint = profile.endpoint }
+        if model == profile.model || model.isEmpty { model = profile.model }
         if !apiKeyEdited {
             apiKey = appModel.providers.apiKey(for: profile.id)
         }
