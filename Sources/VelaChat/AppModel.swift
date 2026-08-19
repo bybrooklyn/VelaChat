@@ -166,8 +166,23 @@ final class AppModel {
         didSet { UserDefaults.standard.set(isClipboardToolEnabled, forKey: "velachat.clipboard-tool-enabled") }
     }
     var searchByMessage: [UUID: WebSearchRecord] = [:]
-    /// Latest live quota headers seen per provider this session.
-    var quotaByProvider: [UUID: QuotaSnapshot] = [:]
+    /// Latest live quota data seen per provider — persisted so plan
+    /// windows survive a relaunch, shown with an honest "as of" age
+    /// (headers only arrive on responses; there is no free refresh).
+    var quotaByProvider: [UUID: QuotaSnapshot] = [:] {
+        didSet {
+            if let data = try? JSONEncoder().encode(quotaByProvider) {
+                UserDefaults.standard.set(data, forKey: "velachat.quota-snapshots")
+            }
+        }
+    }
+
+    private func restoreQuotaSnapshots() {
+        guard let data = UserDefaults.standard.data(forKey: "velachat.quota-snapshots"),
+              let saved = try? JSONDecoder().decode([UUID: QuotaSnapshot].self, from: data) else { return }
+        let cutoff = Date().addingTimeInterval(-7 * 86_400)
+        quotaByProvider = saved.filter { $0.value.capturedAt > cutoff }
+    }
 
     /// True when search is reachable at all: either the provider searches
     /// natively, or a SearXNG endpoint is configured and the model takes tools.
@@ -252,6 +267,7 @@ final class AppModel {
             isHoverTimestampsEnabled = UserDefaults.standard.bool(forKey: "velachat.hover-timestamps-enabled")
         }
         isAppleIntelligenceEnabled = UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled")
+        restoreQuotaSnapshots()
         if UserDefaults.standard.object(forKey: "velachat.schedule-tool-enabled") != nil {
             isScheduleToolEnabled = UserDefaults.standard.bool(forKey: "velachat.schedule-tool-enabled")
         }

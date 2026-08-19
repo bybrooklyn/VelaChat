@@ -177,6 +177,19 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var isLocal: Bool { self == .ollama || self == .lmStudio || self == .appleIntelligence }
 
+    /// How usage is presented for this provider family. Subscription
+    /// plans show their real provider-reported windows; metered (API-key)
+    /// providers show locally counted meters + live rate-limit headers;
+    /// local providers cost nothing and show no gauge at all.
+    enum UsageStyle { case subscription, metered, local }
+    var usageStyle: UsageStyle {
+        switch self {
+        case .codex: .subscription
+        case .ollama, .lmStudio, .preview, .appleIntelligence: .local
+        default: .metered
+        }
+    }
+
     /// Where the provider's real logo lives — fetched at runtime by
     /// `RemoteLogoLoader` (own site first, Google favicons fallback).
     /// `nil` means hand-drawn mark only.
@@ -1022,10 +1035,10 @@ struct SavedConversation: Codable {
 /// A provider's live rate-limit/quota state, parsed from response headers
 /// when the provider sends them (Anthropic's anthropic-ratelimit-*,
 /// OpenAI-style x-ratelimit-*). Session-only — never persisted.
-struct QuotaSnapshot: Sendable, Equatable {
+struct QuotaSnapshot: Sendable, Equatable, Codable {
     /// A subscription-style usage window (Codex/ChatGPT plans): percent
     /// used of a rolling window, e.g. 5-hour and weekly.
-    struct Window: Sendable, Equatable {
+    struct Window: Sendable, Equatable, Codable {
         var usedPercent: Double
         var windowMinutes: Int?
         var resetAt: Date?

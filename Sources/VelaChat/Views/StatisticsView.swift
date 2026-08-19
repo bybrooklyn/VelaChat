@@ -5,17 +5,41 @@ private struct ProviderUsageRow: View {
     let profile: ProviderProfile
 
     var body: some View {
+        let fiveHours = appModel.usage.rollingFiveHours(providerID: profile.id)
         let today = appModel.usage.today(providerID: profile.id)
+        let week = appModel.usage.thisWeek(providerID: profile.id)
         let month = appModel.usage.thisMonth(providerID: profile.id)
         if month.requests > 0 {
-            LabeledContent(profile.name) {
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text("today \(today.requests) req · \(today.totalTokens) tok\(today.costLabel.map { " · \($0)" } ?? "")")
-                    Text("month \(month.requests) req · \(month.totalTokens) tok\(month.costLabel.map { " · \($0)" } ?? "")")
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    ProviderLogoView(kind: profile.kind, endpoint: profile.endpoint, size: 18)
+                    Text(profile.name)
+                        .font(.body.weight(.medium))
+                    Spacer(minLength: 0)
                 }
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 2) {
+                    windowLine("Last 5 hours", fiveHours)
+                    windowLine("Today", today)
+                    windowLine("This week", week)
+                    windowLine("This month", month)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    @ViewBuilder
+    private func windowLine(_ title: String, _ window: UsageWindow) -> some View {
+        GridRow {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(Theme.tertiaryText)
+            Text(window.requests == 0
+                 ? "—"
+                 : "\(window.requests) req · \(window.totalTokens) tok\(window.costLabel.map { " · \($0)" } ?? "")")
                 .font(.caption)
                 .foregroundStyle(Theme.secondaryText)
-            }
+                .gridColumnAlignment(.trailing)
         }
     }
 }
@@ -108,6 +132,23 @@ struct StatisticsView: View {
                 Text("Tokens")
             } footer: {
                 Text("Only counts replies where the provider actually reported usage — not every provider does on every request, so this can undercount. \"Served from cache\" is real provider-reported cache-hit tokens (OpenAI, DeepSeek, and Anthropic all report this; VelaChat also sets Anthropic's cache_control explicitly since, unlike the other two, it isn't automatic there).")
+            }
+
+            Section {
+                let profiles = appModel.providers.profiles.filter { $0.kind.usageStyle != .local }
+                if profiles.allSatisfy({ appModel.usage.thisMonth(providerID: $0.id).requests == 0 }) {
+                    Text("No counted requests yet this month.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.tertiaryText)
+                } else {
+                    ForEach(profiles) { profile in
+                        ProviderUsageRow(profile: profile)
+                    }
+                }
+            } header: {
+                Text("Per-Provider Usage")
+            } footer: {
+                Text("Counted locally on this Mac from provider-reported token usage. Subscription plan windows (Codex) live in the sidebar gauge; these are the raw local counts.")
             }
 
             Section {
