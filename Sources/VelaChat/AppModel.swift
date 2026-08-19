@@ -109,8 +109,11 @@ final class AppModel {
         didSet { UserDefaults.standard.set(searchEndpoint, forKey: "velachat.search-endpoint") }
     }
     /// Sticky like ChatGPT's search toggle — stays on across sends until the
-    /// user turns it off, not a one-shot-per-message flag.
-    var isWebSearchEnabled = false
+    /// user turns it off, not a one-shot-per-message flag. Persisted, so
+    /// "sticky" survives a relaunch too.
+    var isWebSearchEnabled = false {
+        didSet { UserDefaults.standard.set(isWebSearchEnabled, forKey: "velachat.web-search-enabled") }
+    }
     /// Gates the `write_file`/`read_file`/`list_workspace_files` tools —
     /// on by default since they're path-validated into a private,
     /// per-conversation, app-managed folder with no relationship to the
@@ -161,6 +164,7 @@ final class AppModel {
     /// of whether the provider streams in tiny or huge chunks.
     private var pendingReveal: [UUID: String] = [:]
     private var revealTasks: [UUID: Task<Void, Never>] = [:]
+    private var historySaveTask: Task<Void, Never>?
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: "velachat.thinking-level"),
@@ -188,6 +192,7 @@ final class AppModel {
         if UserDefaults.standard.object(forKey: "velachat.workspace-enabled") != nil {
             isWorkspaceEnabled = UserDefaults.standard.bool(forKey: "velachat.workspace-enabled")
         }
+        isWebSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.web-search-enabled")
         let corruptionNotice = restoreHistory()
         if conversations.isEmpty {
             _ = newConversation()
@@ -201,6 +206,11 @@ final class AppModel {
         speechSynthesizer.delegate = speechDelegate
         speechDelegate.onFinish = { [weak self] in
             Task { @MainActor in self?.speakingMessageID = nil }
+        }
+        // History saves are debounced (see `saveHistory`) — quitting inside
+        // the debounce window must not lose the last write.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flushHistoryNow() }
         }
     }
 
@@ -279,6 +289,11 @@ final class AppModel {
             messages = conversation.messages
         }
         return messages.reduce(0) { partial, message in
+            // Notices and other local-only cards are never sent, so they
+            // must not inflate the readout or trip auto-compaction early.
+            // The compaction-summary system message IS sent, and stays
+            // counted because it is not synthetic.
+            guard !message.isSynthetic else { return partial }
             let attachmentTokens = message.attachments.filter(\.isIncluded).reduce(0) { $0 + $1.estimatedTokens }
             return partial + max(1, message.content.utf8.count / 4) + attachmentTokens
         }
@@ -661,7 +676,7 @@ final class AppModel {
         if activeConversationID == conversation.id {
             activeConversationID = conversations.first?.id ?? newConversation().id
         }
-        saveHistory()
+        flushHistoryNow()
     }
 
     func clearHistory() {
@@ -673,7 +688,7 @@ final class AppModel {
         searchByMessage.removeAll()
         toolUsesByMessage.removeAll()
         _ = newConversation()
-        saveHistory()
+        flushHistoryNow()
     }
 
     func send(_ rawText: String) {
@@ -725,8 +740,9 @@ final class AppModel {
         let priorReply: ChatMessage? = nextIndex < conversation.messages.count && conversation.messages[nextIndex].role == "assistant"
             ? conversation.messages[nextIndex]
             : nil
+        let snapshot = conversation.messages
         conversation.messages.removeSubrange(index...)
-        send(newContent, replacingReplyWith: priorReply)
+        send(newContent, replacingReplyWith: priorReply, restoring: (conversation, snapshot))
     }
 
     /// Regenerates a specific assistant reply — works on any reply, not just
@@ -743,8 +759,9 @@ final class AppModel {
         guard index > 0, conversation.messages[index - 1].role == "user" else { return }
         let priorUser = conversation.messages[index - 1]
         let priorReply = conversation.messages[index]
+        let snapshot = conversation.messages
         conversation.messages.removeSubrange((index - 1)...)
-        send(priorUser.content, replacingReplyWith: priorReply)
+        send(priorUser.content, replacingReplyWith: priorReply, restoring: (conversation, snapshot))
     }
 
     /// Resumes a reply that stopped early — whether you hit Stop, or the
@@ -757,16 +774,30 @@ final class AppModel {
         send("Continue exactly where you left off — no repetition, no preamble.")
     }
 
-    private func send(_ rawText: String, replacingReplyWith priorReply: ChatMessage?, attachments: [Attachment] = []) {
+    private func send(_ rawText: String, replacingReplyWith priorReply: ChatMessage?, attachments: [Attachment] = [], restoring: (conversation: Conversation, messages: [ChatMessage])? = nil) {
+        // Edit/regenerate/retry remove messages before calling here, so every
+        // early bail must put them back — otherwise a missing provider or a
+        // failed discovery silently destroys the user's messages.
+        func restoreOnBail() {
+            guard let restoring else { return }
+            restoring.conversation.messages = restoring.messages
+        }
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty else { return }
+        guard !text.isEmpty || !attachments.isEmpty else {
+            restoreOnBail()
+            return
+        }
         guard let profile = providers.selected else {
+            restoreOnBail()
             postNotice("Choose a provider in Settings first.")
             section = .settings
             return
         }
         if profile.kind != .preview && !providers.hasDiscoveredModels(for: profile.id) {
-            guard !pendingDiscoverySends.contains(profile.id) else { return }
+            guard !pendingDiscoverySends.contains(profile.id) else {
+                restoreOnBail()
+                return
+            }
             pendingDiscoverySends.insert(profile.id)
             statusMessage = "Finding a model…"
             Task { [weak self] in
@@ -775,16 +806,18 @@ final class AppModel {
                 _ = await self.providers.ensureReady(id: profile.id)
                 if case .failed(let message) = self.providers.status(for: profile.id) {
                     self.statusMessage = nil
+                    restoreOnBail()
                     self.postNotice(message)
                     return
                 }
                 self.statusMessage = nil
-                self.send(text, replacingReplyWith: priorReply, attachments: attachments)
+                self.send(text, replacingReplyWith: priorReply, attachments: attachments, restoring: restoring)
             }
             return
         }
         let conversation = activeConversation ?? newConversation()
         guard !conversation.isGenerating else {
+            restoreOnBail()
             postNotice("Already generating a reply.", to: conversation)
             return
         }
@@ -800,6 +833,7 @@ final class AppModel {
             conversation.title = titleSource.count > 54 ? String(titleSource.prefix(54)) + "…" : titleSource
         }
         conversation.messages.append(ChatMessage(role: "user", content: text, attachments: attachments))
+        conversation.updatedAt = Date()
         // Stamped now, not read live off `selectedProvider` when displayed —
         // otherwise switching providers mid-conversation retroactively
         // relabeled every earlier reply with whatever's newly selected.
@@ -966,8 +1000,9 @@ final class AppModel {
         // `send` always appends a fresh user message, so the old one (and
         // everything after it, e.g. a failed reply) must go too — otherwise
         // retry duplicates the prompt instead of resending it.
+        let snapshot = conversation.messages
         conversation.messages.removeSubrange(lastUserIndex...)
-        send(lastUser.content)
+        send(lastUser.content, replacingReplyWith: nil, restoring: (conversation, snapshot))
     }
 
     private func append(token: String, reasoning: String, to conversation: Conversation, assistantID: UUID) {
@@ -979,7 +1014,9 @@ final class AppModel {
         if !reasoning.isEmpty, let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
             conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + reasoning
         }
-        conversation.updatedAt = Date()
+        // `updatedAt` is deliberately NOT touched here — it's @Observable,
+        // and writing it per token re-rendered every observer ~36x/second.
+        // It's stamped once in `send` and once when generation ends.
     }
 
     private func ensureRevealTask(for assistantID: UUID, conversation: Conversation) {
@@ -998,7 +1035,6 @@ final class AppModel {
                     return
                 }
                 conversation.messages[index].content += chunk
-                conversation.updatedAt = Date()
                 try? await Task.sleep(nanoseconds: 28_000_000)
             }
         }
@@ -1080,6 +1116,7 @@ final class AppModel {
         if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
             conversation.messages[index].isStreaming = false
         }
+        conversation.updatedAt = Date()
         // Only touch shared generation state (`isGenerating`/`generationTask`)
         // if this is still the *current* generation. A Stop immediately
         // followed by a new Send starts a new generation before this
@@ -1322,6 +1359,7 @@ final class AppModel {
             conversation.messages[index].isStreaming = false
             conversation.messages[index].error = message
         }
+        conversation.updatedAt = Date()
         // See the matching comment in `finishGeneration` — same race guard.
         if conversation.currentGenerationID == assistantID {
             conversation.isGenerating = false
@@ -1330,12 +1368,45 @@ final class AppModel {
         saveHistory()
     }
 
+    /// Debounced: encoding every conversation (attachments included) is
+    /// megabytes of synchronous JSON work — doing it inline on every notice,
+    /// pin, and finished reply stalled the main thread. Mutations mark dirty;
+    /// the actual encode runs ~1s later, off the main thread. Destructive
+    /// operations and app termination call `flushHistoryNow()` instead.
     private func saveHistory() {
+        guard historySaveTask == nil else { return }
+        historySaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.historySaveTask = nil
+            self.writeHistoryNow()
+        }
+    }
+
+    /// Synchronous — used on quit (a detached encode would race process
+    /// exit) and after destructive operations, where losing the write to a
+    /// crash inside the debounce window would be unacceptable.
+    func flushHistoryNow() {
+        historySaveTask?.cancel()
+        historySaveTask = nil
+        writeHistoryNow(synchronously: true)
+    }
+
+    private func writeHistoryNow(synchronously: Bool = false) {
         let snapshots = conversations.map {
             SavedConversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths)
         }
-        if let data = try? JSONEncoder().encode(snapshots) {
-            UserDefaults.standard.set(data, forKey: historyKey)
+        let key = historyKey
+        if synchronously {
+            if let data = try? JSONEncoder().encode(snapshots) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
+        } else {
+            Task.detached(priority: .utility) {
+                if let data = try? JSONEncoder().encode(snapshots) {
+                    UserDefaults.standard.set(data, forKey: key)
+                }
+            }
         }
     }
 

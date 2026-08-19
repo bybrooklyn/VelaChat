@@ -151,7 +151,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         switch self {
         case .preview: "Offline sample replies"
         case .openAI: "OpenAI’s own API — the OpenAI-compatible standard"
-        case .anthropic: "Claude, via Anthropic’s OpenAI-compatible endpoint"
+        case .anthropic: "Claude, via Anthropic’s native Messages API"
         case .google: "Gemini, via Google’s OpenAI-compatible endpoint"
         case .deepSeek: "DeepSeek hosted API"
         case .openRouter: "One key, hundreds of models"

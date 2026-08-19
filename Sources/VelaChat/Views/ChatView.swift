@@ -777,6 +777,12 @@ private struct MessageRow: View {
 
                     if let error = displayedMessage.error {
                         VStack(alignment: .leading, spacing: 8) {
+                            // A mid-stream failure keeps whatever already
+                            // streamed — hiding 800 words behind a triangle
+                            // was pure data loss for the reader.
+                            if !displayedMessage.content.isEmpty {
+                                RichMessageText(text: displayedMessage.content, isUser: false)
+                            }
                             Label(error, systemImage: "exclamationmark.triangle")
                                 .foregroundStyle(Theme.danger)
                             if alternateIndex == 0 {
@@ -1458,7 +1464,10 @@ private struct SearchResultsDisclosure: View {
                     .font(.caption)
                     .foregroundStyle(Theme.tertiaryText)
                 ForEach(record.results) { result in
-                    Link(destination: URL(string: result.url) ?? URL(string: "https://\(result.url)")!) {
+                    // Search-result URLs are model/provider-supplied text —
+                    // never force-unwrap them into URL(string:).
+                    if let destination = URL(string: result.url) ?? URL(string: "https://\(result.url)") {
+                        Link(destination: destination) {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: "link")
                                 .font(.system(size: 9, weight: .semibold))
@@ -1485,8 +1494,9 @@ private struct SearchResultsDisclosure: View {
                         .padding(.horizontal, 9)
                         .padding(.vertical, 8)
                         .background(Theme.controlBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }

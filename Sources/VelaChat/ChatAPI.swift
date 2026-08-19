@@ -269,7 +269,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         }
 
         if profile.kind == .anthropic {
-            try await streamAnthropic(model: model, credential: credential, thinking: thinking, modelInfo: modelInfo, messages: messages, tools: tools, toolContext: toolContext, onEvent: onEvent)
+            try await streamAnthropic(profile: profile, model: model, credential: credential, thinking: thinking, modelInfo: modelInfo, messages: messages, tools: tools, toolContext: toolContext, onEvent: onEvent)
             return
         }
 
@@ -640,8 +640,16 @@ final class CompatibleChatClient: @unchecked Sendable {
         }
     }
 
+    /// Builds Anthropic URLs from the profile's editable endpoint (default
+    /// `https://api.anthropic.com/v1`) instead of a hardcoded host, so
+    /// proxies/gateways actually work when the user edits the field.
+    private static func anthropicURL(profile: ProviderProfile, path: String) -> URL? {
+        let base = profile.endpoint.hasSuffix("/") ? String(profile.endpoint.dropLast()) : profile.endpoint
+        return URL(string: base + path)
+    }
+
     private func fetchAnthropicModels(profile: ProviderProfile, credential: ProviderCredential) async throws -> [RemoteModel] {
-        guard let url = URL(string: "https://api.anthropic.com/v1/models?limit=100") else {
+        guard let url = Self.anthropicURL(profile: profile, path: "/models?limit=100") else {
             throw APIError.message("Invalid Anthropic endpoint")
         }
         var request = URLRequest(url: url)
@@ -664,6 +672,7 @@ final class CompatibleChatClient: @unchecked Sendable {
     /// (`content_block_delta` with a `text_delta`/`thinking_delta` payload,
     /// not `choices[].delta.content`).
     private func streamAnthropic(
+        profile: ProviderProfile,
         model: String,
         credential: ProviderCredential,
         thinking: ThinkingLevel,
@@ -673,7 +682,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         toolContext: ToolCatalog.ExecutionContext? = nil,
         onEvent: @escaping @Sendable (ChatStreamEvent) -> Void
     ) async throws {
-        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
+        guard let url = Self.anthropicURL(profile: profile, path: "/messages") else {
             throw APIError.message("Invalid Anthropic endpoint")
         }
 
