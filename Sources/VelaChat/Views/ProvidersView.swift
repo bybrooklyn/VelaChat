@@ -96,8 +96,11 @@ struct ProviderEditorView: View {
                                 Task { await test(profile) }
                             } label: {
                                 HStack(spacing: 6) {
-                                    if isTesting { ProgressView().controlSize(.small) }
-                                    Text(isTesting ? "Testing…" : "Test Connection")
+                                    if isTesting {
+                                        ShimmerText(text: "Testing…", font: .body)
+                                    } else {
+                                        Text("Test Connection")
+                                    }
                                 }
                             }
                             .buttonStyle(.bordered)
@@ -285,7 +288,7 @@ struct ProviderEditorView: View {
                 if let fraction = state.fraction {
                     ProgressView(value: fraction)
                 } else {
-                    ProgressView()
+                    ShimmerText(text: state.status, font: .caption)
                 }
                 Text(state.status)
                     .font(.caption)
