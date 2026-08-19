@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import KeyboardShortcuts
 import SwiftUI
 import AVFoundation
 import AppKit
@@ -82,6 +83,11 @@ final class AppModel {
     /// RootView re-renders on change via .id.
     var accentPreset: AccentPreset = AccentPreset.current {
         didSet { AccentPreset.current = accentPreset }
+    }
+    /// First-launch flow gate. Existing installs are migrated to true
+    /// silently in init so only genuinely new users see onboarding.
+    var hasOnboarded = false {
+        didSet { UserDefaults.standard.set(hasOnboarded, forKey: "velachat.has-onboarded") }
     }
     var conversations: [Conversation] = []
     var activeConversationID: UUID?
@@ -222,9 +228,17 @@ final class AppModel {
             isHoverTimestampsEnabled = UserDefaults.standard.bool(forKey: "velachat.hover-timestamps-enabled")
         }
         isWebSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.web-search-enabled")
+        hasOnboarded = UserDefaults.standard.bool(forKey: "velachat.has-onboarded")
         let corruptionNotice = restoreHistory()
         if conversations.isEmpty {
             _ = newConversation()
+        }
+        // Existing installs never see onboarding — anything already saved
+        // marks the app as familiar.
+        if !hasOnboarded, !conversations.isEmpty || UserDefaults.standard.data(forKey: historyKey) != nil {
+            if conversations.contains(where: { !$0.realMessages.isEmpty }) {
+                hasOnboarded = true
+            }
         }
         // One-time: auto-discovery of ~/.claude/skills and ~/.codex/skills
         // is gone — skills from there that are ACTIVE in some conversation
@@ -616,6 +630,48 @@ final class AppModel {
             }
             self.postNotice("Cloned \(nameWithOwner) into this chat's workspace — the model can browse it with its file tools.", kind: "success", to: conversation)
         }
+    }
+
+    /// Wipes everything: chats, memories, snippets, settings, API keys,
+    /// workspace files, logo cache, hotkey — then returns to onboarding.
+    /// Order matters: in-memory state resets BEFORE the defaults purge,
+    /// because property didSets re-write their keys.
+    func performFullReset() {
+        for conversation in conversations where conversation.isGenerating {
+            stopGeneration(for: conversation)
+        }
+        providers.performFullReset()
+        // App Support: workspaces + fetched logos.
+        if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            try? FileManager.default.removeItem(at: support.appendingPathComponent("VelaChat", isDirectory: true))
+        }
+        KeyboardShortcuts.reset(.summonVelaChat)
+        conversations.removeAll()
+        pendingConversation = nil
+        usageByMessage.removeAll()
+        searchByMessage.removeAll()
+        memories.removeAll()
+        promptSnippets.removeAll()
+        customInstructions = ""
+        searchEndpoint = ""
+        isWebSearchEnabled = false
+        isWorkspaceEnabled = true
+        isConversationSearchEnabled = true
+        isAutoTitleEnabled = true
+        isHoverTimestampsEnabled = true
+        thinkingLevel = .auto
+        messageWidth = .comfortable
+        density = .comfortable
+        accentPreset = .teal
+        // Purge every app default LAST — the resets above just re-wrote
+        // some keys via didSet; this sweep removes them all for real.
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("velachat.") {
+            defaults.removeObject(forKey: key)
+        }
+        section = .chat
+        _ = newConversation()
+        hasOnboarded = false
     }
 
     func toggleSidebar() {

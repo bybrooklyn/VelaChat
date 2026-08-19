@@ -545,6 +545,23 @@ final class ProviderStore {
         }
     }
 
+    /// Full-reset support: removes every stored API key, then rebuilds the
+    /// default profiles from scratch (fresh IDs are fine — the keys are
+    /// gone on purpose) and clears every cache.
+    func performFullReset() {
+        for profile in profiles {
+            _ = SecureStore.set(nil, for: keychainAccount(profile.id))
+        }
+        profiles = ProviderProfile.defaults()
+        modelsByID = [:]
+        statusByID = [:]
+        hasKeyByID = [:]
+        refreshedAtByID = [:]
+        catalogCache = [:]
+        if let first = profiles.first?.id { selectedID = first }
+        saveProfiles()
+    }
+
     func resetBuiltIns() {
         let custom = profiles.filter { $0.kind == .compatible }
         // Reuses each built-in's existing ID rather than the fresh random one

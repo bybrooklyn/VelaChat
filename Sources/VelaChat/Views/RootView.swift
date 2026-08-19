@@ -4,8 +4,21 @@ struct RootView: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
+        Group {
+            if appModel.hasOnboarded {
+                mainInterface
+            } else {
+                OnboardingView()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.3), value: appModel.hasOnboarded)
+        .task { appModel.start() }
+    }
+
+    private var mainInterface: some View {
         @Bindable var appModel = appModel
-        NavigationSplitView(columnVisibility: $appModel.sidebarVisibility) {
+        return NavigationSplitView(columnVisibility: $appModel.sidebarVisibility) {
             SidebarView()
                 // The system toolbar (and its sidebar toggle) is gone — the
                 // app's own toggle lives in the sidebar header instead, so
@@ -40,7 +53,6 @@ struct RootView: View {
         // rebuild on this rare, explicit action is the honest fix (known
         // cost: scroll position resets).
         .id(appModel.accentPreset)
-        .task { appModel.start() }
         .sheet(isPresented: $appModel.isCommandPaletteShown) {
             CommandPaletteView(isPresented: $appModel.isCommandPaletteShown)
         }

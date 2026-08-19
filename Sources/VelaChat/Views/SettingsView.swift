@@ -4,6 +4,7 @@ import KeyboardShortcuts
 
 /// The jump-rail's section catalog — order matches the cards.
 enum SettingsSection: String, CaseIterable, Identifiable {
+    case general = "General"
     case providers = "Providers"
     case instructions = "Instructions"
     case memory = "Memory"
@@ -11,8 +12,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case snippets = "Snippets"
     case webSearch = "Web Search"
     case tools = "Tools"
-    case shortcut = "Shortcut"
-    case general = "General"
     case statistics = "Statistics"
     case about = "About"
 
@@ -27,7 +26,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .snippets: "text.badge.plus"
         case .webSearch: "globe"
         case .tools: "wrench.and.screwdriver"
-        case .shortcut: "keyboard"
         case .general: "gearshape"
         case .statistics: "chart.bar.xaxis"
         case .about: "info.circle"
@@ -51,16 +49,9 @@ private struct SettingsCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                Image(systemName: section.symbol)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 24, height: 24)
-                    .background(Theme.accentSoft.opacity(0.8), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                Text(section.rawValue)
-                    .font(.headline)
-                    .foregroundStyle(Theme.text)
-            }
+            Text(section.rawValue)
+                .font(.headline)
+                .foregroundStyle(Theme.text)
             content()
                 .toggleStyle(.switch)
                 .tint(Theme.accentStrong)
@@ -95,10 +86,11 @@ struct SettingsView: View {
     @Environment(WindowChrome.self) private var chrome
     @State private var confirmClear = false
     @State private var confirmReset = false
+    @State private var confirmFullReset = false
     @State private var editingProfileID: UUID?
     @State private var isAddingSnippet = false
     @State private var isAddingProvider = false
-    @State private var activeSection: SettingsSection = .providers
+    @State private var activeSection: SettingsSection = .general
     @State private var newMemoryText = ""
 
     private var topBarHeight: CGFloat { chrome.isFullScreen ? 44 : 52 }
@@ -170,6 +162,79 @@ struct SettingsView: View {
                     jumpRail(proxy: proxy)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
+                    SettingsCard(section: .general, footer: Text("Messages are never relayed through an app-owned server.")) {
+
+                LabeledContent("Accent color") {
+                    HStack(spacing: 7) {
+                        ForEach(AccentPreset.allCases) { preset in
+                            Button {
+                                appModel.accentPreset = preset
+                            } label: {
+                                Circle()
+                                    .fill(Color(hex: preset.baseHex))
+                                    .frame(width: 20, height: 20)
+                                    .overlay {
+                                        Circle().stroke(Theme.text, lineWidth: preset == appModel.accentPreset ? 2 : 0)
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .help(preset.displayName)
+                            .animation(.easeOut(duration: 0.15), value: appModel.accentPreset)
+                        }
+                    }
+                }
+                Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
+                Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
+                KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
+                Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
+                Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
+                Picker("Message width", selection: $appModel.messageWidth) {
+                    ForEach(MessageWidthPreset.allCases) { preset in
+                        Text(preset.displayName).tag(preset)
+                    }
+                }
+                Picker("Density", selection: $appModel.density) {
+                    ForEach(DensityPreset.allCases) { preset in
+                        Text(preset.displayName).tag(preset)
+                    }
+                }
+                LabeledContent("Conversation history") {
+                    Text("Stored locally")
+                        .foregroundStyle(Theme.secondaryText)
+                }
+                Button("Clear conversation history", role: .destructive) {
+                    confirmClear = true
+                }
+                .confirmationDialog("Delete all conversations?", isPresented: $confirmClear) {
+                    Button("Delete Everything", role: .destructive) {
+                        appModel.clearHistory()
+                    }
+                } message: {
+                    Text("This cannot be undone.")
+                }
+                Button("Reset built-in provider presets", role: .destructive) {
+                    confirmReset = true
+                }
+                Button("Reset VelaChat completely…", role: .destructive) {
+                    confirmFullReset = true
+                }
+                .confirmationDialog("Reset VelaChat completely?", isPresented: $confirmFullReset) {
+                    Button("Erase Everything", role: .destructive) {
+                        appModel.performFullReset()
+                    }
+                } message: {
+                    Text("Every conversation, memory, setting, API key, and workspace file on this Mac is erased, and the app returns to first launch. This cannot be undone.")
+                }
+                .confirmationDialog("Reset provider presets?", isPresented: $confirmReset) {
+                    Button("Reset Presets", role: .destructive) {
+                        appModel.providers.resetBuiltIns()
+                    }
+                } message: {
+                    Text("Custom endpoints are kept, but built-in endpoint and model values return to their defaults.")
+                }
+                    }
+
+
                     SettingsCard(section: .providers, footer: Text("Keys stay in your macOS Keychain. Requests go straight to the provider.")) {
 
                 ForEach(visibleProfiles) { profile in
@@ -205,6 +270,8 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accent)
                     }
+
+
                     SettingsCard(section: .instructions, footer: Text("Sent invisibly with every message \u{2014} who you are and how the model should respond.")) {
 
                 TextEditor(text: $appModel.customInstructions)
@@ -213,6 +280,8 @@ struct SettingsView: View {
                     .scrollContentBackground(.hidden)
                     .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
                     }
+
+
                     SettingsCard(section: .memory, footer: Text("Written by the model as you chat, kept on this Mac only \u{2014} yours to edit or remove, grouped by topic.")) {
 
                 if appModel.memories.isEmpty {
@@ -260,6 +329,8 @@ struct SettingsView: View {
                     .disabled(newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                     }
+
+
                     SettingsCard(section: .skills, footer: Text("Add any folder containing a SKILL.md \u{2014} the same format Claude Code and Codex use. Invoke one from the / menu.")) {
 
                 if appModel.skills.skills.isEmpty {
@@ -305,6 +376,8 @@ struct SettingsView: View {
                 .buttonStyle(VelaIconButtonStyle())
                 .foregroundStyle(Theme.accent)
                     }
+
+
                     SettingsCard(section: .snippets, footer: Text("Save a prompt once, reuse it from the / menu.")) {
 
                 if appModel.promptSnippets.isEmpty {
@@ -341,6 +414,8 @@ struct SettingsView: View {
                 .buttonStyle(VelaIconButtonStyle())
                 .foregroundStyle(Theme.accent)
                     }
+
+
                     SettingsCard(section: .webSearch, footer: Text("A SearXNG fallback for providers without built-in search (pick one from searx.space). Toggle search on in the composer.")) {
 
                 LabeledContent("Fallback search") {
@@ -351,6 +426,8 @@ struct SettingsView: View {
                         .frame(maxWidth: 320)
                 }
                     }
+
+
                     SettingsCard(section: .tools, footer: Text("Lets tool-capable models search your past conversations and use a private per-conversation folder. There is no shell or command execution.")) {
 
                 Toggle("Workspace files", isOn: $appModel.isWorkspaceEnabled)
@@ -363,68 +440,8 @@ struct SettingsView: View {
                     .foregroundStyle(Theme.accent)
                 }
                     }
-                    SettingsCard(section: .shortcut, footer: Text("Works from anywhere on the Mac.")) {
 
-                KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
-                    }
-                    SettingsCard(section: .general, footer: Text("Messages are never relayed through an app-owned server.")) {
 
-                LabeledContent("Accent color") {
-                    HStack(spacing: 7) {
-                        ForEach(AccentPreset.allCases) { preset in
-                            Button {
-                                appModel.accentPreset = preset
-                            } label: {
-                                Circle()
-                                    .fill(Color(hex: preset.baseHex))
-                                    .frame(width: 20, height: 20)
-                                    .overlay {
-                                        Circle().stroke(Theme.text, lineWidth: preset == appModel.accentPreset ? 2 : 0)
-                                    }
-                            }
-                            .buttonStyle(.plain)
-                            .help(preset.displayName)
-                            .animation(.easeOut(duration: 0.15), value: appModel.accentPreset)
-                        }
-                    }
-                }
-                Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
-                Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
-                Picker("Message width", selection: $appModel.messageWidth) {
-                    ForEach(MessageWidthPreset.allCases) { preset in
-                        Text(preset.displayName).tag(preset)
-                    }
-                }
-                Picker("Density", selection: $appModel.density) {
-                    ForEach(DensityPreset.allCases) { preset in
-                        Text(preset.displayName).tag(preset)
-                    }
-                }
-                LabeledContent("Conversation history") {
-                    Text("Stored locally")
-                        .foregroundStyle(Theme.secondaryText)
-                }
-                Button("Clear conversation history", role: .destructive) {
-                    confirmClear = true
-                }
-                .confirmationDialog("Delete all conversations?", isPresented: $confirmClear) {
-                    Button("Delete Everything", role: .destructive) {
-                        appModel.clearHistory()
-                    }
-                } message: {
-                    Text("This cannot be undone.")
-                }
-                Button("Reset built-in provider presets", role: .destructive) {
-                    confirmReset = true
-                }
-                .confirmationDialog("Reset provider presets?", isPresented: $confirmReset) {
-                    Button("Reset Presets", role: .destructive) {
-                        appModel.providers.resetBuiltIns()
-                    }
-                } message: {
-                    Text("Custom endpoints are kept, but built-in endpoint and model values return to their defaults.")
-                }
-                    }
                     SettingsCard(section: .statistics, footer: Text("Lifetime messages, tokens, and per-model usage.")) {
 
                 NavigationLink {
@@ -433,6 +450,8 @@ struct SettingsView: View {
                     Label("Statistics", systemImage: "chart.bar.xaxis")
                 }
                     }
+
+
                     SettingsCard(section: .about) {
 
                 HStack(spacing: 12) {
@@ -503,10 +522,7 @@ struct SettingsView: View {
                         proxy.scrollTo(section, anchor: .top)
                     }
                 } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: section.symbol)
-                            .font(.system(size: 11, weight: .medium))
-                            .frame(width: 16)
+                    HStack {
                         Text(section.rawValue)
                             .font(.caption)
                             .lineLimit(1)
