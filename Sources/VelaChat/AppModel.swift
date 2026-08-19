@@ -129,6 +129,14 @@ final class AppModel {
     var isConversationSearchEnabled = true {
         didSet { UserDefaults.standard.set(isConversationSearchEnabled, forKey: "velachat.conversation-search-enabled") }
     }
+    /// Automatic model-generated chat titles after the first exchange.
+    var isAutoTitleEnabled = true {
+        didSet { UserDefaults.standard.set(isAutoTitleEnabled, forKey: "velachat.auto-title-enabled") }
+    }
+    /// Hover timestamps on messages.
+    var isHoverTimestampsEnabled = true {
+        didSet { UserDefaults.standard.set(isHoverTimestampsEnabled, forKey: "velachat.hover-timestamps-enabled") }
+    }
     var searchByMessage: [UUID: WebSearchRecord] = [:]
 
     /// True when search is reachable at all: either the provider searches
@@ -206,6 +214,12 @@ final class AppModel {
         }
         if UserDefaults.standard.object(forKey: "velachat.conversation-search-enabled") != nil {
             isConversationSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.conversation-search-enabled")
+        }
+        if UserDefaults.standard.object(forKey: "velachat.auto-title-enabled") != nil {
+            isAutoTitleEnabled = UserDefaults.standard.bool(forKey: "velachat.auto-title-enabled")
+        }
+        if UserDefaults.standard.object(forKey: "velachat.hover-timestamps-enabled") != nil {
+            isHoverTimestampsEnabled = UserDefaults.standard.bool(forKey: "velachat.hover-timestamps-enabled")
         }
         isWebSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.web-search-enabled")
         let corruptionNotice = restoreHistory()
@@ -693,7 +707,7 @@ final class AppModel {
         // before the network call could resolve used to mean a failed
         // regenerate silently and permanently forgot the user's manual
         // title even though nothing else changed.
-        guard force || (!conversation.titleIsCustom && conversation.realMessages.count == 2),
+        guard force || (isAutoTitleEnabled && !conversation.titleIsCustom && conversation.realMessages.count == 2),
               profile.kind != .preview else { return }
         guard let firstUser = conversation.messages.first(where: { $0.role == "user" }),
               let firstAssistant = conversation.messages.first(where: { $0.role == "assistant" }),
@@ -1145,10 +1159,7 @@ final class AppModel {
             systemMessages.append(ChatMessage(role: "system", content: trimmedInstructions))
         }
         if !memories.isEmpty {
-            let managementNote = modelSupportsTools
-                ? "\n\nYou maintain this memory yourself: save new durable facts with save_memory as you learn them, and correct or remove outdated ones with edit_memory."
-                : ""
-            systemMessages.append(ChatMessage(role: "system", content: "Remembered facts about the user, true across every conversation:\n\(relevantMemoryText(for: conversation))\(managementNote)"))
+            systemMessages.append(ChatMessage(role: "system", content: "Remembered facts about the user, true across every conversation:\n\(relevantMemoryText(for: conversation))"))
         }
         // Active skills' bodies become extra scoped context for the rest of
         // this conversation — capped per skill and in total, since an
@@ -1168,10 +1179,11 @@ final class AppModel {
             skillBudget -= body.count
             systemMessages.append(ChatMessage(role: "system", content: "Skill \"\(skill.name)\":\n\n\(body)"))
         }
-        if let inventory = ToolCatalog.inventoryInstruction(tools: tools, nativeSearch: usesNativeSearch) {
-            systemMessages.append(ChatMessage(role: "system", content: inventory))
-        }
-        systemMessages.append(ChatMessage(role: "system", content: Self.askUserQuestionInstruction))
+        systemMessages.append(ChatMessage(role: "system", content: SystemPrompt.compose(
+            tools: tools,
+            nativeSearch: usesNativeSearch,
+            hasMemories: modelSupportsTools
+        )))
         requestMessages.insert(contentsOf: systemMessages, at: 0)
         let toolContext = ToolCatalog.ExecutionContext(
             conversationSummaries: conversations

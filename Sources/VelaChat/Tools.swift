@@ -121,24 +121,7 @@ enum ToolCatalog {
         guidance: "Keep memory truthful: when the user corrects something you had saved, update it rather than saving a contradicting duplicate."
     )
 
-    /// The system-prompt tool inventory: the wire `tools` array alone is not
-    /// enough — models routinely claim "I don't have internet access" while
-    /// a web_search tool sits attached. Built from the exact tools being
-    /// attached, so it never advertises something the request doesn't carry.
-    static func inventoryInstruction(tools: [Definition], nativeSearch: Bool) -> String? {
-        guard !tools.isEmpty else { return nil }
-        var lines = [
-            "You have real, callable tools attached to this request. Use them — never claim you lack a capability one of them provides."
-        ]
-        for tool in tools {
-            lines.append("- \(tool.name): \(tool.summary). \(tool.guidance)")
-        }
-        if nativeSearch {
-            lines.append("- (Your provider also performs live web search natively on this request.)")
-        }
-        lines.append("Call tools as often as genuinely needed; results come back to you before you answer. Keep your final answer grounded in what the tools returned.")
-        return lines.joined(separator: "\n")
-    }
+
 
     /// What a tool call actually needs at execution time — read-only
     /// snapshots, not a live reference to `AppModel` (this runs from
