@@ -1837,7 +1837,9 @@ final class AppModel {
                 nativeSearch: usesNativeSearch,
                 hasMemories: modelSupportsTools,
                 providerName: profile.name,
-                modelID: model
+                providerKind: profile.kind,
+                modelID: model,
+                contextWindow: modelInfo?.contextLength
             )
             if let self {
                 promptContext.userFirstName = NSFullUserName().components(separatedBy: " ").first
@@ -1845,6 +1847,7 @@ final class AppModel {
                 promptContext.activeSkillNames = conversation.activeSkillPaths.compactMap { path in
                     self.skills.skills.first(where: { $0.folderPath == path })?.name
                 }
+                promptContext.hasAttachedFolder = conversation.workspaceRootPath != nil
                 promptContext.memoryCount = self.memories.count
                 promptContext.attachmentNames = conversation.realMessages.flatMap { $0.attachments.map(\.filename) }
             }
