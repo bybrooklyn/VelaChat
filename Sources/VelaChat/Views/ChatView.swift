@@ -9,6 +9,7 @@ struct ChatView: View {
     @State private var lastScrollAt = Date.distantPast
     @State private var isDropTargeted = false
     @FocusState private var inputFocused: Bool
+    @State private var isAttachMenuShown = false
 
     /// Content is capped wide enough to read comfortably without becoming the
     /// narrow column it used to be — the old 720pt cap wasted most of the
@@ -383,13 +384,25 @@ private struct PinnedMessagesButton: View {
                 VelaGlassContainer {
                     HStack(spacing: 7) {
                         Button {
-                            presentAttachPanel()
+                            isAttachMenuShown.toggle()
                         } label: {
                             Image(systemName: "plus")
                                 .font(.system(size: 14, weight: .semibold))
+                                .rotationEffect(.degrees(isAttachMenuShown ? 45 : 0))
                         }
                         .buttonStyle(AttachPlusButtonStyle())
-                        .help("Attach a file, image, or a git repo folder")
+                        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isAttachMenuShown)
+                        .help("Attach")
+                        .popover(isPresented: $isAttachMenuShown, arrowEdge: .top) {
+                            AttachMenu(
+                                onFile: { isAttachMenuShown = false; presentAttachPanel() },
+                                onPasteboard: { isAttachMenuShown = false; pasteFromClipboard() },
+                                onRepo: { repo in
+                                    isAttachMenuShown = false
+                                    appModel.cloneGitHubRepo(repo)
+                                }
+                            )
+                        }
                         ModelPickerButton()
                         if appModel.availableThinkingLevels.count > 1 {
                             ThinkingPickerButton()
@@ -527,6 +540,24 @@ private struct PinnedMessagesButton: View {
         for url in panel.urls { addAttachment(from: url) }
     }
 
+    /// The plus menu's clipboard path: file URLs attach as files, images as
+    /// image attachments — same handlers the composer's paste command uses.
+    private func pasteFromClipboard() {
+        let pasteboard = NSPasteboard.general
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
+            for url in urls { addAttachment(from: url) }
+            return
+        }
+        if let image = NSImage(pasteboard: pasteboard),
+           let tiff = image.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiff),
+           let png = bitmap.representation(using: .png, properties: [:]) {
+            draftAttachments.wrappedValue.append(Attachment(kind: .image, filename: "Pasted Image.png", mimeType: "image/png", data: png))
+            return
+        }
+        appModel.postNotice("The clipboard has no file or image to attach.")
+    }
+
     private func handlePaste(_ providers: [NSItemProvider]) {
         for provider in providers {
             if provider.canLoadObject(ofClass: NSImage.self) {
@@ -584,6 +615,158 @@ private struct PinnedMessagesButton: View {
 /// nothing-to-send state stays a plain stroked outline rather than an
 /// untinted glass circle, which would read as inconsistent floating chrome
 /// with nothing to visually anchor it.
+/// The plus button's glass menu: file, GitHub repo (only when the gh CLI
+/// is installed and logged in), clipboard, and a cloud page that morphs in
+/// with providers marked coming-soon.
+private struct AttachMenu: View {
+    enum Page { case root, repos, cloud }
+
+    let onFile: () -> Void
+    let onPasteboard: () -> Void
+    let onRepo: (String) -> Void
+
+    @State private var page: Page = .root
+    @State private var repos: [String]? = nil
+    @State private var ghChecked = false
+    @State private var ghAvailable = false
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            switch page {
+            case .root: rootPage
+            case .repos: reposPage
+            case .cloud: cloudPage
+            }
+        }
+        .padding(8)
+        .frame(width: 250)
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: page)
+        .task {
+            guard !ghChecked else { return }
+            ghChecked = true
+            let list = await appModel.fetchGitHubRepos()
+            ghAvailable = list != nil
+            repos = list
+        }
+    }
+
+    @ViewBuilder
+    private var rootPage: some View {
+        menuRow(symbol: "doc.badge.plus", title: "Attach file…", action: onFile)
+        if ghAvailable {
+            menuRow(symbol: "arrow.triangle.branch", title: "Add GitHub repo", chevron: true) {
+                page = .repos
+            }
+        }
+        menuRow(symbol: "doc.on.clipboard", title: "Paste from clipboard", action: onPasteboard)
+        menuRow(symbol: "cloud", title: "Cloud storage", chevron: true) {
+            page = .cloud
+        }
+    }
+
+    @ViewBuilder
+    private var reposPage: some View {
+        backRow(title: "GitHub repos")
+        if let repos, !repos.isEmpty {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(repos, id: \.self) { repo in
+                        menuRow(symbol: "arrow.triangle.branch", title: repo) {
+                            onRepo(repo)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+        } else if repos == nil {
+            ShimmerText(text: "Loading repos…", font: .callout)
+                .padding(10)
+        } else {
+            Text("No repositories found.")
+                .font(.callout)
+                .foregroundStyle(Theme.tertiaryText)
+                .padding(10)
+        }
+    }
+
+    @ViewBuilder
+    private var cloudPage: some View {
+        backRow(title: "Cloud storage")
+        disabledRow(symbol: "externaldrive.badge.icloud", title: "Google Drive", note: "connect — coming soon")
+        disabledRow(symbol: "externaldrive.badge.icloud", title: "Proton Drive", note: "connect — coming soon")
+    }
+
+    private func backRow(title: String) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                page = .root
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.secondaryText)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Theme.tertiaryText)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+
+    private func menuRow(symbol: String, title: String, chevron: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
+                    .frame(width: 18)
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if chevron {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(MenuRowButtonStyle())
+    }
+
+    private func disabledRow(symbol: String, title: String, note: String) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 18)
+            Text(title)
+                .font(.callout)
+            Spacer(minLength: 0)
+            Text(note)
+                .font(.caption2)
+        }
+        .foregroundStyle(Theme.tertiaryText)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+    }
+}
+
+private struct MenuRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                configuration.isPressed ? Theme.controlBackground : Color.clear,
+                in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+            )
+    }
+}
+
 /// The composer's plus button: a circular control with real physical press
 /// feedback — it visibly depresses before the file panel opens.
 private struct AttachPlusButtonStyle: ButtonStyle {

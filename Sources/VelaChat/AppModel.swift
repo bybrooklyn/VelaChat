@@ -523,6 +523,87 @@ final class AppModel {
         return notice
     }
 
+    // MARK: - GitHub (gh CLI) repo attach
+
+    /// Found gh binary path, checked once per launch. nil = not installed.
+    private var cachedGHPath: String??
+
+    private func ghPath() -> String? {
+        if let cached = cachedGHPath { return cached }
+        let candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
+        let found = candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        cachedGHPath = .some(found)
+        return found
+    }
+
+    private static func runProcess(_ launchPath: String, _ arguments: [String]) async -> (status: Int32, stdout: String, stderr: String) {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: launchPath)
+                process.arguments = arguments
+                let out = Pipe(), err = Pipe()
+                process.standardOutput = out
+                process.standardError = err
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    continuation.resume(returning: (process.terminationStatus, stdout, stderr))
+                } catch {
+                    continuation.resume(returning: (127, "", error.localizedDescription))
+                }
+            }
+        }
+    }
+
+    /// nil = gh missing or not logged in; otherwise "owner/name" list.
+    func fetchGitHubRepos() async -> [String]? {
+        guard let gh = ghPath() else { return nil }
+        let auth = await Self.runProcess(gh, ["auth", "status"])
+        guard auth.status == 0 else { return nil }
+        let list = await Self.runProcess(gh, ["repo", "list", "--limit", "30", "--json", "nameWithOwner"])
+        guard list.status == 0, let data = list.stdout.data(using: .utf8),
+              let entries = try? JSONDecoder().decode([[String: String]].self, from: data) else { return [] }
+        return entries.compactMap { $0["nameWithOwner"] }
+    }
+
+    /// Shallow-clones a repo into the conversation's private workspace so
+    /// the read_file/list tools can browse it, then attaches the same git
+    /// summary a dragged-in repo folder gets. Size-guarded.
+    func cloneGitHubRepo(_ nameWithOwner: String) {
+        guard let gh = ghPath() else {
+            postNotice("The gh CLI isn't installed.")
+            return
+        }
+        let conversation = activeConversation ?? newConversation()
+        ensureListed(conversation)
+        let repoName = nameWithOwner.split(separator: "/").last.map(String.init) ?? nameWithOwner
+        let destination = SandboxManager.directory(for: conversation.id).appendingPathComponent(repoName, isDirectory: true)
+        statusMessage = "Cloning \(nameWithOwner)…"
+        Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.statusMessage = nil } }
+            let result = await Self.runProcess(gh, ["repo", "clone", nameWithOwner, destination.path, "--", "--depth", "1"])
+            guard let self else { return }
+            guard result.status == 0 else {
+                self.postNotice("Couldn't clone \(nameWithOwner): \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))")
+                return
+            }
+            // ~200MB guard — a huge clone would silently eat the disk.
+            let size = (try? FileManager.default.allocatedSizeOfDirectory(at: destination)) ?? 0
+            if size > 200_000_000 {
+                try? FileManager.default.removeItem(at: destination)
+                self.postNotice("\(nameWithOwner) is larger than 200 MB — clone removed. Attach a specific folder instead.")
+                return
+            }
+            if let attachment = Attachment.fromGitFolder(url: destination) {
+                conversation.draftAttachments.append(attachment)
+            }
+            self.postNotice("Cloned \(nameWithOwner) into this chat's workspace — the model can browse it with its file tools.", kind: "success", to: conversation)
+        }
+    }
+
     func toggleSidebar() {
         withAnimation(.easeOut(duration: 0.2)) {
             sidebarVisibility = sidebarVisibility == .detailOnly ? .all : .detailOnly

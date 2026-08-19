@@ -1,5 +1,20 @@
 import Foundation
 
+extension FileManager {
+    /// Total on-disk size of a directory tree — used to guard repo clones.
+    func allocatedSizeOfDirectory(at url: URL) throws -> Int64 {
+        var total: Int64 = 0
+        let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .isRegularFileKey]
+        guard let enumerator = enumerator(at: url, includingPropertiesForKeys: Array(keys)) else { return 0 }
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: keys)
+            guard values?.isRegularFile == true else { continue }
+            total += Int64(values?.totalFileAllocatedSize ?? 0)
+        }
+        return total
+    }
+}
+
 /// Each conversation gets a real, private, app-managed folder on disk the
 /// model can read/write files in — the scoped-down version of the original
 /// "sandbox workstation" idea (Phase 4). A `bash`/shell-execution tool was
