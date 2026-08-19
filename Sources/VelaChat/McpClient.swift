@@ -195,7 +195,7 @@ actor McpClient {
             }
             Task {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
-                await self.timeOut(id: id)
+                self.timeOut(id: id)
             }
         }
     }
