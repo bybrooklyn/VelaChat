@@ -12,6 +12,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case snippets = "Snippets"
     case webSearch = "Web Search"
     case tools = "Tools"
+    case mcpServers = "MCP Servers"
     case statistics = "Statistics"
     case about = "About"
 
@@ -26,6 +27,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .snippets: "text.badge.plus"
         case .webSearch: "globe"
         case .tools: "wrench.and.screwdriver"
+        case .mcpServers: "puzzlepiece.extension"
         case .general: "gearshape"
         case .statistics: "chart.bar.xaxis"
         case .about: "info.circle"
@@ -447,6 +449,10 @@ struct SettingsView: View {
                     }
 
 
+                    SettingsCard(section: .mcpServers, footer: Text("MCP servers run as local processes with your account, and their tools run without per-call confirmation \u{2014} add only servers you trust. Standard mcpServers JSON works here.")) {
+                        McpServersCard()
+                    }
+
                     SettingsCard(section: .statistics, footer: Text("Lifetime messages, tokens, and per-model usage.")) {
 
                 NavigationLink {
@@ -590,6 +596,195 @@ struct SettingsView: View {
 /// A real draft: Cancel creates nothing, and nothing is selected until the
 /// user explicitly chooses to use the endpoint — adding no longer instantly
 /// switched the whole app to an unconfigured localhost profile.
+private struct McpServersCard: View {
+    @Environment(AppModel.self) private var appModel
+    @State private var editing: McpServerConfig?
+    @State private var isImporting = false
+    @State private var importText = ""
+    @State private var importError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if appModel.mcp.servers.isEmpty {
+                Label("No MCP servers configured.", systemImage: "puzzlepiece.extension")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+            ForEach(appModel.mcp.servers) { server in
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(appModel.mcp.lastErrorByServer[server.id] == nil ? Theme.success : Theme.danger)
+                        .frame(width: 6, height: 6)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(server.name)
+                            .font(.callout.weight(.medium))
+                        Text(([server.command] + server.args).joined(separator: " "))
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(Theme.tertiaryText)
+                            .lineLimit(1)
+                        if let error = appModel.mcp.lastErrorByServer[server.id] {
+                            Text(error)
+                                .font(.caption2)
+                                .foregroundStyle(Theme.danger)
+                                .lineLimit(2)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    Toggle("", isOn: Binding(
+                        get: { server.enabled },
+                        set: { enabled in
+                            var updated = server
+                            updated.enabled = enabled
+                            appModel.mcp.update(updated)
+                        }
+                    ))
+                    .labelsHidden()
+                    Button {
+                        editing = server
+                    } label: {
+                        Image(systemName: "pencil")
+                    }
+                    .buttonStyle(VelaIconButtonStyle())
+                    .foregroundStyle(Theme.tertiaryText)
+                    Button {
+                        appModel.mcp.remove(id: server.id)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(VelaIconButtonStyle())
+                    .foregroundStyle(Theme.tertiaryText)
+                }
+                .padding(.vertical, 2)
+            }
+            HStack(spacing: 12) {
+                Button {
+                    editing = McpServerConfig(name: "", command: "")
+                } label: {
+                    Label("Add a Server…", systemImage: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accent)
+                Button {
+                    importText = ""
+                    importError = nil
+                    isImporting = true
+                } label: {
+                    Label("Import from JSON…", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accent)
+            }
+        }
+        .sheet(item: $editing) { server in
+            McpServerSheet(config: server) { saved in
+                if appModel.mcp.servers.contains(where: { $0.id == saved.id }) {
+                    appModel.mcp.update(saved)
+                } else if !saved.command.trimmingCharacters(in: .whitespaces).isEmpty {
+                    appModel.mcp.add(saved)
+                }
+            }
+        }
+        .sheet(isPresented: $isImporting) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Import MCP servers")
+                    .font(.title3.weight(.semibold))
+                Text("Paste a standard mcpServers JSON block (Claude Desktop's config works).")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+                TextEditor(text: $importText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 140)
+                    .scrollContentBackground(.hidden)
+                    .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                if let importError {
+                    Text(importError)
+                        .font(.caption)
+                        .foregroundStyle(Theme.danger)
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { isImporting = false }
+                        .buttonStyle(.bordered)
+                    Button("Import") {
+                        if let error = appModel.mcp.importJSON(importText) {
+                            importError = error
+                        } else {
+                            isImporting = false
+                        }
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.accentStrong)
+                }
+            }
+            .padding(20)
+            .frame(width: 460)
+        }
+    }
+}
+
+private struct McpServerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var config: McpServerConfig
+    @State private var argsText: String
+    @State private var envText: String
+    let onSave: (McpServerConfig) -> Void
+
+    init(config: McpServerConfig, onSave: @escaping (McpServerConfig) -> Void) {
+        _config = State(initialValue: config)
+        _argsText = State(initialValue: config.args.joined(separator: " "))
+        _envText = State(initialValue: config.env.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "\n"))
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(config.name.isEmpty ? "New MCP Server" : config.name)
+                .font(.title3.weight(.semibold))
+            TextField("Name", text: $config.name)
+                .textFieldStyle(.plain)
+                .flatFieldStyle()
+            TextField("Command (e.g. npx)", text: $config.command)
+                .textFieldStyle(.plain)
+                .flatFieldStyle()
+            TextField("Arguments (space-separated)", text: $argsText)
+                .textFieldStyle(.plain)
+                .flatFieldStyle()
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Environment (KEY=value per line)")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+                TextEditor(text: $envText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(height: 60)
+                    .scrollContentBackground(.hidden)
+                    .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.bordered)
+                Button("Save") {
+                    var saved = config
+                    saved.args = argsText.split(separator: " ").map(String.init)
+                    saved.env = Dictionary(uniqueKeysWithValues: envText
+                        .split(separator: "\n")
+                        .compactMap { line -> (String, String)? in
+                            let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+                            return parts.count == 2 ? (parts[0], parts[1]) : nil
+                        })
+                    onSave(saved)
+                    dismiss()
+                }
+                .buttonStyle(.glassProminent)
+                .tint(Theme.accentStrong)
+                .disabled(config.name.trimmingCharacters(in: .whitespaces).isEmpty || config.command.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+    }
+}
+
 private struct AddProviderSheet: View {
     @Environment(AppModel.self) private var appModel
     @Binding var isPresented: Bool

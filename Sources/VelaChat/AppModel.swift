@@ -52,6 +52,7 @@ final class AppModel {
 
     let providers = ProviderStore()
     let usage = UsageStore()
+    let mcp = McpManager()
     let skills = SkillsStore()
     var promptSnippets: [PromptSnippet] = [] {
         didSet {
@@ -297,7 +298,10 @@ final class AppModel {
         // History saves are debounced (see `saveHistory`) — quitting inside
         // the debounce window must not lose the last write.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.flushHistoryNow() }
+            MainActor.assumeIsolated {
+                self?.flushHistoryNow()
+                self?.mcp.stopAll()
+            }
         }
     }
 
@@ -1386,6 +1390,10 @@ final class AppModel {
                 await ScheduleReader.schedule(days: days)
             }
         }
+        toolContext.mcpCall = { [weak self] name, argumentsJSON in
+            await MainActor.run { [weak self] in self?.mcp }?.call(prefixedName: name, argumentsJSON: argumentsJSON)
+                ?? "Error: MCP is unavailable."
+        }
         if isClipboardToolEnabled {
             toolContext.clipboard = {
                 await MainActor.run { () -> String in
@@ -1411,6 +1419,20 @@ final class AppModel {
         conversation.generationTask = Task { [weak self, weak conversation] in
             guard let conversation else { return }
             var finalMessages = requestMessages
+            // MCP tools merge here, inside the task — a cold server's spawn
+            // latency lands in the normal streaming window, and a broken
+            // one can never block the send path.
+            var tools = tools
+            if modelSupportsTools, let self {
+                let mcpDefinitions = await self.mcp.definitionsForSend()
+                if !mcpDefinitions.isEmpty {
+                    tools.append(contentsOf: mcpDefinitions)
+                    // The system prompt was already composed — append a
+                    // one-line inventory extension for the MCP tools.
+                    let names = mcpDefinitions.map(\.name).joined(separator: ", ")
+                    finalMessages.insert(ChatMessage(role: "system", content: "Additional MCP tools attached to this request: \(names). Use them like any other tool."), at: min(1, finalMessages.count))
+                }
+            }
             if shouldPrefetchSearch, let self {
                 do {
                     let results = try await CompatibleChatClient.shared.searchWeb(query: text, endpoint: trimmedSearchEndpoint)

@@ -5,7 +5,7 @@ import Foundation
 enum ActivityKind: String, Codable, Sendable {
     case webSearch, conversationSearch, fetchURL, fileRead, fileWrite, fileList
     case datetime, calculation, attachment, note
-    case schedule, clipboard
+    case schedule, clipboard, mcp
     case memory, memorySave, memorySearch, memoryEdit
 
     static func from(toolName: String) -> ActivityKind {
@@ -21,11 +21,17 @@ enum ActivityKind: String, Codable, Sendable {
         case ToolCatalog.readAttachment.name: .attachment
         case ToolCatalog.getSchedule.name: .schedule
         case ToolCatalog.readClipboard.name: .clipboard
+        case let name where name.hasPrefix("mcp_"): .mcp
         case "save_memory": .memorySave
         case "search_memory": .memorySearch
         case "edit_memory": .memoryEdit
         default: .note
         }
+    }
+
+    /// Display form for an mcp_-prefixed label argument.
+    static func mcpDisplayName(_ argument: String) -> String {
+        argument.isEmpty ? "an MCP tool" : "“\(argument)”"
     }
 
     var symbol: String {
@@ -41,6 +47,7 @@ enum ActivityKind: String, Codable, Sendable {
         case .attachment: "paperclip"
         case .schedule: "calendar"
         case .clipboard: "doc.on.clipboard"
+        case .mcp: "puzzlepiece.extension"
         case .memory, .memorySave, .memorySearch, .memoryEdit: "brain"
         case .note: "info.circle"
         }
@@ -61,6 +68,7 @@ enum ActivityKind: String, Codable, Sendable {
         case .attachment: return "Reading \(argument.isEmpty ? "an attachment" : argument)"
         case .schedule: return "Checking the calendar"
         case .clipboard: return "Reading the clipboard"
+        case .mcp: return "Using \(Self.mcpDisplayName(argument))"
         case .memory: return "Working with memory"
         case .memorySave: return "Saving a memory"
         case .memorySearch: return "Searching memory"
@@ -84,6 +92,7 @@ enum ActivityKind: String, Codable, Sendable {
         case .attachment: return "Read \(argument.isEmpty ? "an attachment" : argument)"
         case .schedule: return "Checked the calendar"
         case .clipboard: return "Read the clipboard"
+        case .mcp: return "Used \(Self.mcpDisplayName(argument))"
         case .memory: return "Updated memory"
         case .memorySave: return "Saved a memory"
         case .memorySearch: return "Recalled from memory"
@@ -109,6 +118,7 @@ enum ActivityKind: String, Codable, Sendable {
         case .attachment: return "read \(count) attachment\(plural)"
         case .schedule: return "checked the calendar"
         case .clipboard: return "read the clipboard"
+        case .mcp: return "\(count) MCP tool call\(plural)"
         case .memory, .memorySave, .memoryEdit: return "\(count) memory update\(plural)"
         case .memorySearch: return "\(count) memory lookup\(plural)"
         case .note: return "\(count) note\(plural)"

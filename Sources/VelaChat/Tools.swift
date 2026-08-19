@@ -156,6 +156,8 @@ enum ToolCatalog {
         /// disabled in Settings.
         var schedule: (@Sendable (Int) async -> String)? = nil
         var clipboard: (@Sendable () async -> String)? = nil
+        /// Routes mcp_-prefixed tool names to the MCP manager.
+        var mcpCall: (@Sendable (String, String) async -> String)? = nil
     }
 
     struct MemorySnapshot: Sendable {
@@ -261,6 +263,9 @@ enum ToolCatalog {
                 return "Error: \"action\" must be \"update\" or \"delete\"."
             }
         default:
+            if name.hasPrefix("mcp_"), let mcpCall = context.mcpCall {
+                return await mcpCall(name, argumentsJSON)
+            }
             return "Error: unknown tool \"\(name)\"."
         }
     }
