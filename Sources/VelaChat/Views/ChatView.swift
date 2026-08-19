@@ -1057,8 +1057,8 @@ private struct SlashCommandList: View {
                             }
                             Spacer(minLength: 0)
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 8)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -1238,8 +1238,8 @@ private struct AskUserQuestionCard: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 8)
             .background(
                 selected.contains(option.label) ? Theme.accentSoft.opacity(0.7) : Color.clear,
                 in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
@@ -1479,7 +1479,7 @@ private struct SearchResultsDisclosure: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 9)
-                        .padding(.vertical, 7)
+                        .padding(.vertical, 8)
                         .background(Theme.controlBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
                     }
                     .buttonStyle(.plain)

@@ -22,7 +22,7 @@ struct SidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             sidebarHeader
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 10)
                 .padding(.top, 10)
                 .padding(.bottom, 12)
 
