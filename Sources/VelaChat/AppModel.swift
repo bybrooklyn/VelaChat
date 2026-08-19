@@ -1266,16 +1266,43 @@ final class AppModel {
         saveHistory()
     }
 
+    /// Attachment bytes live on disk (see `AttachmentStore`); this drops
+    /// the files no surviving message refers to any more. Run after
+    /// deletions rather than on a timer, so an orphan can outlive its
+    /// message by at most one destructive operation.
+    private func pruneAttachmentBlobs() {
+        let live = Set(conversations.flatMap { $0.messages.flatMap { $0.attachments.map(\.id) } })
+        AttachmentStore.pruneOrphans(keeping: live)
+    }
+
+    /// Everything keyed by message ID that isn't part of the message
+    /// itself. These accumulated silently: each new feature added another
+    /// dictionary, and only the two oldest were ever cleaned up, so
+    /// deleting conversations leaked entries for the rest of the session.
+    private func discardTransientState(for messages: [ChatMessage]) {
+        let ids = Set(messages.map(\.id))
+        usageByMessage = usageByMessage.filter { !ids.contains($0.key) }
+        searchByMessage = searchByMessage.filter { !ids.contains($0.key) }
+        planByMessage = planByMessage.filter { !ids.contains($0.key) }
+        finishReasonByMessage = finishReasonByMessage.filter { !ids.contains($0.key) }
+        for id in ids {
+            revealTasks[id]?.cancel()
+            revealTasks[id] = nil
+            revealQueues[id] = nil
+            pendingFinish.remove(id)
+        }
+    }
+
     func deleteConversation(_ conversation: Conversation) {
         if conversation.isGenerating {
             stopGeneration(for: conversation)
         }
-        usageByMessage = usageByMessage.filter { key, _ in !conversation.messages.contains { $0.id == key } }
-        searchByMessage = searchByMessage.filter { key, _ in !conversation.messages.contains { $0.id == key } }
+        discardTransientState(for: conversation.messages)
         withAnimation(.easeOut(duration: 0.18)) {
             conversations.removeAll { $0.id == conversation.id }
         }
         SandboxManager.cleanup(for: conversation.id)
+        pruneAttachmentBlobs()
         Task { await ChatGPTWebChat.shared.forgetContinuation(for: conversation.id) }
         if activeConversationID == conversation.id {
             activeConversationID = conversations.first?.id ?? newConversation().id
@@ -1296,7 +1323,14 @@ final class AppModel {
         pendingConversation = nil
         usageByMessage.removeAll()
         searchByMessage.removeAll()
+        planByMessage.removeAll()
+        finishReasonByMessage.removeAll()
+        for (_, task) in revealTasks { task.cancel() }
+        revealTasks.removeAll()
+        revealQueues.removeAll()
+        pendingFinish.removeAll()
         _ = newConversation()
+        pruneAttachmentBlobs()
         flushHistoryNow()
     }
 
@@ -1335,12 +1369,16 @@ final class AppModel {
             postNotice("Already generating a reply.", to: conversation)
             return
         }
+        var removed = [conversation.messages[index]]
         if message.role == "user",
            index + 1 < conversation.messages.count,
            conversation.messages[index + 1].role == "assistant" {
+            removed.append(conversation.messages[index + 1])
             conversation.messages.remove(at: index + 1)
         }
         conversation.messages.remove(at: index)
+        discardTransientState(for: removed)
+        pruneAttachmentBlobs()
         saveHistory()
     }
 

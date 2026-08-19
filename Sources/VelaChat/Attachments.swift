@@ -16,7 +16,32 @@ struct Attachment: Identifiable, Codable, Equatable {
     var mimeType: String
     /// Raw image bytes for `.image`; UTF-8 text for everything else
     /// (already-extracted text for `.pdf`).
-    var data: Data
+    ///
+    /// Image bytes are NOT encoded into the conversation history. That
+    /// history lives in `UserDefaults`, which is read into memory whole at
+    /// launch and rewritten on every save — a handful of screenshots there
+    /// meant tens of megabytes of base64 in a preferences plist. Images
+    /// are written to a blob store on disk instead and loaded lazily; text
+    /// attachments are small and stay inline where they're simplest.
+    var data: Data {
+        get {
+            if let inlineData { return inlineData }
+            guard let blobID else { return Data() }
+            return AttachmentStore.load(blobID) ?? Data()
+        }
+        set {
+            if kind == .image, newValue.count > 8_192 {
+                blobID = AttachmentStore.save(newValue, suggestedID: blobID ?? id)
+                inlineData = nil
+            } else {
+                inlineData = newValue
+                blobID = nil
+            }
+        }
+    }
+
+    private var inlineData: Data?
+    private var blobID: UUID?
     /// Original byte count before any truncation — kept for the
     /// attachment inspector even if `data` itself was shortened.
     var originalByteCount: Int
@@ -29,9 +54,43 @@ struct Attachment: Identifiable, Codable, Equatable {
         self.kind = kind
         self.filename = filename
         self.mimeType = mimeType
-        self.data = data
         self.originalByteCount = originalByteCount ?? data.count
         self.isIncluded = isIncluded
+        self.data = data  // routes through the setter: big images go to disk
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, filename, mimeType, data, originalByteCount, isIncluded, blobID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        kind = try container.decode(Kind.self, forKey: .kind)
+        filename = try container.decode(String.self, forKey: .filename)
+        mimeType = try container.decode(String.self, forKey: .mimeType)
+        originalByteCount = try container.decodeIfPresent(Int.self, forKey: .originalByteCount) ?? 0
+        isIncluded = try container.decodeIfPresent(Bool.self, forKey: .isIncluded) ?? true
+        blobID = try container.decodeIfPresent(UUID.self, forKey: .blobID)
+        // Histories written before the blob store keep their bytes inline;
+        // they're read here and migrate to disk on the next save.
+        inlineData = try container.decodeIfPresent(Data.self, forKey: .data)
+        if kind == .image, let inlineData, inlineData.count > 8_192 {
+            blobID = AttachmentStore.save(inlineData, suggestedID: id)
+            self.inlineData = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(filename, forKey: .filename)
+        try container.encode(mimeType, forKey: .mimeType)
+        try container.encode(originalByteCount, forKey: .originalByteCount)
+        try container.encode(isIncluded, forKey: .isIncluded)
+        try container.encodeIfPresent(blobID, forKey: .blobID)
+        try container.encodeIfPresent(inlineData, forKey: .data)
     }
 
     var textContent: String? {
@@ -166,5 +225,53 @@ struct Attachment: Identifiable, Codable, Equatable {
             "sql", "html", "css", "json", "yaml", "yml", "toml", "xml", "md"
         ]
         return codeExtensions.contains(ext.lowercased())
+    }
+}
+
+/// On-disk storage for large attachment bytes (images), keeping them out
+/// of the conversation history that lives in `UserDefaults`.
+///
+/// Deliberately dumb: one file per blob, named by UUID, in Application
+/// Support. A missing file degrades to empty data rather than throwing —
+/// an attachment whose bytes went away should show as unavailable, never
+/// take the app down.
+enum AttachmentStore {
+    private static let directory: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("VelaChat/Attachments", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }()
+
+    private static let cache = NSCache<NSString, NSData>()
+
+    static func save(_ data: Data, suggestedID: UUID) -> UUID {
+        let url = directory.appendingPathComponent(suggestedID.uuidString)
+        try? data.write(to: url, options: .atomic)
+        cache.setObject(data as NSData, forKey: suggestedID.uuidString as NSString)
+        return suggestedID
+    }
+
+    static func load(_ id: UUID) -> Data? {
+        if let cached = cache.object(forKey: id.uuidString as NSString) { return cached as Data }
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent(id.uuidString)) else { return nil }
+        cache.setObject(data as NSData, forKey: id.uuidString as NSString)
+        return data
+    }
+
+    static func remove(_ id: UUID) {
+        cache.removeObject(forKey: id.uuidString as NSString)
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
+    }
+
+    /// Deletes blobs no live attachment references any more. Called after
+    /// destructive history operations rather than on a timer, so an
+    /// orphan can only survive until the next deletion.
+    static func pruneOrphans(keeping liveIDs: Set<UUID>) {
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
+        for file in files {
+            guard let id = UUID(uuidString: file), !liveIDs.contains(id) else { continue }
+            remove(id)
+        }
     }
 }
