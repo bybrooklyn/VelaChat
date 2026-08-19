@@ -463,6 +463,10 @@ private struct PinnedMessagesButton: View {
             }
             .animation(.easeOut(duration: 0.18), value: inputFocused)
             .animation(.easeOut(duration: 0.12), value: isDropTargeted)
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.composer, style: .continuous))
+            // Clicking anywhere on the composer (not just the field) puts
+            // the cursor in it — buttons still win their own hits.
+            .onTapGesture { inputFocused = true }
             .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                 handleDrop(providers)
             }
@@ -795,16 +799,19 @@ private struct SendButtonBackground: ViewModifier {
     let fill: Color
     let isFilled: Bool
 
-    // Glass is applied directly to the label content (the same pattern
-    // ContextButton uses) — putting it in a .background ZStack made the
-    // glyph vanish the moment the fill appeared.
-    @ViewBuilder
+    // A plain filled circle, deliberately NOT a glassEffect: inside the
+    // composer's GlassEffectContainer, a glass send button visually merged
+    // and morphed with the neighboring context circle. Fill just fades.
     func body(content: Content) -> some View {
-        if isFilled {
-            content.glassCircle(tint: fill, interactive: true)
-        } else {
-            content.overlay { Circle().stroke(Theme.controlStroke.opacity(0.7), lineWidth: 1.2) }
-        }
+        content
+            .background {
+                ZStack {
+                    Circle().fill(fill)
+                    Circle()
+                        .stroke(Theme.controlStroke.opacity(0.7), lineWidth: 1.2)
+                        .opacity(isFilled ? 0 : 1)
+                }
+            }
     }
 }
 
@@ -1800,6 +1807,23 @@ struct AssistantTimeline: View {
         }
     }
 
+    /// Markdown parsing of the whole growing reply on every reveal tick was
+    /// the single biggest source of streaming lag — the still-growing tail
+    /// renders as plain text and becomes real Markdown when the reply
+    /// finishes.
+    @ViewBuilder
+    private func textRun(_ content: String, isTail: Bool) -> some View {
+        if message.isStreaming && isTail {
+            Text(content)
+                .font(.body)
+                .foregroundStyle(Theme.text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            RichMessageText(text: content, isUser: false)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if !message.isStreaming, !allActivities.isEmpty {
@@ -1814,10 +1838,11 @@ struct AssistantTimeline: View {
                     }
                 }
             } else {
+                let lastID = items.last?.id
                 ForEach(items) { item in
                     switch item {
                     case .text(_, let content):
-                        RichMessageText(text: content, isUser: false)
+                        textRun(content, isTail: item.id == lastID)
                     case .activities(let records):
                         ActivityLine(records: records)
                     }

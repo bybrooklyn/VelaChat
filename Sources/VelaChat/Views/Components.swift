@@ -275,27 +275,28 @@ struct ContextButton: View {
             // tinted past 80% — no click needed to learn you're nearly full.
             // Fill tint is accentStrong (like Send), not the pale foreground
             // accent that used to render this as a blown-out white disc.
+            // Neutral chrome like the plus button — the teal glass disc
+            // read as oddly bright, and its glass merged with Send's.
             ZStack {
                 if let fraction {
                     Circle()
-                        .stroke(Theme.accentForeground.opacity(0.25), lineWidth: 2)
+                        .stroke(Theme.controlStroke.opacity(0.8), lineWidth: 2)
                     Circle()
                         .trim(from: 0, to: max(0.02, fraction))
                         .stroke(
-                            fraction > 0.8 ? Theme.warning : Theme.accentForeground,
+                            fraction > 0.8 ? Theme.warning : Theme.accent,
                             style: StrokeStyle(lineWidth: 2, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
                 } else {
-                    // Unknown window: a plain quiet track — the dotted glyph
-                    // read as a perpetual spinner.
                     Circle()
-                        .stroke(Theme.accentForeground.opacity(0.35), lineWidth: 2)
+                        .stroke(Theme.controlStroke.opacity(0.9), lineWidth: 2)
                 }
             }
             .frame(width: 14, height: 14)
             .frame(width: 30, height: 30)
-            .glassCircle(tint: Theme.accentStrong)
+            .background(Theme.controlBackground.opacity(0.75), in: Circle())
+            .overlay { Circle().stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1) }
             .animation(.easeOut(duration: 0.35), value: fraction)
         }
         .buttonStyle(.plain)

@@ -1430,29 +1430,38 @@ final class AppModel {
                     }
                 }
                 let finishing = self.pendingFinish.contains(assistantID)
-                func delay(base: UInt64) -> UInt64 {
-                    var value = base
-                    if backlogCharacters > 400 {
-                        value = max(6_000_000, base * 400 / UInt64(backlogCharacters))
-                    }
-                    if finishing { value = min(value, 10_000_000) }
-                    return value
+                // One UI mutation per ~33ms frame, revealing however many
+                // words the pace calls for — per-word mutations at up to
+                // 60Hz re-rendered the transcript into visible lag.
+                func wordsPerTick(base: Int) -> Int {
+                    var count = base
+                    if backlogCharacters > 400 { count = max(count, backlogCharacters / 200) }
+                    if finishing { count = max(count, backlogCharacters / 60 + 4) }
+                    return count
                 }
                 switch queue[0] {
                 case .text(var pending):
-                    let chunk = Self.popNextWord(from: &pending)
+                    var chunk = ""
+                    for _ in 0..<wordsPerTick(base: 1) {
+                        guard !pending.isEmpty else { break }
+                        chunk += Self.popNextWord(from: &pending)
+                    }
                     if pending.isEmpty { queue.removeFirst() } else { queue[0] = .text(pending) }
                     self.revealQueues[assistantID] = queue
                     conversation.messages[index].appendTimelineText(chunk)
-                    try? await Task.sleep(nanoseconds: delay(base: 28_000_000))
+                    try? await Task.sleep(nanoseconds: 33_000_000)
                 case .reasoning(var pending):
-                    // Faster drip than the answer text — reasoning chains
-                    // run long, and the answer shouldn't wait behind them.
-                    let chunk = Self.popNextWord(from: &pending)
+                    // Faster than the answer text — reasoning chains run
+                    // long, and the answer shouldn't wait behind them.
+                    var chunk = ""
+                    for _ in 0..<wordsPerTick(base: 4) {
+                        guard !pending.isEmpty else { break }
+                        chunk += Self.popNextWord(from: &pending)
+                    }
                     if pending.isEmpty { queue.removeFirst() } else { queue[0] = .reasoning(pending) }
                     self.revealQueues[assistantID] = queue
                     conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + chunk
-                    try? await Task.sleep(nanoseconds: delay(base: 8_000_000))
+                    try? await Task.sleep(nanoseconds: 33_000_000)
                 case .activity(let record):
                     queue.removeFirst()
                     self.revealQueues[assistantID] = queue

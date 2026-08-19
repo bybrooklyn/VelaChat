@@ -118,6 +118,13 @@ private struct WindowConfigurator: NSViewRepresentable {
             guard let window = view.window else { return }
             window.titlebarAppearsTransparent = true
             window.isMovableByWindowBackground = true
+            // Kill the toolbar (the "long weird box"), NOT the titlebar —
+            // `.toolbar(.hidden, for: .windowToolbar)` collapsed the whole
+            // titlebar region and took the traffic lights with it. With
+            // just the toolbar gone the titled window keeps its lights,
+            // floating over content via the transparent titlebar.
+            window.titleVisibility = .hidden
+            window.toolbar = nil
             context.coordinator.observe(window: window, chrome: chrome)
         }
         return view
@@ -136,13 +143,23 @@ private struct WindowConfigurator: NSViewRepresentable {
             let center = NotificationCenter.default
             tokens.append(center.addObserver(
                 forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main
-            ) { _ in
-                MainActor.assumeIsolated { chrome.isFullScreen = true }
+            ) { notification in
+                MainActor.assumeIsolated {
+                    chrome.isFullScreen = true
+                    // NavigationSplitView can re-install its toolbar across
+                    // the fullscreen transition — remove it again (a
+                    // one-time response to a real transition, not the
+                    // didUpdate loop AGENTS.md warns about).
+                    (notification.object as? NSWindow)?.toolbar = nil
+                }
             })
             tokens.append(center.addObserver(
                 forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main
-            ) { _ in
-                MainActor.assumeIsolated { chrome.isFullScreen = false }
+            ) { notification in
+                MainActor.assumeIsolated {
+                    chrome.isFullScreen = false
+                    (notification.object as? NSWindow)?.toolbar = nil
+                }
             })
         }
 

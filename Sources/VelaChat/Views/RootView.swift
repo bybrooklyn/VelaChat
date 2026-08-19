@@ -46,7 +46,6 @@ struct RootView: View {
                 .navigationTitle("")
         }
         .navigationSplitViewStyle(.balanced)
-        .toolbar(.hidden, for: .windowToolbar)
         .background(Theme.background)
         // Accent swatches used to visibly do nothing — Theme's statics
         // re-read UserDefaults but nothing forced a re-render. A full
