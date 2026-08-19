@@ -243,7 +243,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.timeoutInterval = 180  // idle timeout — resets on every received byte; an hour-long stall is not resilience
+                    request.timeoutInterval = Limits.streamIdleTimeout  // idle: reset by every received byte
                     request.httpBody = try JSONEncoder().encode(OllamaPullRequest(model: name, stream: true))
 
                     let (bytes, response) = try await session.bytes(for: request)
@@ -310,7 +310,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         // Adaptive budget: up to 10 rounds, but a round of tool calls
         // identical to earlier ones short-circuits — repetition is the
         // loop-detection signal, not just a hard cap.
-        let maxRounds = 10
+        let maxRounds = Limits.maxToolRounds
         var usageTotals = ToolLoopUsage()
         var toolsDisabled = false
         var seenCallSignatures = Set<String>()
@@ -319,7 +319,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             let url = try endpointURL(profile: profile, path: "chat/completions")
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 180  // idle timeout — resets on every received byte; an hour-long stall is not resilience
+            request.timeoutInterval = Limits.streamIdleTimeout  // idle: reset by every received byte
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             addHeaders(to: &request, profile: profile, credential: credential)
@@ -443,7 +443,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 wireMessages.append(APIMessage(role: "system", text: "Tool budget for this reply is exhausted — answer now with what you have.", imageDataURLs: []))
                 let noteID = UUID()
                 onEvent(.activityStarted(id: noteID, name: "note", argument: "Paused tool use — answering with what it has"))
-                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (10 rounds) was reached.", isError: false))
+                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (\(Limits.maxToolRounds) rounds) was reached.", isError: false))
             }
         }
     }
@@ -698,14 +698,14 @@ final class CompatibleChatClient: @unchecked Sendable {
         // `response.output_item.added` + `response.function_call_arguments.
         // delta`, and replayed as typed `function_call` /
         // `function_call_output` input items keyed by `call_id`.
-        let maxRounds = 10
+        let maxRounds = Limits.maxToolRounds
         var usageTotals = ToolLoopUsage()
         var toolsDisabled = false
         var seenCallSignatures = Set<String>()
         for round in 0..<maxRounds {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 180  // idle timeout — resets on every received byte; an hour-long stall is not resilience
+            request.timeoutInterval = Limits.streamIdleTimeout  // idle: reset by every received byte
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             addHeaders(to: &request, profile: ProviderProfile(kind: .codex, name: "Codex", endpoint: "", model: model), credential: credential)
@@ -808,7 +808,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 inputItems.append(.message(role: "developer", content: [.text("Tool budget for this reply is exhausted — answer now with what you have.", isOutput: false)]))
                 let noteID = UUID()
                 onEvent(.activityStarted(id: noteID, name: "note", argument: "Paused tool use — answering with what it has"))
-                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (10 rounds) was reached.", isError: false))
+                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (\(Limits.maxToolRounds) rounds) was reached.", isError: false))
             }
         }
     }
@@ -893,14 +893,14 @@ final class CompatibleChatClient: @unchecked Sendable {
             throw APIError.message("Could not build the Anthropic request.")
         }
 
-        let maxRounds = 10
+        let maxRounds = Limits.maxToolRounds
         var usageTotals = ToolLoopUsage()
         var toolsDisabled = false
         var seenCallSignatures = Set<String>()
         for round in 0..<maxRounds {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 180  // idle timeout — resets on every received byte; an hour-long stall is not resilience
+            request.timeoutInterval = Limits.streamIdleTimeout  // idle: reset by every received byte
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             addHeaders(to: &request, profile: ProviderProfile(kind: .anthropic, name: "Anthropic", endpoint: ""), credential: credential)
@@ -1035,7 +1035,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 turnsJSON.append(["role": "user", "content": [["type": "text", "text": "(Tool budget for this reply is exhausted — answer now with what you have.)"]]])
                 let noteID = UUID()
                 onEvent(.activityStarted(id: noteID, name: "note", argument: "Paused tool use — answering with what it has"))
-                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (10 rounds) was reached.", isError: false))
+                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (\(Limits.maxToolRounds) rounds) was reached.", isError: false))
             }
         }
     }

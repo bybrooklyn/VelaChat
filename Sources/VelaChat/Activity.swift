@@ -22,7 +22,7 @@ enum ActivityKind: String, Codable, Sendable {
         case ToolCatalog.searchFiles.name: .fileSearch
         case ToolCatalog.runCommand.name: .command
         case ToolCatalog.updatePlan.name: .plan
-        case "spawn_agents": .subagent
+        case Subagents.definition.name: .subagent
         case "current_datetime": .datetime  // retired tool; old transcripts still map
         case ToolCatalog.calculator.name: .calculation
         case ToolCatalog.readAttachment.name: .attachment

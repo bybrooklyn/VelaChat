@@ -129,7 +129,7 @@ actor McpClient {
         try await ensureRunning()
         // Shorter than a tool call's budget: a dead server at send time
         // should cost seconds, not half a minute of stalled reply.
-        let result = try await request(method: "tools/list", params: [:], timeoutSeconds: 10)
+        let result = try await request(method: "tools/list", params: [:], timeoutSeconds: Limits.mcpListTimeout)
         let tools = (result["tools"] as? [[String: Any]]) ?? []
         return tools.compactMap { tool in
             guard let name = tool["name"] as? String else { return nil }

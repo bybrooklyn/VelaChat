@@ -276,12 +276,12 @@ enum ToolCatalog {
                 await executeInner(name: name, argumentsJSON: argumentsJSON, context: context)
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 120_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(Limits.toolTimeout * 1_000_000_000))
                 return nil
             }
             let first = await group.next() ?? nil
             group.cancelAll()
-            return first ?? "Error: the \(name) tool timed out after 120 seconds."
+            return first ?? "Error: the \(name) tool timed out after \(Int(Limits.toolTimeout)) seconds."
         }
     }
 
@@ -351,7 +351,7 @@ enum ToolCatalog {
             guard let command = arguments?["command"] as? String, !command.isEmpty else { return "Error: \"command\" is required." }
             guard let runner = context.runCommand else { return "Error: running commands is disabled. The user can enable it in Settings → Agent abilities." }
             return await runner(command)
-        case "spawn_agents":
+        case Subagents.definition.name:
             guard let rawTasks = arguments?["tasks"] as? [[String: Any]], !rawTasks.isEmpty else {
                 return "Error: \"tasks\" is required and must contain at least one task."
             }
@@ -483,7 +483,7 @@ enum ToolCatalog {
             return "Error: \"\(urlString)\" is not a valid http(s) URL."
         }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 15
+        request.timeoutInterval = Limits.probeTimeout
         // Browser-shaped headers: many sites 403 anything that doesn't
         // look like a real browser. Redirects follow by default.
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")

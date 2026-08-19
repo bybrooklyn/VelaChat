@@ -80,7 +80,7 @@ enum CommandRunner {
 
     /// Runs the command via `/bin/zsh -lc` in `directory`, capturing
     /// combined output with a hard timeout and an output cap.
-    static func run(_ command: String, in directory: URL, timeout: TimeInterval = 120) async -> Output {
+    static func run(_ command: String, in directory: URL, timeout: TimeInterval = Limits.toolTimeout) async -> Output {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
@@ -119,8 +119,8 @@ enum CommandRunner {
                 watchdog.cancel()
 
                 var text = String(data: data, encoding: .utf8) ?? ""
-                if text.count > 20_000 {
-                    text = String(text.prefix(20_000)) + "\n[Truncated — first 20 KB of output.]"
+                if text.count > Limits.commandOutputBytes {
+                    text = String(text.prefix(Limits.commandOutputBytes)) + "\n[Truncated — first 20 KB of output.]"
                 }
                 continuation.resume(returning: Output(text: text, exitCode: process.terminationStatus, timedOut: timedOut))
             }

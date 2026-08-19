@@ -30,7 +30,7 @@ struct Attachment: Identifiable, Codable, Equatable {
             return AttachmentStore.load(blobID) ?? Data()
         }
         set {
-            if kind == .image, newValue.count > 8_192 {
+            if kind == .image, newValue.count > Limits.inlineAttachmentBytes {
                 blobID = AttachmentStore.save(newValue, suggestedID: blobID ?? id)
                 inlineData = nil
             } else {
@@ -75,7 +75,7 @@ struct Attachment: Identifiable, Codable, Equatable {
         // Histories written before the blob store keep their bytes inline;
         // they're read here and migrate to disk on the next save.
         inlineData = try container.decodeIfPresent(Data.self, forKey: .data)
-        if kind == .image, let inlineData, inlineData.count > 8_192 {
+        if kind == .image, let inlineData, inlineData.count > Limits.inlineAttachmentBytes {
             blobID = AttachmentStore.save(inlineData, suggestedID: id)
             self.inlineData = nil
         }

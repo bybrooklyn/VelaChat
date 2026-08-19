@@ -1,0 +1,61 @@
+import Foundation
+
+/// The app's operational limits, in one place.
+///
+/// These were spread across a dozen files as bare numbers — 4_096 here,
+/// 8_000 there, three different request timeouts — which made two things
+/// hard: knowing whether two limits were deliberately different or just
+/// drifted apart, and changing any of them with confidence. Naming them
+/// also documents what each one is protecting against.
+enum Limits {
+    // MARK: - Truncation
+
+    /// A single tool result persisted into history. The model already saw
+    /// the full text; this only bounds what gets stored and re-sent.
+    static let toolResultBytes = 4_096
+    /// Clipboard and schedule reads — enough to be useful, bounded so one
+    /// enormous paste can't dominate the context.
+    static let systemReadBytes = 8_192
+    /// One subagent's returned report.
+    static let subagentOutputBytes = 8_000
+    /// A skill's body, and the total across all active skills.
+    static let skillBodyBytes = 8_000
+    static let skillTotalBytes = 20_000
+    /// Command output surfaced to the model.
+    static let commandOutputBytes = 20_000
+    /// Conversation titles, and exported filenames derived from them.
+    static let titleCharacters = 60
+
+    /// Attachment bytes above this go to the blob store instead of into
+    /// the conversation history (see `AttachmentStore`).
+    static let inlineAttachmentBytes = 8_192
+
+    // MARK: - Timeouts (seconds)
+
+    /// Streaming requests: an idle timeout, reset by every received byte.
+    /// Not a total budget — long replies are normal.
+    static let streamIdleTimeout: TimeInterval = 180
+    /// Ordinary JSON round trips.
+    static let requestTimeout: TimeInterval = 60
+    /// Auth and discovery calls, where waiting long is worse than failing.
+    static let authTimeout: TimeInterval = 30
+    /// Cheap probes whose failure is never fatal (quota headers, warm-up).
+    static let probeTimeout: TimeInterval = 15
+    /// One tool call. Bounds a hung tool without cutting off slow-but-real
+    /// work like a large fetch.
+    static let toolTimeout: TimeInterval = 120
+    /// An MCP server's tools/list at send time — a dead server should cost
+    /// seconds, not half a minute of stalled reply.
+    static let mcpListTimeout: TimeInterval = 10
+
+    // MARK: - Loops
+
+    /// Tool-calling rounds per reply before the model is told to answer.
+    static let maxToolRounds = 10
+    /// Concurrent subagents.
+    static let maxSubagents = 3
+    /// Silent continuations after a provider truncates at its output cap.
+    static let maxAutoContinues = 2
+    /// Automatic retries for transient failures before the error surfaces.
+    static let maxTransientRetries = 2
+}

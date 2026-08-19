@@ -29,7 +29,7 @@ enum Subagents {
         tools: [ToolCatalog.Definition],
         toolContext: ToolCatalog.ExecutionContext
     ) async -> String {
-        let capped = Array(tasks.prefix(3))
+        let capped = Array(tasks.prefix(Limits.maxSubagents))
         guard !capped.isEmpty else { return "Error: no tasks provided." }
 
         let results = await withTaskGroup(of: (Int, String).self) { group in
@@ -72,7 +72,7 @@ enum Subagents {
         }
 
         return results.map { index, output in
-            let body = output.count > 8_000 ? String(output.prefix(8_000)) + "\n[Truncated.]" : output
+            let body = output.count > Limits.subagentOutputBytes ? String(output.prefix(Limits.subagentOutputBytes)) + "\n[Truncated.]" : output
             let name = capped[index].name
             return "## \(name.isEmpty ? "Subagent \(index + 1)" : name)\n\(body)"
         }.joined(separator: "\n\n")

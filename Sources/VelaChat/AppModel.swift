@@ -309,7 +309,7 @@ final class AppModel {
             guard let url = URL(string: endpoint) else { return }
             var request = URLRequest(url: url)
             request.httpMethod = "HEAD"
-            request.timeoutInterval = 10
+            request.timeoutInterval = Limits.mcpListTimeout
             // The response is irrelevant — even a 404 has done the work of
             // establishing the connection this is here to establish.
             _ = try? await URLSession.shared.data(for: request)
@@ -1677,13 +1677,13 @@ final class AppModel {
         // this conversation — capped per skill and in total, since an
         // uncapped 30KB SKILL.md silently cost thousands of tokens on
         // every single message.
-        var skillBudget = 20_000
+        var skillBudget = Limits.skillTotalBytes
         for path in conversation.activeSkillPaths {
             guard let skill = skills.skills.first(where: { $0.folderPath == path }) else { continue }
             guard skillBudget > 0 else { break }
             var body = skill.body
-            if body.count > 8_000 {
-                body = String(body.prefix(8_000)) + "\n\n[Truncated — the full skill file is on disk.]"
+            if body.count > Limits.skillBodyBytes {
+                body = String(body.prefix(Limits.skillBodyBytes)) + "\n\n[Truncated — the full skill file is on disk.]"
             }
             if body.count > skillBudget {
                 body = String(body.prefix(skillBudget)) + "\n\n[Truncated.]"
@@ -1797,7 +1797,7 @@ final class AppModel {
                 await MainActor.run { () -> String in
                     let pasteboard = NSPasteboard.general
                     if let text = pasteboard.string(forType: .string), !text.isEmpty {
-                        return text.count > 8_192 ? String(text.prefix(8_192)) + "\n[Truncated.]" : text
+                        return text.count > Limits.systemReadBytes ? String(text.prefix(Limits.systemReadBytes)) + "\n[Truncated.]" : text
                     }
                     if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
                         return "Files on the clipboard:\n" + urls.map(\.path).joined(separator: "\n")
@@ -1933,7 +1933,7 @@ final class AppModel {
                                 break
                             } catch is CancellationError {
                                 throw CancellationError()
-                            } catch where !deliveredEvents && attempt < 2 && Self.isTransientFailure(error) {
+                            } catch where !deliveredEvents && attempt < Limits.maxTransientRetries && Self.isTransientFailure(error) {
                                 attempt += 1
                                 let delay = Double(attempt * attempt) * 2 + Double.random(in: 0...0.5)
                                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -1952,7 +1952,7 @@ final class AppModel {
                         // cut, only with real partial text, at most twice.
                         guard let self,
                               self.finishReasonByMessage[assistantID] == "length",
-                              continueCount < 2,
+                              continueCount < Limits.maxAutoContinues,
                               !streamedText.isEmpty else { break }
                         continueCount += 1
                         self.finishReasonByMessage[assistantID] = nil
@@ -2364,8 +2364,8 @@ final class AppModel {
             case .activityFinished(let id, let result, let isError):
                 // Persisted per-message forever — cap so one huge page fetch
                 // doesn't bloat history (the model already saw the full text).
-                let capped = result.count > 4_096
-                    ? String(result.prefix(4_096)) + "\n\n[Truncated — kept the first 4 KB.]"
+                let capped = result.count > Limits.toolResultBytes
+                    ? String(result.prefix(Limits.toolResultBytes)) + "\n\n[Truncated — kept the first 4 KB.]"
                     : result
                 enqueue(.activityUpdate(id: id, result: capped, isError: isError), for: assistantID, conversation: conversation)
             }

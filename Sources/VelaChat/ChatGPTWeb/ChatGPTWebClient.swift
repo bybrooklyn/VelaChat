@@ -120,7 +120,7 @@ actor ChatGPTWebClient {
         guard let cookie else { throw ClientError.notAuthenticated }
         let task = Task<String, Error> {
             var request = URLRequest(url: baseURL.appendingPathComponent("api/auth/session"))
-            request.timeoutInterval = 30
+            request.timeoutInterval = Limits.authTimeout
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
             request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
@@ -234,7 +234,7 @@ actor ChatGPTWebClient {
             }
             var request = URLRequest(url: url)
             request.httpMethod = method
-            request.timeoutInterval = 60
+            request.timeoutInterval = Limits.requestTimeout
             request.httpShouldHandleCookies = false
             request.setValue(accept, forHTTPHeaderField: "Accept")
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -285,7 +285,7 @@ actor ChatGPTWebClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         // Idle timeout consistent with the app's other streams.
-        request.timeoutInterval = 180
+        request.timeoutInterval = Limits.streamIdleTimeout
         request.httpShouldHandleCookies = false
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
