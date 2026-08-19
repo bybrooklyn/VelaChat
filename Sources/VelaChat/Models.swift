@@ -991,6 +991,15 @@ final class Conversation: Identifiable {
     /// appended as extra system context on every request for the rest of
     /// this conversation, the same shape custom instructions already use.
     var activeSkillPaths: [String]
+    /// User-chosen local folder acting as this conversation's workspace
+    /// root (file tools + run_command operate inside it). `nil` = the
+    /// synthetic per-conversation directory.
+    var workspaceRootPath: String?
+    /// Session-scoped run_command trust: armed "allow all" plus exact
+    /// commands the user marked always-allowed. Deliberately not
+    /// persisted — trust re-arms per app run.
+    var allowAllCommands = false
+    var alwaysAllowedCommands: Set<String> = []
 
     var isGenerating: Bool = false
     var generationProviderName: String = ""
@@ -1005,7 +1014,7 @@ final class Conversation: Identifiable {
     /// persisted.
     var currentGenerationID: UUID?
 
-    init(id: UUID = UUID(), title: String = "New conversation", messages: [ChatMessage] = [], providerID: UUID? = nil, model: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = []) {
+    init(id: UUID = UUID(), title: String = "New conversation", messages: [ChatMessage] = [], providerID: UUID? = nil, model: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1017,6 +1026,17 @@ final class Conversation: Identifiable {
         self.titleIsCustom = titleIsCustom
         self.isPinned = isPinned
         self.activeSkillPaths = activeSkillPaths
+        self.workspaceRootPath = workspaceRootPath
+    }
+
+    /// The directory every workspace tool (and run_command) resolves
+    /// against — the user's chosen folder when one is attached, else the
+    /// synthetic per-conversation dir.
+    var workspaceRoot: URL {
+        if let workspaceRootPath, FileManager.default.fileExists(atPath: workspaceRootPath) {
+            return URL(fileURLWithPath: workspaceRootPath, isDirectory: true)
+        }
+        return SandboxManager.directory(for: id)
     }
 
     /// `"notice"`-role messages are synthetic, local-only UI cards (errors
@@ -1064,8 +1084,11 @@ struct SavedConversation: Codable {
     var titleIsCustom: Bool = false
     var isPinned: Bool = false
     var activeSkillPaths: [String] = []
+    /// User-chosen local folder acting as this conversation's workspace
+    /// root instead of the synthetic per-conversation directory.
+    var workspaceRootPath: String?
 
-    init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = []) {
+    init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1077,6 +1100,7 @@ struct SavedConversation: Codable {
         self.titleIsCustom = titleIsCustom
         self.isPinned = isPinned
         self.activeSkillPaths = activeSkillPaths
+        self.workspaceRootPath = workspaceRootPath
     }
 
     init(from decoder: Decoder) throws {
@@ -1092,6 +1116,7 @@ struct SavedConversation: Codable {
         titleIsCustom = try container.decodeIfPresent(Bool.self, forKey: .titleIsCustom) ?? false
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         activeSkillPaths = try container.decodeIfPresent([String].self, forKey: .activeSkillPaths) ?? []
+        workspaceRootPath = try container.decodeIfPresent(String.self, forKey: .workspaceRootPath)
     }
 }
 

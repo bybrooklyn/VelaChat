@@ -168,6 +168,36 @@ final class AppModel {
     var isClipboardToolEnabled = true {
         didSet { UserDefaults.standard.set(isClipboardToolEnabled, forKey: "velachat.clipboard-tool-enabled") }
     }
+    /// Agent abilities: workspace editing/search plus the plan tool.
+    var isAgentToolsEnabled = true {
+        didSet { UserDefaults.standard.set(isAgentToolsEnabled, forKey: "velachat.agent-tools-enabled") }
+    }
+    /// run_command — off by default: it executes real shell commands.
+    var isCommandToolEnabled = false {
+        didSet { UserDefaults.standard.set(isCommandToolEnabled, forKey: "velachat.command-tool-enabled") }
+    }
+
+    /// A pending run_command approval, shown as a card in the transcript.
+    /// The generation waits on `decide` until the user answers.
+    struct CommandApproval: Identifiable {
+        let id = UUID()
+        let conversationID: UUID
+        let command: String
+        let directory: URL
+        let reason: String
+        let decide: @Sendable (Decision) -> Void
+
+        enum Decision: Sendable {
+            case approveOnce(String)
+            case approveAlways(String)
+            case approveAll(String)
+            case deny
+        }
+    }
+    var pendingApproval: CommandApproval?
+    /// Live plan steps per assistant message (update_plan) — rendered as
+    /// the checklist card in that reply.
+    var planByMessage: [UUID: [ToolCatalog.PlanStep]] = [:]
     /// Live network reachability (NWPathMonitor). Drives the offline chip
     /// and lets in-flight sends wait for the network instead of failing.
     var isOnline = true
@@ -330,6 +360,10 @@ final class AppModel {
         }
         isAppleIntelligenceEnabled = UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled")
         restoreQuotaSnapshots()
+        if UserDefaults.standard.object(forKey: "velachat.agent-tools-enabled") != nil {
+            isAgentToolsEnabled = UserDefaults.standard.bool(forKey: "velachat.agent-tools-enabled")
+        }
+        isCommandToolEnabled = UserDefaults.standard.bool(forKey: "velachat.command-tool-enabled")
         if UserDefaults.standard.object(forKey: "velachat.schedule-tool-enabled") != nil {
             isScheduleToolEnabled = UserDefaults.standard.bool(forKey: "velachat.schedule-tool-enabled")
         }
@@ -1423,6 +1457,15 @@ final class AppModel {
             if isClipboardToolEnabled { tools.append(ToolCatalog.readClipboard) }
             if isWorkspaceEnabled {
                 tools.append(contentsOf: [ToolCatalog.writeFile, ToolCatalog.readFile, ToolCatalog.listWorkspaceFiles])
+                if isAgentToolsEnabled {
+                    tools.append(contentsOf: [ToolCatalog.editFile, ToolCatalog.searchFiles])
+                }
+            }
+            if isAgentToolsEnabled {
+                tools.append(ToolCatalog.updatePlan)
+            }
+            if isCommandToolEnabled {
+                tools.append(ToolCatalog.runCommand)
             }
         }
         var attachmentTexts: [String: String] = [:]
@@ -1482,7 +1525,7 @@ final class AppModel {
                     )
                 },
             searchEndpoint: trimmedSearchEndpoint,
-            workspaceDirectory: SandboxManager.directory(for: conversation.id)
+            workspaceDirectory: conversation.workspaceRoot
         )
         toolContext.attachmentTexts = attachmentTexts
         toolContext.memory = ToolCatalog.MemoryAccess(
@@ -1496,6 +1539,27 @@ final class AppModel {
         if isScheduleToolEnabled {
             toolContext.schedule = { days in
                 await ScheduleReader.schedule(days: days)
+            }
+        }
+        if isAgentToolsEnabled {
+            let planAssistantID = assistantID
+            toolContext.updatePlan = { [weak self] steps in
+                await MainActor.run { [weak self] in
+                    guard let self else { return "Error: the app is shutting down." }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        self.planByMessage[planAssistantID] = steps
+                    }
+                    let done = steps.filter { $0.status == "completed" }.count
+                    return "Plan updated — \(done)/\(steps.count) steps complete."
+                }
+            }
+        }
+        if isCommandToolEnabled {
+            let workspaceRoot = conversation.workspaceRoot
+            let conversationID = conversation.id
+            toolContext.runCommand = { [weak self] command in
+                await self?.executeCommand(command, in: workspaceRoot, conversationID: conversationID)
+                    ?? "Error: the app is shutting down."
             }
         }
         toolContext.mcpCall = { [weak self] name, argumentsJSON in
@@ -1551,7 +1615,7 @@ final class AppModel {
             )
             if let self {
                 promptContext.userFirstName = NSFullUserName().components(separatedBy: " ").first
-                promptContext.workspaceFiles = (try? FileManager.default.contentsOfDirectory(atPath: SandboxManager.directory(for: conversation.id).path))?.sorted() ?? []
+                promptContext.workspaceFiles = (try? FileManager.default.contentsOfDirectory(atPath: conversation.workspaceRoot.path))?.filter { !$0.hasPrefix(".") }.sorted() ?? []
                 promptContext.activeSkillNames = conversation.activeSkillPaths.compactMap { path in
                     self.skills.skills.first(where: { $0.folderPath == path })?.name
                 }
@@ -1672,6 +1736,85 @@ final class AppModel {
                 self?.failGeneration(error.localizedDescription, for: conversation, assistantID: assistantID)
             }
         }
+    }
+
+    /// Attaches a real folder to the active conversation as its workspace
+    /// root. A visible notice records it — the user should always know
+    /// which directory the assistant is working in.
+    func setWorkspaceRoot(_ url: URL) {
+        let conversation = activeConversation ?? newConversation()
+        conversation.workspaceRootPath = url.path
+        postNotice("Workspace set to \(url.path). File tools and commands run here.", to: conversation)
+        saveHistory()
+    }
+
+    func clearWorkspaceRoot(for conversation: Conversation) {
+        conversation.workspaceRootPath = nil
+        saveHistory()
+    }
+
+    /// One-shot latch for an approval card's answer (see `executeCommand`).
+    private final class DecisionGuard: @unchecked Sendable {
+        var answered = false
+    }
+
+    /// run_command's gate. Read-only commands run immediately; everything
+    /// else pauses the generation on a real approval card in the
+    /// transcript. A denial goes back to the model as a normal tool
+    /// result so it can adapt instead of failing.
+    func executeCommand(_ command: String, in directory: URL, conversationID: UUID) async -> String {
+        let conversation = conversations.first { $0.id == conversationID }
+        let classification = CommandRunner.classify(command)
+        var approvedCommand = command
+        var needsPrompt = false
+        var reason = ""
+
+        switch classification {
+        case .readOnly:
+            break
+        case .needsApproval(let why):
+            if conversation?.allowAllCommands == true || conversation?.alwaysAllowedCommands.contains(command) == true {
+                break
+            }
+            needsPrompt = true
+            reason = why
+        }
+
+        if needsPrompt {
+            let decision: CommandApproval.Decision = await withCheckedContinuation { continuation in
+                // The card can be answered exactly once; a stray second tap
+                // must not crash on a double resume. `decide` is only ever
+                // called from the card's buttons, i.e. the main actor.
+                let box = DecisionGuard()
+                let approval = CommandApproval(
+                    conversationID: conversationID,
+                    command: command,
+                    directory: directory,
+                    reason: reason
+                ) { decision in
+                    guard !box.answered else { return }
+                    box.answered = true
+                    continuation.resume(returning: decision)
+                }
+                pendingApproval = approval
+            }
+            pendingApproval = nil
+            switch decision {
+            case .deny:
+                return "The user denied this command. Do not retry it — ask what they'd prefer, or take a different approach."
+            case .approveOnce(let edited):
+                approvedCommand = edited
+            case .approveAlways(let edited):
+                approvedCommand = edited
+                conversation?.alwaysAllowedCommands.insert(edited)
+            case .approveAll(let edited):
+                approvedCommand = edited
+                conversation?.allowAllCommands = true
+            }
+        }
+
+        let output = await CommandRunner.run(approvedCommand, in: directory)
+        return CommandRunner.formatted(output, command: approvedCommand)
     }
 
     /// A quiet, self-resolving activity line for retry/offline waits —
@@ -2275,7 +2418,7 @@ final class AppModel {
 
     private func writeHistoryNow(synchronously: Bool = false) {
         let snapshots = conversations.map {
-            SavedConversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths)
+            SavedConversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, workspaceRootPath: $0.workspaceRootPath)
         }
         let key = historyKey
         if synchronously {
@@ -2301,7 +2444,7 @@ final class AppModel {
             return "Saved conversations could not be read; a backup was kept."
         }
         conversations = snapshots.map {
-            Conversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths)
+            Conversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, workspaceRootPath: $0.workspaceRootPath)
         }
         reconcileInterruptedMessages()
         activeConversationID = conversations.first?.id

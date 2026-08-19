@@ -96,6 +96,35 @@ enum ToolCatalog {
         guidance: "Cheap — call it rather than guessing filenames."
     )
 
+    static let editFile = Definition(
+        name: "edit_file",
+        description: "Replace an exact substring in a workspace file with new text — the surgical way to iterate on a file instead of rewriting it whole. The old_string must match the file exactly once (include enough surrounding context to be unique), unless replace_all is true.",
+        parametersJSON: #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative file path"},"old_string":{"type":"string","description":"Exact text to find"},"new_string":{"type":"string","description":"Replacement text"},"replace_all":{"type":"boolean","description":"Replace every occurrence (default false)"}},"required":["path","old_string","new_string"]}"#,
+        summary: "make a surgical find/replace edit in a workspace file",
+        guidance: "Prefer this over write_file when changing part of an existing file. If old_string isn't unique, add surrounding lines until it is."
+    )
+    static let searchFiles = Definition(
+        name: "search_files",
+        description: "Search the workspace for files by name pattern and/or content. glob filters filenames (e.g. \"*.swift\"); query is a regular expression matched against file contents. Returns matching paths with line numbers for content matches.",
+        parametersJSON: #"{"type":"object","properties":{"glob":{"type":"string","description":"Filename glob, e.g. \"*.md\" or \"src/*.ts\""},"query":{"type":"string","description":"Regex to search file contents for"}}}"#,
+        summary: "find workspace files by name pattern and/or content",
+        guidance: "Use before editing a codebase you didn't create — locate the right file instead of guessing paths."
+    )
+    static let runCommand = Definition(
+        name: "run_command",
+        description: "Run a shell command in the conversation's workspace directory and get its stdout/stderr and exit code. Read-only commands run immediately; anything that could modify the system pauses for the user's approval. Use for building, testing, git, and inspecting a real project.",
+        parametersJSON: #"{"type":"object","properties":{"command":{"type":"string","description":"The exact shell command to run"}},"required":["command"]}"#,
+        summary: "run a shell command in the workspace",
+        guidance: "Prefer rg over grep and small, composable commands. The user may deny a command — if so, read their reason and adapt. Never assume a command ran; check the exit code in the result."
+    )
+    static let updatePlan = Definition(
+        name: "update_plan",
+        description: "Maintain a visible step-by-step plan for a multi-step task. Each step is a short phrase (5-7 words) with a status: pending, in_progress, or completed. Keep exactly one step in_progress until everything is done. Call again to advance the plan as you work.",
+        parametersJSON: #"{"type":"object","properties":{"steps":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"]}}},"required":["steps"]}"#,
+        summary: "post or update the task plan",
+        guidance: "Only for genuinely multi-step work — never pad a simple task with a plan. Update it as steps complete so the user can follow along."
+    )
+
     static let getSchedule = Definition(
         name: "get_schedule",
         description: "Read the user's upcoming calendar events and open reminders (read-only, from the system Calendar and Reminders). The first call may trigger a one-time system permission prompt.",
@@ -155,6 +184,17 @@ enum ToolCatalog {
         var clipboard: (@Sendable () async -> String)? = nil
         /// Routes mcp_-prefixed tool names to the MCP manager.
         var mcpCall: (@Sendable (String, String) async -> String)? = nil
+        /// run_command approval + execution, injected only when the agent
+        /// abilities are enabled. Returns the command's combined output (or
+        /// an "Error:"/denied message). nil = the tool is disabled.
+        var runCommand: (@Sendable (String) async -> String)? = nil
+        /// update_plan sink — hands the parsed steps to the UI layer.
+        var updatePlan: (@Sendable ([PlanStep]) async -> String)? = nil
+    }
+
+    struct PlanStep: Sendable, Equatable, Codable {
+        var step: String
+        var status: String  // pending | in_progress | completed
     }
 
     struct MemorySnapshot: Sendable {
@@ -269,6 +309,28 @@ enum ToolCatalog {
                 return "Error: both \"path\" and \"content\" are required."
             }
             return writeFileResult(path: path, content: content, context: context)
+        case editFile.name:
+            guard let path = arguments?["path"] as? String,
+                  let oldString = arguments?["old_string"] as? String,
+                  let newString = arguments?["new_string"] as? String else {
+                return "Error: \"path\", \"old_string\", and \"new_string\" are required."
+            }
+            return editFileResult(path: path, oldString: oldString, newString: newString, replaceAll: arguments?["replace_all"] as? Bool ?? false, context: context)
+        case searchFiles.name:
+            return searchFilesResult(glob: arguments?["glob"] as? String, query: arguments?["query"] as? String, context: context)
+        case runCommand.name:
+            guard let command = arguments?["command"] as? String, !command.isEmpty else { return "Error: \"command\" is required." }
+            guard let runner = context.runCommand else { return "Error: running commands is disabled. The user can enable it in Settings → Agent abilities." }
+            return await runner(command)
+        case updatePlan.name:
+            guard let rawSteps = arguments?["steps"] as? [[String: Any]] else { return "Error: \"steps\" is required." }
+            let steps = rawSteps.compactMap { entry -> PlanStep? in
+                guard let step = entry["step"] as? String, let status = entry["status"] as? String else { return nil }
+                return PlanStep(step: step, status: status)
+            }
+            guard !steps.isEmpty else { return "Error: no valid steps provided." }
+            guard let sink = context.updatePlan else { return "Error: planning is unavailable." }
+            return await sink(steps)
         case readFile.name:
             guard let path = arguments?["path"] as? String else { return "Error: \"path\" is required." }
             return readFileResult(path: path, context: context)
@@ -528,6 +590,77 @@ enum ToolCatalog {
             return "The workspace folder is empty."
         }
         return items.sorted().joined(separator: "\n")
+    }
+
+    private static func editFileResult(path: String, oldString: String, newString: String, replaceAll: Bool, context: ExecutionContext) -> String {
+        guard let url = SandboxManager.resolve(path, in: context.workspaceDirectory) else {
+            return "Error: \"\(path)\" is outside the workspace folder — only relative paths within it are allowed."
+        }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return "Error: could not read \(path) — it may not exist yet. Use write_file to create it."
+        }
+        let occurrences = text.components(separatedBy: oldString).count - 1
+        guard occurrences > 0 else {
+            return "Error: old_string was not found in \(path). Read the file and copy the exact text, including whitespace."
+        }
+        if occurrences > 1 && !replaceAll {
+            return "Error: old_string matched \(occurrences) times in \(path). Add surrounding context to make it unique, or set replace_all=true."
+        }
+        let updated = text.replacingOccurrences(of: oldString, with: newString)
+        do {
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+            return "Edited \(path) — replaced \(replaceAll ? occurrences : 1) occurrence\(replaceAll && occurrences != 1 ? "s" : "")."
+        } catch {
+            return "Error writing \(path): \(error.localizedDescription)"
+        }
+    }
+
+    private static func searchFilesResult(glob: String?, query: String?, context: ExecutionContext) -> String {
+        let root = context.workspaceDirectory
+        let globRegex = glob.map { Self.globToRegex($0) }
+        let contentRegex = query.flatMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else {
+            return "Error: could not read the workspace folder."
+        }
+        var results: [String] = []
+        var scanned = 0
+        for case let fileURL as URL in enumerator {
+            guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+            let relative = fileURL.path.replacingOccurrences(of: root.path + "/", with: "")
+            if let globRegex, relative.range(of: globRegex, options: .regularExpression) == nil,
+               fileURL.lastPathComponent.range(of: globRegex, options: .regularExpression) == nil { continue }
+            if let contentRegex {
+                scanned += 1
+                if scanned > 2_000 { break }
+                guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { continue }
+                let lines = text.components(separatedBy: "\n")
+                for (index, line) in lines.enumerated() {
+                    if contentRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil {
+                        results.append("\(relative):\(index + 1): \(line.trimmingCharacters(in: .whitespaces).prefix(160))")
+                        if results.count >= 100 { break }
+                    }
+                }
+            } else {
+                results.append(relative)
+            }
+            if results.count >= 100 { break }
+        }
+        if results.isEmpty { return "No matches." }
+        let capped = results.count >= 100 ? results + ["[…more matches; refine the search.]"] : results
+        return capped.joined(separator: "\n")
+    }
+
+    private static func globToRegex(_ glob: String) -> String {
+        var regex = "^"
+        for character in glob {
+            switch character {
+            case "*": regex += "[^/]*"
+            case "?": regex += "[^/]"
+            case ".": regex += "\\."
+            default: regex += String(character)
+            }
+        }
+        return regex + "$"
     }
 
     private static func searchConversationsResult(query: String, context: ExecutionContext) -> String {

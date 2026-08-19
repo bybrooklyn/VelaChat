@@ -78,6 +78,15 @@ enum SystemPrompt {
                 lines.append("- (Your provider also performs live web search natively on this request.)")
             }
             lines.append("When a call errors, read the error and retry with corrected input — errors are feedback, not stop signs. If a page fetch fails or is blocked, try at most ~3 alternative pages, then answer from the search snippets you already have, saying briefly which sources were unreachable.")
+            if context.tools.contains(where: { $0.name == ToolCatalog.updatePlan.name }) {
+                lines.append("Plans are for genuinely multi-step work only — never pad a simple task with one. When you do plan: 5-7 short steps, exactly one in_progress at a time, and update it as you finish each step.")
+            }
+            if context.tools.contains(where: { $0.name == ToolCatalog.runCommand.name }) {
+                lines.append("You can run real shell commands in the workspace. Read-only commands run immediately; anything else asks the user first, so keep commands small, explicit, and easy to approve. Always check the exit code in the result instead of assuming success, and if the user denies a command, adapt rather than retrying it.")
+            }
+            if context.tools.contains(where: { $0.name == ToolCatalog.editFile.name }) {
+                lines.append("For an existing file prefer edit_file (exact find/replace) over rewriting it with write_file, and use search_files to locate code before guessing paths.")
+            }
             if context.tools.contains(where: { $0.name == ToolCatalog.writeFile.name }) {
                 lines.append("Files you write with write_file land in this conversation's private workspace; the user can open, read, and edit them in the inspector — writing a real file is often better than pasting a wall of code.")
             }

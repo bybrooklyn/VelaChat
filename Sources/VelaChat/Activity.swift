@@ -7,6 +7,7 @@ enum ActivityKind: String, Codable, Sendable {
     case datetime, calculation, attachment, note
     case schedule, clipboard, mcp
     case memory, memorySave, memorySearch, memoryEdit
+    case fileEdit, fileSearch, command, plan, subagent
 
     static func from(toolName: String) -> ActivityKind {
         switch toolName {
@@ -16,6 +17,11 @@ enum ActivityKind: String, Codable, Sendable {
         case ToolCatalog.readFile.name: .fileRead
         case ToolCatalog.writeFile.name: .fileWrite
         case ToolCatalog.listWorkspaceFiles.name: .fileList
+        case ToolCatalog.editFile.name: .fileEdit
+        case ToolCatalog.searchFiles.name: .fileSearch
+        case ToolCatalog.runCommand.name: .command
+        case ToolCatalog.updatePlan.name: .plan
+        case "spawn_agents": .subagent
         case "current_datetime": .datetime  // retired tool; old transcripts still map
         case ToolCatalog.calculator.name: .calculation
         case ToolCatalog.readAttachment.name: .attachment
@@ -49,6 +55,11 @@ enum ActivityKind: String, Codable, Sendable {
         case .clipboard: "doc.on.clipboard"
         case .mcp: "puzzlepiece.extension"
         case .memory, .memorySave, .memorySearch, .memoryEdit: "brain"
+        case .fileEdit: "pencil.and.outline"
+        case .fileSearch: "text.magnifyingglass"
+        case .command: "terminal"
+        case .plan: "checklist"
+        case .subagent: "person.2"
         case .note: "info.circle"
         }
     }
@@ -73,6 +84,11 @@ enum ActivityKind: String, Codable, Sendable {
         case .memorySave: return "Saving a memory"
         case .memorySearch: return "Searching memory"
         case .memoryEdit: return "Updating memory"
+        case .fileEdit: return "Editing \(argument.isEmpty ? "a file" : argument)"
+        case .fileSearch: return "Searching files\(detail)"
+        case .command: return "Running \(argument.isEmpty ? "a command" : "`\(argument)`")"
+        case .plan: return "Planning"
+        case .subagent: return "Running subagents"
         case .note: return argument
         }
     }
@@ -97,6 +113,11 @@ enum ActivityKind: String, Codable, Sendable {
         case .memorySave: return "Saved a memory"
         case .memorySearch: return "Recalled from memory"
         case .memoryEdit: return "Updated a memory"
+        case .fileEdit: return "Edited \(argument.isEmpty ? "a file" : argument)"
+        case .fileSearch: return "Searched files\(detail)"
+        case .command: return "Ran \(argument.isEmpty ? "a command" : "`\(argument)`")"
+        case .plan: return "Updated the plan"
+        case .subagent: return "Ran subagents"
         case .note: return argument
         }
     }
@@ -121,6 +142,11 @@ enum ActivityKind: String, Codable, Sendable {
         case .mcp: return "\(count) MCP tool call\(plural)"
         case .memory, .memorySave, .memoryEdit: return "\(count) memory update\(plural)"
         case .memorySearch: return "\(count) memory lookup\(plural)"
+        case .fileEdit: return "edited \(count) file\(plural)"
+        case .fileSearch: return "\(count) file search\(count == 1 ? "" : "es")"
+        case .command: return "ran \(count) command\(plural)"
+        case .plan: return "planned \(count) step update\(plural)"
+        case .subagent: return "\(count) subagent run\(plural)"
         case .note: return "\(count) note\(plural)"
         }
     }
