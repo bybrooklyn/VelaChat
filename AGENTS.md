@@ -73,6 +73,44 @@ wiring — the mistakes below are easy to repeat blind.
   happened in this conversation," including anything built from it that gets
   sent to a provider.
 
+## Bundling and shipping
+
+- **A `swift build` that succeeds proves nothing about the `.app`.** Adding
+  Sparkle (a dynamic framework) once produced a bundle that passed
+  "binary exists", "Info.plist exists", and `codesign --verify`, and still
+  died instantly on every launch with `Library not loaded:
+  @rpath/Sparkle.framework` — debug builds resolve it out of `.build`, so
+  only the bundle was broken. `Scripts/build-app.sh` now asserts every
+  `@rpath` dependency resolves inside the bundle, and CI launches the
+  built app and fails if it isn't alive ten seconds later. Keep both.
+- **Tests run in CI, not here.** XCTest ships with Xcode, which this
+  machine doesn't have, so `swift build --build-tests` fails locally with
+  "no such module 'XCTest'". Plain `swift build` and `Scripts/build-app.sh`
+  are unaffected. See `Tests/VelaChatTests/README.md`.
+- **CI cancels superseded runs** (`concurrency: cancel-in-progress`).
+  Pushing every few minutes means runs get cancelled before finishing —
+  if you need to see a result, stop pushing and let one complete.
+- **Sparkle's update key is not the code-signing identity.** The app is
+  ad-hoc signed; updates are verified against `SUPublicEDKey` in
+  Info.plist. The private half exists only as the `SPARKLE_PRIVATE_KEY`
+  GitHub secret. Never commit key material (`.gitignore` covers `*.pem`
+  and `sparkle_private.key`).
+
+## Storage rules
+
+- **Never put bytes in `UserDefaults`.** Conversation history lives there,
+  and image attachments used to be base64-encoded into it — macOS reads
+  that plist into memory whole at launch and rewrites it on every save, so
+  a few screenshots meant tens of megabytes of preferences. Large
+  attachment data goes to `AttachmentStore` on disk; `Attachment.data`
+  hides the difference.
+- **Key strings live in `DefaultsKey`, limits live in `Limits`.** Both
+  exist because the same values were previously scattered as literals
+  across a dozen files. Adding a new one anywhere else is how they drift.
+- **`UserDefaults.bool(forKey:)` returns false for a missing key**, which
+  silently turns every default-ON setting off. Use
+  `Defaults.bool(_:default:)`.
+
 ## Build commands
 
 - `just build` / `swift build` — debug build, fast iteration.
@@ -80,3 +118,4 @@ wiring — the mistakes below are easy to repeat blind.
 - `just run` — `swift run VelaChat`; can hit the zero-window issue above just
   like the bundled build can.
 - `just smoke` — builds the release bundle and opens it.
+- `swift test` — CI only (see above).
