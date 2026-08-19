@@ -67,6 +67,15 @@ struct ChatView: View {
                                 isGroupedWithPrevious: grouped
                             )
                                 .padding(.top, index == 0 ? 0 : (grouped ? 3 : appModel.density.messageSpacing))
+                                .overlay {
+                                    if appModel.chatFindHighlightID == message.id {
+                                        RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                                            .stroke(Theme.accent.opacity(0.55), lineWidth: 1.5)
+                                            .padding(-4)
+                                            .transition(.opacity)
+                                    }
+                                }
+                                .animation(.easeOut(duration: 0.4), value: appModel.chatFindHighlightID)
                                 .id(message.id)
                                 .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }
@@ -128,6 +137,14 @@ struct ChatView: View {
                     .transition(.opacity)
                 }
             }
+            .overlay(alignment: .top) {
+                if appModel.isChatFindShown, let conversation = appModel.activeConversation {
+                    ChatFindBar(conversation: conversation, proxy: proxy)
+                        .padding(.top, chrome.isFullScreen ? 40 : 10)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.85), value: appModel.isChatFindShown)
             .overlay(alignment: .topTrailing) {
                 if let conversation = appModel.activeConversation, !conversation.pinnedMessages.isEmpty {
                     PinnedMessagesButton(conversation: conversation, proxy: proxy)
@@ -634,6 +651,95 @@ private struct PinnedMessagesButton: View {
 /// nothing-to-send state stays a plain stroked outline rather than an
 /// untinted glass circle, which would read as inconsistent floating chrome
 /// with nothing to visually anchor it.
+/// The transcript's ⌘F find bar: match count across the open chat,
+/// up/down jumping via the scroll proxy, a fading outline on the current
+/// match's row. (Inline term highlighting inside Markdown bodies is a
+/// known defer — MarkdownUI renders from plain strings.)
+private struct ChatFindBar: View {
+    @Environment(AppModel.self) private var appModel
+    let conversation: Conversation
+    let proxy: ScrollViewProxy
+
+    @State private var query = ""
+    @State private var matchIndex = 0
+    @FocusState private var focused: Bool
+
+    private var matches: [UUID] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed.count >= 2 else { return [] }
+        return conversation.messages
+            .filter { !$0.isSynthetic }
+            .filter { $0.content.lowercased().contains(trimmed) || ($0.reasoning?.lowercased().contains(trimmed) ?? false) }
+            .map(\.id)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.tertiaryText)
+            TextField("Find in chat", text: $query)
+                .textFieldStyle(.plain)
+                .font(.callout)
+                .frame(width: 180)
+                .focused($focused)
+                .onSubmit { jump(1) }
+                .onExitCommand { close() }
+            if !matches.isEmpty {
+                Text("\(min(matchIndex + 1, matches.count)) of \(matches.count)")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+                    .monospacedDigit()
+            } else if query.count >= 2 {
+                Text("No matches")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+            Button { jump(-1) } label: { Image(systemName: "chevron.up").font(.system(size: 10, weight: .semibold)) }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.secondaryText)
+                .disabled(matches.isEmpty)
+            Button { jump(1) } label: { Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)) }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.secondaryText)
+                .disabled(matches.isEmpty)
+            Button { close() } label: { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.tertiaryText)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .glassChip(in: Capsule())
+        .onAppear { focused = true }
+        .onChange(of: query) { _, _ in
+            matchIndex = 0
+            if let first = matches.first { scroll(to: first) }
+        }
+    }
+
+    private func jump(_ direction: Int) {
+        guard !matches.isEmpty else { return }
+        matchIndex = ((matchIndex + direction) % matches.count + matches.count) % matches.count
+        scroll(to: matches[matchIndex])
+    }
+
+    private func scroll(to id: UUID) {
+        withAnimation(.easeOut(duration: 0.25)) {
+            proxy.scrollTo(id, anchor: .center)
+        }
+        appModel.chatFindHighlightID = id
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if appModel.chatFindHighlightID == id { appModel.chatFindHighlightID = nil }
+        }
+    }
+
+    private func close() {
+        appModel.isChatFindShown = false
+        appModel.chatFindHighlightID = nil
+    }
+}
+
 /// The plus button's glass menu: file, GitHub repo (only when the gh CLI
 /// is installed and logged in), clipboard, and a cloud page that morphs in
 /// with providers marked coming-soon.

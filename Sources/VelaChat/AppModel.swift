@@ -111,6 +111,10 @@ final class AppModel {
         didSet { UserDefaults.standard.set(customInstructions, forKey: "velachat.custom-instructions") }
     }
     var isCommandPaletteShown = false
+    /// The transcript find bar (⌘F). Sidebar search moved to ⇧⌘F.
+    var isChatFindShown = false
+    /// The row briefly outlined after a find-jump.
+    var chatFindHighlightID: UUID?
     var speakingMessageID: UUID?
     var searchEndpoint: String = "" {
         didSet { UserDefaults.standard.set(searchEndpoint, forKey: "velachat.search-endpoint") }

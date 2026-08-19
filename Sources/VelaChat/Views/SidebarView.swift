@@ -176,8 +176,8 @@ struct SidebarView: View {
                 }
         }
         .buttonStyle(.plain)
-        .keyboardShortcut("f", modifiers: .command)
-        .help("Search conversations (⌘F)")
+        .keyboardShortcut("f", modifiers: [.command, .shift])
+        .help("Search conversations (⇧⌘F)")
     }
 
     private var searchField: some View {

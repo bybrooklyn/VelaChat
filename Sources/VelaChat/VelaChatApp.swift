@@ -57,6 +57,12 @@ struct VelaChatApp: App {
                     appModel.isCommandPaletteShown = true
                 }
                 .keyboardShortcut("k", modifiers: [.command])
+
+                Button("Find in Chat") {
+                    appModel.isChatFindShown.toggle()
+                }
+                .keyboardShortcut("f", modifiers: [.command])
+                .disabled(appModel.section != .chat)
             }
             // Settings is an in-app destination now, not a separate window,
             // so ⌘, navigates the main window instead of opening a second
