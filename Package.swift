@@ -28,6 +28,11 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/VelaChat"
+        ),
+        .testTarget(
+            name: "VelaChatTests",
+            dependencies: ["VelaChat"],
+            path: "Tests/VelaChatTests"
         )
     ],
     swiftLanguageModes: [.v5]
