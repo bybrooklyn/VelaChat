@@ -736,3 +736,80 @@ provider has NOT been exercised against a live account in this session
 — sign-in, discovery, and a streamed reply still need a real run. The
 visual audit's token sweeps (surface/motion tokens, icon-button and
 sheet unification, sidebar gutters) are still outstanding from round 4.
+
+---
+
+## Session 2026-08-19 (round 6) — bugs, CI, Sparkle, audit
+
+**Bugs the user reported, all fixed.**
+- *Blurred titlebar after collapsing the sidebar.* Root cause:
+  `NavigationSplitView` re-installs its toolbar when the column actually
+  collapses, and the band survived until relaunch. The sidebar now
+  narrows to an **icon rail** instead of collapsing (the user's own
+  idea), which removes the trigger entirely; belt and braces, the
+  transcript opts out of the macOS 26 scroll-edge effect and the window
+  re-nils a re-installed toolbar on resize.
+- *Sidebar min-width broken / New Chat text wrapping.* Self-inflicted:
+  the rail's 60pt width was being written to `velachat.sidebar-width`,
+  so expanded launches used ideal=60. Width is now only persisted while
+  expanded, and clamped on read as well as write.
+- *ChatGPT login "browser may not be secure".* Not our bug — Google
+  refuses OAuth in embedded web views, permanently. Added **browser
+  cookie import** (Chromium via SQLite + Keychain-derived AES key,
+  Firefox via plain SQLite, Safari via binarycookies with an honest Full
+  Disk Access message) plus a paste-a-token escape hatch. Verified
+  against the real browsers on this machine.
+- *Usage gauge staleness.* Hover starts a debounced refresh, click
+  forces one; ChatGPT uses its usage endpoint, others harvest headers
+  from a cheap /models probe, and the popover states the data's age.
+
+**Composer outline (diagnosis only, unchanged as instructed).** The dark
+rim is the system Liquid Glass edge from `glassEffect(.regular)` in
+`Materials.swift:8`, not app code — the app's own stroke is teal at 16%.
+Options: `.clear` glass (soft rim), `.identity`/flat fill (no rim, no
+glass), or drop the redundant accent stroke. Waiting on the user's pick.
+
+**Shipping.** CI (`.github/workflows/build.yml`) builds on macos-26 with
+a cached SwiftPM graph, runs tests, packages the `.app`, **launches it
+and fails if it dies**, and uploads a per-commit artifact; tags publish
+releases. Sparkle self-update is wired with an EdDSA keypair minted via
+openssl (no Keychain involvement); the private key is the
+`SPARKLE_PRIVATE_KEY` GitHub secret.
+
+**The launch-crash catch.** Adding Sparkle produced a bundle that passed
+"binary exists", "Info.plist exists", and `codesign --verify` and still
+died instantly (`Library not loaded: @rpath/Sparkle.framework`) because
+nothing added the rpath. Both the build script and CI now verify the
+bundle actually runs. This is the reason the CI launch check exists.
+
+**Audit findings fixed.** Image attachments were base64'd into
+UserDefaults (a 200 KB screenshot cost 200 KB of preferences plist);
+they now live in `AttachmentStore` on disk, verified with a seven-case
+round-trip harness including legacy migration and missing-blob
+degradation. Per-message state dictionaries (usage, search, plan, finish
+reason, reveal queues) leaked on conversation and message deletion —
+one `discardTransientState` covers them all now.
+
+**Cohesion.** `DefaultsKey` (all 38 keys), `Limits` (truncation sizes,
+timeouts, loop caps), `Theme.surfaceLow/Mid/High` + `velaBorder`
+replacing nine ad-hoc opacities and 18 hand-written strokes. ChatView
+2,595 → 821 lines across three files by responsibility; AppModel's
+generation path extracted to `AppModel+Generation.swift`.
+
+**System prompt** now assembles from conditional sections with
+priorities and a token budget, so a model is never told about tools it
+doesn't have. **TTFT**: first token flushes immediately instead of
+waiting for a reveal tick, MCP servers pre-warm at launch instead of in
+front of the first request, connections warm on launch/provider switch
+(no speculative model requests), and TTFT is measured and reported per
+provider in Statistics.
+
+**Tests** run in CI (XCTest needs Xcode, which this machine lacks):
+command classifier, prompt assembly and budget, tool-argument repair,
+usage accumulation, quota header parsing, cookie recognition.
+
+**Not started from the round-6 plan:** the memory system (P3 — SQLite +
+embeddings + dreaming), Inspector/workspace work (P4), Mac-native pass
+(P5 — App Intents, light mode, Services, universal binary), Textual
+migration (P6). The ChatGPT provider still has not been exercised
+against a live account.
