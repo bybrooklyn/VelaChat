@@ -2,6 +2,16 @@ import SwiftUI
 import AppKit
 import KeyboardShortcuts
 
+/// Was one continuous 10-section scroll — split into tabs so a quick visit
+/// (e.g. "just let me add a provider key") doesn't mean scrolling past
+/// everything else to get there.
+private enum SettingsTab: String, CaseIterable, Identifiable {
+    case providers = "Providers"
+    case general = "General"
+    case tools = "Tools & Skills"
+    var id: Self { self }
+}
+
 struct SettingsView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowChrome.self) private var chrome
@@ -11,6 +21,7 @@ struct SettingsView: View {
     @State private var isAddingSnippet = false
     @State private var newMemoryText = ""
     @State private var accentPreset = AccentPreset.current
+    @State private var settingsTab: SettingsTab = .providers
 
     private var topBarHeight: CGFloat { chrome.isFullScreen ? 44 : 52 }
 
@@ -23,6 +34,18 @@ struct SettingsView: View {
         // empty reserved strip above it.
         VStack(spacing: 0) {
             header
+            Picker("", selection: $settingsTab) {
+                ForEach(SettingsTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+            .frame(maxWidth: 760)
+            .frame(maxWidth: .infinity, alignment: .center)
             NavigationStack {
                 settingsForm
                     .navigationDestination(item: $editingProfileID) { id in
@@ -83,6 +106,7 @@ struct SettingsView: View {
             // Providers lead, because they're the thing you actually come
             // here to change, and they now live inline instead of behind a
             // separate "Connections" screen.
+            if settingsTab == .providers {
             Section {
                 ForEach(visibleProfiles) { profile in
                     Button {
@@ -120,7 +144,9 @@ struct SettingsView: View {
             } footer: {
                 Text("Every provider here speaks the same OpenAI chat-completions format — the “OpenAI Compatible” option is that same protocol pointed at any other server. Keys are stored in your macOS Keychain and requests go directly to the provider.")
             }
+            }
 
+            if settingsTab == .general {
             Section {
                 TextEditor(text: $appModel.customInstructions)
                     .font(.body)
@@ -173,7 +199,9 @@ struct SettingsView: View {
             } footer: {
                 Text("Durable facts included in every conversation, not just one \u{2014} add them yourself, or confirm one the model proposes mid-reply. Separate from Custom Instructions: a list of discrete, individually editable facts instead of one freeform block.")
             }
+            }
 
+            if settingsTab == .tools {
             Section {
                 if appModel.skills.skills.isEmpty {
                     Label("No skills found yet.", systemImage: "sparkles")
@@ -299,7 +327,9 @@ struct SettingsView: View {
             } footer: {
                 Text("When on (and the model supports tools), the model can search your past conversations, and read/write files in a real, private folder on disk \u{2014} a separate one for every conversation, never your actual files unless you put them there yourself. There's no shell/command-execution tool: one was built and tested with real macOS sandboxing, but it couldn't be made to reliably confine even trivial commands, so it wasn't shipped rather than ship something that only looks safe.")
             }
+            }
 
+            if settingsTab == .general {
             Section {
                 KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
             } header: {
@@ -401,6 +431,7 @@ struct SettingsView: View {
                     .foregroundStyle(Theme.secondaryText)
             } header: {
                 Text("About VelaChat")
+            }
             }
         }
         .formStyle(.grouped)

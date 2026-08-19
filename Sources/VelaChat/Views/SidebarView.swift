@@ -543,8 +543,30 @@ private struct ConversationRow: View {
     let onCommitRename: () -> Void
 
     @State private var isHovering = false
+    @State private var displayedTitle: String = ""
+    @State private var typewriterTask: Task<Void, Never>?
 
     private var isRenaming: Bool { renamingConversationID == conversation.id }
+
+    /// Erases the old title one character at a time, then types the new
+    /// one back in, instead of an instant swap — runs whenever
+    /// `conversation.title` changes (auto-generated after the first
+    /// exchange, or a manual "Regenerate Title"/rename).
+    private func animateTitleChange(to newValue: String) {
+        typewriterTask?.cancel()
+        typewriterTask = Task { @MainActor in
+            while !displayedTitle.isEmpty {
+                if Task.isCancelled { return }
+                displayedTitle.removeLast()
+                try? await Task.sleep(nanoseconds: 14_000_000)
+            }
+            for character in newValue {
+                if Task.isCancelled { return }
+                displayedTitle.append(character)
+                try? await Task.sleep(nanoseconds: 18_000_000)
+            }
+        }
+    }
 
     var body: some View {
         HStack(spacing: 9) {
@@ -564,10 +586,14 @@ private struct ConversationRow: View {
                         .onExitCommand { renamingConversationID = nil }
                 } else {
                     HStack(spacing: 6) {
-                        Text(conversation.title)
+                        Text(displayedTitle)
                             .font(.subheadline.weight(selected ? .medium : .regular))
                             .foregroundStyle(selected ? Theme.text : Theme.secondaryText)
                             .lineLimit(1)
+                            .onAppear { displayedTitle = conversation.title }
+                            .onChange(of: conversation.title) { _, newValue in
+                                animateTitleChange(to: newValue)
+                            }
                         if conversation.isGenerating && !selected {
                             ProgressView()
                                 .controlSize(.mini)

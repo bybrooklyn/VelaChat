@@ -387,6 +387,7 @@ private struct ModelPaletteView: View {
                                 profile: profile,
                                 models: filteredModels(for: profile),
                                 selectedModelID: profile.id == appModel.selectedProvider?.id ? appModel.currentModelID : nil,
+                                showRecommended: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                                 action: { model in
                                     appModel.selectProviderAndModel(profile, model: model)
                                     isPresented = false
@@ -397,7 +398,7 @@ private struct ModelPaletteView: View {
                     .padding(.top, 10)
                 }
                 .scrollIndicators(.hidden)
-                .frame(maxHeight: 420)
+                .frame(maxHeight: 560)
             }
 
             Divider()
@@ -413,7 +414,7 @@ private struct ModelPaletteView: View {
             .padding(.top, 9)
         }
         .padding(16)
-        .frame(width: 460)
+        .frame(width: 560)
         .frame(minHeight: 250)
         // Every configured provider's catalog starts fetching the moment
         // this popover opens, not just the currently-selected one —
@@ -436,6 +437,7 @@ private struct ModelPaletteGroup: View {
     let profile: ProviderProfile
     let models: [RemoteModel]
     let selectedModelID: String?
+    let showRecommended: Bool
     let action: (RemoteModel) -> Void
 
     var body: some View {
@@ -453,20 +455,25 @@ private struct ModelPaletteGroup: View {
                         .controlSize(.mini)
                 }
                 Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+            // Refresh moved off the visible header (redundant now that
+            // every configured provider auto-fetches on open — a manual
+            // refresh icon on every card just read as clutter/a
+            // broken-looking control) and into a context menu, still
+            // reachable for the rare case a catalog genuinely needs a
+            // forced re-fetch.
+            .contextMenu {
                 if profile.kind != .preview {
                     Button {
                         Task { await appModel.providers.refreshModels(id: profile.id) }
                     } label: {
-                        Image(systemName: "arrow.clockwise")
+                        Label("Refresh Catalog", systemImage: "arrow.clockwise")
                     }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Theme.tertiaryText)
-                    .font(.caption2)
-                    .help("Refresh \(profile.name)’s model catalog")
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
 
             Divider()
 
@@ -478,10 +485,11 @@ private struct ModelPaletteGroup: View {
                     .padding(.vertical, 8)
             } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(models) { model in
+                    ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
                         ModelPaletteRow(
                             model: model,
                             selected: model.id == selectedModelID,
+                            recommended: showRecommended && index == 0 && models.count > 1,
                             action: { action(model) }
                         )
                     }
@@ -500,6 +508,7 @@ private struct ModelPaletteGroup: View {
 private struct ModelPaletteRow: View {
     let model: RemoteModel
     let selected: Bool
+    let recommended: Bool
     let action: () -> Void
 
     var body: some View {
@@ -512,8 +521,16 @@ private struct ModelPaletteRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(model.displayName)
-                            .font(.body.weight(.medium))
+                            .font(.body.weight(recommended ? .semibold : .medium))
                             .lineLimit(1)
+                        if recommended {
+                            Text("Recommended")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Theme.accentForeground)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Theme.accent, in: Capsule())
+                        }
                         if model.supportsReasoning {
                             Text("Think")
                                 .font(.caption2.weight(.medium))
