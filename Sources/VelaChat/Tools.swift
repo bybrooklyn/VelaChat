@@ -132,6 +132,27 @@ enum ToolCatalog {
         summary: "read the user's upcoming calendar events and reminders",
         guidance: "Use for anything about the user's schedule, availability, or todos. If access was denied, relay that honestly instead of guessing."
     )
+    static let createScheduleItem = Definition(
+        name: "create_schedule_item",
+        description: "Create a reminder or a calendar event in the user's own Reminders/Calendar. Use when they ask to be reminded of something or to put something on their calendar.",
+        parametersJSON: #"{"type":"object","properties":{"kind":{"type":"string","enum":["reminder","event"],"description":"reminder (todo, optional due date) or event (needs a start time)"},"title":{"type":"string"},"start":{"type":"string","description":"ISO 8601 local time, e.g. 2026-08-20T15:00:00 — required for events, optional due date for reminders"},"duration_minutes":{"type":"integer","description":"Event length, default 60"},"notes":{"type":"string"}},"required":["kind","title"]}"#,
+        summary: "create a reminder or calendar event",
+        guidance: "Resolve relative times against the current date in your Environment section before calling — pass a concrete ISO timestamp, never \"tomorrow\". Confirm back what you created, including the time."
+    )
+    static let systemStatus = Definition(
+        name: "system_status",
+        description: "Read this Mac's current state: battery level and charging status, free disk space, installed memory, uptime, macOS version, and which media apps are running.",
+        parametersJSON: #"{"type":"object","properties":{}}"#,
+        summary: "read this Mac's battery, disk, memory, and uptime",
+        guidance: "Use when the user asks about their machine (\"is my battery ok\", \"am I low on space\") instead of guessing or asking them to check."
+    )
+    static let analyzeImage = Definition(
+        name: "analyze_image",
+        description: "Extract text (OCR) and scene labels from an image attachment in this conversation, on-device. Use when you cannot see images directly but the user attached one.",
+        parametersJSON: #"{"type":"object","properties":{"filename":{"type":"string","description":"The attachment's filename"}},"required":["filename"]}"#,
+        summary: "read text and content from an attached image",
+        guidance: "This returns OCR text and rough scene labels, not a full visual description — say so if the user asks for something the analysis can't support."
+    )
     static let readClipboard = Definition(
         name: "read_clipboard",
         description: "Read the user's current clipboard (text or file names). Use when they reference what they just copied.",
@@ -181,7 +202,13 @@ enum ToolCatalog {
         /// EventKit/NSPasteboard stay out of this Sendable context. nil =
         /// disabled in Settings.
         var schedule: (@Sendable (Int) async -> String)? = nil
+        /// (kind, title, startISO, durationMinutes, notes) → result.
+        var createScheduleItem: (@Sendable (String, String, String?, Int?, String?) async -> String)? = nil
         var clipboard: (@Sendable () async -> String)? = nil
+        var systemStatus: (@Sendable () async -> String)? = nil
+        /// Image attachments by filename, for on-device analysis.
+        var imageAttachments: [String: Data] = [:]
+        var analyzeImage: (@Sendable (Data, String) async -> String)? = nil
         /// Routes mcp_-prefixed tool names to the MCP manager.
         var mcpCall: (@Sendable (String, String) async -> String)? = nil
         /// run_command approval + execution, injected only when the agent
@@ -362,6 +389,26 @@ enum ToolCatalog {
             guard let schedule = context.schedule else { return "Error: the schedule tool is disabled in Settings." }
             let days = (arguments?["days"] as? Int) ?? Int(arguments?["days"] as? Double ?? 7)
             return await schedule(days)
+        case createScheduleItem.name:
+            guard let create = context.createScheduleItem else { return "Error: the schedule tool is disabled in Settings." }
+            guard let kind = arguments?["kind"] as? String, let title = arguments?["title"] as? String else {
+                return "Error: \"kind\" and \"title\" are required."
+            }
+            let duration = (arguments?["duration_minutes"] as? Int) ?? (arguments?["duration_minutes"] as? Double).map(Int.init)
+            return await create(kind, title, arguments?["start"] as? String, duration, arguments?["notes"] as? String)
+        case systemStatus.name:
+            guard let status = context.systemStatus else { return "Error: the system status tool is disabled in Settings." }
+            return await status()
+        case analyzeImage.name:
+            guard let analyze = context.analyzeImage else { return "Error: image analysis is unavailable." }
+            guard let filename = arguments?["filename"] as? String else { return "Error: \"filename\" is required." }
+            guard let data = context.imageAttachments[filename] else {
+                let available = context.imageAttachments.keys.sorted().joined(separator: ", ")
+                return available.isEmpty
+                    ? "Error: this conversation has no image attachments."
+                    : "Error: no image named \"\(filename)\". Available: \(available)."
+            }
+            return await analyze(data, filename)
         case readClipboard.name:
             guard let clipboard = context.clipboard else { return "Error: the clipboard tool is disabled in Settings." }
             return await clipboard()

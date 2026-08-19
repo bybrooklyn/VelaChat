@@ -8,6 +8,7 @@ enum ActivityKind: String, Codable, Sendable {
     case schedule, clipboard, mcp
     case memory, memorySave, memorySearch, memoryEdit
     case fileEdit, fileSearch, command, plan, subagent
+    case systemStatus, imageAnalysis
 
     static func from(toolName: String) -> ActivityKind {
         switch toolName {
@@ -25,7 +26,9 @@ enum ActivityKind: String, Codable, Sendable {
         case "current_datetime": .datetime  // retired tool; old transcripts still map
         case ToolCatalog.calculator.name: .calculation
         case ToolCatalog.readAttachment.name: .attachment
-        case ToolCatalog.getSchedule.name: .schedule
+        case ToolCatalog.getSchedule.name, ToolCatalog.createScheduleItem.name: .schedule
+        case ToolCatalog.systemStatus.name: .systemStatus
+        case ToolCatalog.analyzeImage.name: .imageAnalysis
         case ToolCatalog.readClipboard.name: .clipboard
         case let name where name.hasPrefix("mcp_"): .mcp
         case "save_memory": .memorySave
@@ -60,6 +63,8 @@ enum ActivityKind: String, Codable, Sendable {
         case .command: "terminal"
         case .plan: "checklist"
         case .subagent: "person.2"
+        case .systemStatus: "gauge.with.dots.needle.bottom.50percent"
+        case .imageAnalysis: "text.viewfinder"
         case .note: "info.circle"
         }
     }
@@ -89,6 +94,8 @@ enum ActivityKind: String, Codable, Sendable {
         case .command: return "Running \(argument.isEmpty ? "a command" : "`\(argument)`")"
         case .plan: return "Planning"
         case .subagent: return "Running subagents"
+        case .systemStatus: return "Checking this Mac"
+        case .imageAnalysis: return "Reading \(argument.isEmpty ? "an image" : argument)"
         case .note: return argument
         }
     }
@@ -118,6 +125,8 @@ enum ActivityKind: String, Codable, Sendable {
         case .command: return "Ran \(argument.isEmpty ? "a command" : "`\(argument)`")"
         case .plan: return "Updated the plan"
         case .subagent: return "Ran subagents"
+        case .systemStatus: return "Checked this Mac"
+        case .imageAnalysis: return "Read \(argument.isEmpty ? "an image" : argument)"
         case .note: return argument
         }
     }
@@ -147,6 +156,8 @@ enum ActivityKind: String, Codable, Sendable {
         case .command: return "ran \(count) command\(plural)"
         case .plan: return "planned \(count) step update\(plural)"
         case .subagent: return "\(count) subagent run\(plural)"
+        case .systemStatus: return "checked this Mac"
+        case .imageAnalysis: return "read \(count) image\(plural)"
         case .note: return "\(count) note\(plural)"
         }
     }

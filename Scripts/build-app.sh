@@ -44,9 +44,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key>
     <string>VelaChat</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>VelaChat reads your upcoming events only when the AI uses its schedule tool at your request.</string>
+    <string>VelaChat reads your upcoming events, and creates events you ask for, only when the AI uses its schedule tool at your request.</string>
     <key>NSRemindersFullAccessUsageDescription</key>
-    <string>VelaChat reads open reminders only when the AI uses its schedule tool at your request.</string>
+    <string>VelaChat reads open reminders, and creates reminders you ask for, only when the AI uses its schedule tool at your request.</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>

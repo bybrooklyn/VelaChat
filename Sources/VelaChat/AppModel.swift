@@ -1474,8 +1474,12 @@ final class AppModel {
             // live date/time on every request instead.
             tools.append(ToolCatalog.calculator)
             tools.append(contentsOf: [ToolCatalog.saveMemory, ToolCatalog.searchMemory, ToolCatalog.editMemory])
-            if isScheduleToolEnabled { tools.append(ToolCatalog.getSchedule) }
+            if isScheduleToolEnabled {
+                tools.append(ToolCatalog.getSchedule)
+                tools.append(ToolCatalog.createScheduleItem)
+            }
             if isClipboardToolEnabled { tools.append(ToolCatalog.readClipboard) }
+            tools.append(ToolCatalog.systemStatus)
             if isWorkspaceEnabled {
                 tools.append(contentsOf: [ToolCatalog.writeFile, ToolCatalog.readFile, ToolCatalog.listWorkspaceFiles])
                 if isAgentToolsEnabled {
@@ -1502,6 +1506,13 @@ final class AppModel {
         }
         if modelSupportsTools, !attachmentTexts.isEmpty {
             tools.append(ToolCatalog.readAttachment)
+        }
+        // Only offered when the model can't see images itself — otherwise
+        // OCR would be a strictly worse path than just looking.
+        if modelSupportsTools,
+           !(modelInfo?.supportsVision ?? false),
+           conversation.realMessages.contains(where: { !$0.imageAttachments.isEmpty }) {
+            tools.append(ToolCatalog.analyzeImage)
         }
         // System stack, top to bottom: the user's own instructions lead,
         // then durable memories and skills, then the app's tool inventory
@@ -1564,6 +1575,24 @@ final class AppModel {
             toolContext.schedule = { days in
                 await ScheduleReader.schedule(days: days)
             }
+            toolContext.createScheduleItem = { kind, title, start, duration, notes in
+                await ScheduleReader.create(kind: kind, title: title, startISO: start, durationMinutes: duration, notes: notes)
+            }
+        }
+        toolContext.systemStatus = {
+            await MainActor.run { SystemTools.status() }
+        }
+        // Only models that can't see images need the OCR path, but the
+        // attachments are cheap to carry either way.
+        var imageAttachments: [String: Data] = [:]
+        for message in conversation.realMessages {
+            for attachment in message.imageAttachments {
+                imageAttachments[attachment.filename] = attachment.data
+            }
+        }
+        toolContext.imageAttachments = imageAttachments
+        toolContext.analyzeImage = { data, filename in
+            await SystemTools.analyzeImage(data: data, filename: filename)
         }
         if isAgentToolsEnabled {
             let planAssistantID = assistantID
