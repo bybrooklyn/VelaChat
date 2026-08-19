@@ -169,8 +169,15 @@ private struct VelaCodeBlock: View {
                 .help(copied ? "Copied" : "Copy code")
             }
             .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
+            .padding(.vertical, 7)
+            // A real header strip — darker fill + hairline — instead of
+            // labels floating inside the block.
+            .background(Theme.background.opacity(0.45))
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Theme.controlStroke.opacity(0.5))
+                    .frame(height: 1)
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 CodeText(configuration.content)
@@ -179,9 +186,10 @@ private struct VelaCodeBlock: View {
                     .highlightMode(configuration.language.map { .languageAlias($0) } ?? .automatic)
                     .font(.system(.callout, design: .monospaced))
                     .padding(.horizontal, 12)
-                    .padding(.bottom, 10)
+                    .padding(.vertical, 10)
             }
         }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .background(Theme.controlBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
