@@ -249,6 +249,16 @@ actor MemoryStore {
         return sqlite3_step(statement) == SQLITE_ROW
     }
 
+    /// Drops one message from the index — the "don't use this again"
+    /// action, which has to actually stop it coming back.
+    func forgetMessage(_ messageID: UUID) {
+        open()
+        guard let statement = prepare("DELETE FROM chunks WHERE message_id = ?;") else { return }
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, messageID.uuidString)
+        sqlite3_step(statement)
+    }
+
     func forgetConversation(_ conversationID: UUID) {
         open()
         guard let statement = prepare("DELETE FROM chunks WHERE conversation_id = ?;") else { return }

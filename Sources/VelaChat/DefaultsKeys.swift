@@ -25,6 +25,8 @@ enum DefaultsKey {
     static let customInstructions = "velachat.custom-instructions"
     static let promptSnippets = "velachat.prompt-snippets"
     static let memories = "velachat.memories"
+    /// Per-provider memory permission, suffixed with the provider's UUID.
+    static let memoryAllowedPrefix = "velachat.memory-allowed."
 
     // Providers
     static let providerProfiles = "velachat.provider-profiles"

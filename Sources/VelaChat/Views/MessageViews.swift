@@ -173,6 +173,10 @@ struct MessageRow: View {
                         PlanCard(steps: steps, isWorking: message.isStreaming)
                     }
 
+                    if alternateIndex == 0, let recalled = appModel.recallByMessage[message.id], !recalled.isEmpty {
+                        RecallLine(recalls: recalled)
+                    }
+
                     if let reasoning = displayedMessage.reasoning, !reasoning.isEmpty {
                         ReasoningDisclosure(
                             reasoning: reasoning,

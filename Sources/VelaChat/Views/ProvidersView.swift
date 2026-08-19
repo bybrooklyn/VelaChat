@@ -130,6 +130,18 @@ struct ProviderEditorView: View {
                         }
                     }
 
+                    Section("Memory") {
+                        Toggle("Send memories to this provider", isOn: Binding(
+                            get: { appModel.isMemoryAllowed(for: profile) },
+                            set: { appModel.setMemoryAllowed($0, for: profile) }
+                        ))
+                        Text(profile.kind.isLocal
+                             ? "Nothing leaves this Mac with a local provider."
+                             : "Saved facts and relevant excerpts from past conversations are included in requests to this provider. Turn this off to keep them out of it.")
+                            .font(.caption)
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
+
                     modelControl(profile)
                     ollamaModelManager(profile)
                     capabilities(profile)

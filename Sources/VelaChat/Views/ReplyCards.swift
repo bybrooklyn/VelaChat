@@ -401,3 +401,87 @@ struct AskUserQuestionCard: View {
         appModel.send(summary)
     }
 }
+
+/// "What informed this reply" — a dim line under a reply that drew on
+/// memory, expanding to the actual excerpts.
+///
+/// Invisible when nothing was recalled, so ordinary conversation stays
+/// clean; when it does appear, every item can be jumped to or forgotten,
+/// because memory the user can't inspect or correct is memory they can't
+/// trust.
+struct RecallLine: View {
+    @Environment(AppModel.self) private var appModel
+    let recalls: [MemoryRecall]
+    @State private var isExpanded = false
+
+    private var summary: String {
+        let facts = recalls.filter(\.isFact).count
+        let chats = recalls.count - facts
+        var parts: [String] = []
+        if facts > 0 { parts.append("\(facts) memor\(facts == 1 ? "y" : "ies")") }
+        if chats > 0 { parts.append("\(chats) past \(chats == 1 ? "message" : "messages")") }
+        return "Drew on " + parts.joined(separator: " and ")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.16)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "brain")
+                        .font(.system(size: 10, weight: .medium))
+                    Text(summary)
+                        .font(.caption)
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(Theme.tertiaryText)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("What this reply drew on")
+            .accessibilityLabel("What this reply drew on")
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(recalls) { recall in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: recall.isFact ? "bookmark" : "bubble.left.and.text.bubble.right")
+                                .font(.system(size: 9))
+                                .foregroundStyle(Theme.tertiaryText)
+                                .padding(.top, 2)
+                            Text(recall.text)
+                                .font(.caption)
+                                .foregroundStyle(Theme.secondaryText)
+                                .lineLimit(3)
+                            Spacer(minLength: 0)
+                            if case .conversation(let conversationID, _) = recall.origin {
+                                Button("Open") { appModel.openConversation(id: conversationID) }
+                                    .buttonStyle(.plain)
+                                    .font(.caption2)
+                                    .foregroundStyle(Theme.accent)
+                                    .help("Jump to that conversation")
+                                    .accessibilityLabel("Jump to that conversation")
+                            }
+                            Button {
+                                appModel.forgetRecall(recall)
+                            } label: {
+                                Image(systemName: "xmark.circle")
+                                    .font(.system(size: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Theme.tertiaryText)
+                            .help("Don't use this again")
+                            .accessibilityLabel("Don't use this again")
+                        }
+                    }
+                }
+                .padding(.leading, 16)
+                .transition(.opacity)
+            }
+        }
+        .padding(.top, 2)
+    }
+}

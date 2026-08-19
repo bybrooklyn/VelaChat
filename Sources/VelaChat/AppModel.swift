@@ -57,6 +57,11 @@ final class AppModel {
     let usage = UsageStore()
     let mcp = McpManager()
     let skills = SkillsStore()
+    let memoryIndexer = MemoryIndexer()
+    /// Which stored memories and past-conversation excerpts informed each
+    /// reply — surfaced under the message so recall is explainable rather
+    /// than magical.
+    var recallByMessage: [UUID: [MemoryRecall]] = [:]
     var promptSnippets: [PromptSnippet] = [] {
         didSet {
             if let data = try? JSONEncoder().encode(promptSnippets) {
@@ -725,6 +730,9 @@ final class AppModel {
             Task { await ChatGPTWebClient.shared.startKeepAlive() }
         }
         prewarmForFasterFirstToken()
+        // Recent conversations become searchable within seconds; older
+        // ones fill in behind them without competing with the interface.
+        memoryIndexer.startBackfill(conversations: conversations)
         if let active = activeConversation, let providerID = active.providerID {
             providers.select(providerID, markExplicit: false)
         }
@@ -1250,6 +1258,43 @@ final class AppModel {
         "like", "its", "it's", "from", "they", "them", "when", "where"
     ]
 
+    /// Per-provider memory switch: personal facts and past-conversation
+    /// excerpts should not reach a provider the user hasn't chosen to
+    /// trust with them. Local providers are allowed by default because
+    /// nothing leaves the Mac.
+    func isMemoryAllowed(for profile: ProviderProfile) -> Bool {
+        Defaults.bool(DefaultsKey.memoryAllowedPrefix + profile.id.uuidString, default: true)
+    }
+
+    func setMemoryAllowed(_ allowed: Bool, for profile: ProviderProfile) {
+        Defaults.set(allowed, DefaultsKey.memoryAllowedPrefix + profile.id.uuidString)
+    }
+
+    /// Jump to the conversation a recalled excerpt came from.
+    func openConversation(id: UUID) {
+        guard let conversation = conversations.first(where: { $0.id == id }) else {
+            postNotice("That conversation has since been deleted.")
+            return
+        }
+        selectConversation(conversation)
+    }
+
+    /// "Don't use this again": a fact is deleted outright, and a recalled
+    /// message stops being indexed, so the correction actually sticks
+    /// rather than only hiding the row.
+    func forgetRecall(_ recall: MemoryRecall) {
+        switch recall.origin {
+        case .fact(let id):
+            if let memory = memories.first(where: { $0.id == id }) { removeMemory(memory) }
+            Task { await MemoryStore.shared.deleteFact(id: id) }
+        case .conversation(_, let messageID):
+            Task { await MemoryStore.shared.forgetMessage(messageID) }
+        }
+        for (messageID, recalls) in recallByMessage {
+            recallByMessage[messageID] = recalls.filter { $0.id != recall.id }
+        }
+    }
+
     func relevantMemoryText(for conversation: Conversation) -> String {
         let selection: [MemoryItem]
         var omitted = 0
@@ -1379,6 +1424,7 @@ final class AppModel {
         }
         SandboxManager.cleanup(for: conversation.id)
         pruneAttachmentBlobs()
+        memoryIndexer.forget(conversationID: conversation.id)
         Task { await ChatGPTWebChat.shared.forgetContinuation(for: conversation.id) }
         if activeConversationID == conversation.id {
             activeConversationID = conversations.first?.id ?? newConversation().id
