@@ -225,6 +225,36 @@ actor ChatGPTWebClient {
         }
     }
 
+    /// Streaming variant of `authedRequest` — same header contract, no
+    /// retry loop (the caller owns turn-level retry semantics; replaying
+    /// an accepted generation could duplicate it).
+    func authedStream(
+        path: String,
+        jsonBody: [String: Any],
+        extraHeaders: [String: String] = [:]
+    ) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
+        let token = try await ensureAccessToken()
+        guard let url = URL(string: path, relativeTo: baseURL) else {
+            throw ClientError.badPayload("bad path \(path)")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        // Idle timeout consistent with the app's other streams.
+        request.timeoutInterval = 180
+        request.httpShouldHandleCookies = false
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(deviceID, forHTTPHeaderField: "oai-device-id")
+        request.setValue("en-US", forHTTPHeaderField: "oai-language")
+        if let cookie { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
+        if let accountID { request.setValue(accountID, forHTTPHeaderField: "chatgpt-account-id") }
+        for (key, value) in extraHeaders { request.setValue(value, forHTTPHeaderField: key) }
+        request.httpBody = try JSONSerialization.data(withJSONObject: jsonBody)
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else { throw ClientError.badPayload("no HTTP response") }
+        return (bytes, http)
+    }
+
     // MARK: - Models
 
     /// /backend-api/models — account-scoped, standard-chat surface. The

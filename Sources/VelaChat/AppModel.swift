@@ -1182,6 +1182,7 @@ final class AppModel {
             conversations.removeAll { $0.id == conversation.id }
         }
         SandboxManager.cleanup(for: conversation.id)
+        Task { await ChatGPTWebChat.shared.forgetContinuation(for: conversation.id) }
         if activeConversationID == conversation.id {
             activeConversationID = conversations.first?.id ?? newConversation().id
         }
@@ -1194,6 +1195,8 @@ final class AppModel {
         }
         for conversation in conversations {
             SandboxManager.cleanup(for: conversation.id)
+            let id = conversation.id
+            Task { await ChatGPTWebChat.shared.forgetContinuation(for: id) }
         }
         conversations.removeAll()
         pendingConversation = nil
@@ -1595,7 +1598,8 @@ final class AppModel {
                                 modelInfo: modelInfo,
                                 messages: finalMessages,
                                 tools: tools,
-                                toolContext: tools.isEmpty ? nil : toolContext
+                                toolContext: tools.isEmpty ? nil : toolContext,
+                                conversationKey: conversation.id
                             )
                             var batch: [ChatStreamEvent] = []
                             for try await event in events {

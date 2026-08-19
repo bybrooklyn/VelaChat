@@ -259,6 +259,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         messages: [ChatMessage],
         tools: [ToolCatalog.Definition] = [],
         toolContext: ToolCatalog.ExecutionContext? = nil,
+        conversationKey: UUID? = nil,
         onEvent: @escaping @Sendable (ChatStreamEvent) -> Void
     ) async throws {
         try Self.requireCredential(profile: profile, credential: credential)
@@ -269,7 +270,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         }
 
         if profile.kind == .chatGPT {
-            try await ChatGPTWebChat.stream(model: model, thinking: thinking, messages: messages, onEvent: onEvent)
+            try await ChatGPTWebChat.stream(conversationKey: conversationKey, model: model, thinking: thinking, messages: messages, onEvent: onEvent)
             return
         }
 
@@ -454,7 +455,8 @@ final class CompatibleChatClient: @unchecked Sendable {
         modelInfo: RemoteModel? = nil,
         messages: [ChatMessage],
         tools: [ToolCatalog.Definition] = [],
-        toolContext: ToolCatalog.ExecutionContext? = nil
+        toolContext: ToolCatalog.ExecutionContext? = nil,
+        conversationKey: UUID? = nil
     ) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -467,7 +469,8 @@ final class CompatibleChatClient: @unchecked Sendable {
                         modelInfo: modelInfo,
                         messages: messages,
                         tools: tools,
-                        toolContext: toolContext
+                        toolContext: toolContext,
+                        conversationKey: conversationKey
                     ) { event in
                         continuation.yield(event)
                     }
