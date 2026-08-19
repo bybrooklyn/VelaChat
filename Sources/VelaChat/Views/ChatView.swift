@@ -1469,9 +1469,10 @@ struct ActivityLine: View {
         func flush() {
             guard !run.isEmpty else { return }
             if runIsDigit {
-                result = result + Text(run).fontWeight(.semibold).foregroundStyle(Theme.secondaryText)
+                let piece = Text(run).fontWeight(.semibold).foregroundStyle(Theme.secondaryText)
+                result = Text("\(result)\(piece)")
             } else {
-                result = result + Text(run)
+                result = Text("\(result)\(Text(run))")
             }
             run = ""
         }
