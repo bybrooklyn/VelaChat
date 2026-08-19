@@ -133,6 +133,46 @@ final class MemoryStoreTests: XCTestCase {
         XCTAssertFalse(excluded.contains { $0.text.contains("project-atlas") })
     }
 
+    /// Keyword candidacy is what makes recall trustworthy: a query with
+    /// no meaningful terms in common with anything stored must return
+    /// nothing, however "similar" an embedding might claim two unrelated
+    /// sentences are.
+    func testUnrelatedQueryDoesNotDragInNoise() async {
+        let store = makeStore()
+        let conversation = UUID()
+        await store.index(
+            messageID: UUID(), conversationID: conversation, role: "user",
+            text: "Pizza dough needs to rest for at least an hour before shaping, otherwise it tears.",
+            createdAt: Date()
+        )
+        await store.index(
+            messageID: UUID(), conversationID: conversation, role: "assistant",
+            text: "The staging deployment key for project-atlas lives in the ops vault, not in the repo.",
+            createdAt: Date()
+        )
+        let hits = await store.recall(query: "where is the deployment key", excluding: UUID())
+        XCTAssertTrue(hits.contains { $0.text.contains("project-atlas") })
+        XCTAssertFalse(hits.contains { $0.text.contains("Pizza") })
+        await store.forgetConversation(conversation)
+    }
+
+    /// "Don't use this again" has to actually stop it coming back.
+    func testForgetMessageRemovesItFromRecall() async {
+        let store = makeStore()
+        let conversation = UUID()
+        let messageID = UUID()
+        await store.index(
+            messageID: messageID, conversationID: conversation, role: "user",
+            text: "My preferred deployment target is the staging cluster called project-atlas.",
+            createdAt: Date()
+        )
+        var hits = await store.recall(query: "project-atlas deployment", excluding: UUID())
+        XCTAssertFalse(hits.isEmpty)
+        await store.forgetMessage(messageID)
+        hits = await store.recall(query: "project-atlas deployment", excluding: UUID())
+        XCTAssertTrue(hits.isEmpty)
+    }
+
     func testRecallOnEmptyQueryReturnsNothing() async {
         let store = makeStore()
         let hits = await store.recall(query: "   ")
