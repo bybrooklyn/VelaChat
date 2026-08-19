@@ -1,5 +1,27 @@
 # VelaChat — working notes
 
+## 2026-08-19 — Round 2 (R1–R9, one commit each; d1ddf37..2417520)
+
+R1 quick fixes (send glyph regression, real scroll-to-bottom sentinel,
+toolbar band removed + sidebar toggle relocated into sidebar header,
+plus attach button, fetch_url browser headers, title thinking .off→.auto
+fix — .off mapped to invalid Codex effort and silently 400'd every
+auto-title/compaction/handoff, spinner sweep); R2 activity collapse
+(finished replies fold their tool stack into one dim summary line,
+4KB result cap); R3 inspector (markdown/code kinds rendered natively,
+editable workspace files w/ Save, resizable panel, Open buttons on file
+activities + big code/md blocks); R3b plus menu (gh CLI repo shallow-clone
+into workspace w/ 200MB guard, clipboard, cloud coming-soon page);
+R4 SystemPrompt.compose (app-context preamble); R5 chat visuals (no
+provider label, persistent token+actions row, hover timestamps, grouping,
+code header strip); R6 picker (hardcoded simple-icons brand glyphs + SVG
+path parser, native bottom scroll edge fade); R7 Settings v2 (glass cards,
+text jump rail, modern switches; per feedback: no icon tiles, General
+first, Shortcut folded in); R8 onboarding + full reset; R9 glass buttons.
+NOTE: final launch attempts hit the documented zero-window sandbox flake
+3x — code verified by build + earlier captures; needs a human launch
+check (especially onboarding gate + toolbar-hidden window chrome).
+
 ## 2026-08-18/19 — deep-audit overhaul round (13 phases, one commit each)
 
 Full plan + audit findings: ~/.claude/plans/the-settings-screen-should-dapper-coral.md.
