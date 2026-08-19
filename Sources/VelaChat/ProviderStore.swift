@@ -167,7 +167,9 @@ final class ProviderStore {
     /// as "configured" with nothing behind it.
     func isConfigured(_ profile: ProviderProfile) -> Bool {
         guard profile.kind != .preview else { return false }
-        if profile.kind == .appleIntelligence { return AppleIntelligence.isAvailable }
+        if profile.kind == .appleIntelligence {
+            return UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled") && AppleIntelligence.isAvailable
+        }
         if profile.kind.requiresKey {
             if profile.kind == .codex, codexCredential != nil { return true }
             return hasStoredKey(for: profile.id)
@@ -517,7 +519,10 @@ final class ProviderStore {
                 statusByID[id] = .connected("Offline preview ready")
             }
             if profile(id: id)?.kind == .appleIntelligence {
-                if let reason = AppleIntelligence.unavailabilityReason {
+                if !UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled") {
+                    modelsByID[id] = []
+                    statusByID[id] = .failed("Turned off — enable Apple Intelligence in Settings → General.")
+                } else if let reason = AppleIntelligence.unavailabilityReason {
                     modelsByID[id] = []
                     statusByID[id] = .failed(reason)
                 } else {

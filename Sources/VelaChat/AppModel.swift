@@ -153,6 +153,13 @@ final class AppModel {
     var isEdgeBlurEnabled = true {
         didSet { UserDefaults.standard.set(isEdgeBlurEnabled, forKey: "velachat.edge-blur-enabled") }
     }
+    /// Apple Intelligence is OPT-IN: off by default, nothing on-device runs
+    /// and the provider stays hidden until the user flips this.
+    var isAppleIntelligenceEnabled = false {
+        didSet { UserDefaults.standard.set(isAppleIntelligenceEnabled, forKey: "velachat.apple-intelligence-enabled") }
+    }
+    /// True only when opted in AND the on-device model is actually usable.
+    var canUseAppleIntelligence: Bool { isAppleIntelligenceEnabled && AppleIntelligence.isAvailable }
     /// get_schedule tool (EventKit read) — the system permission prompt is
     /// the real gate; this just removes the tool entirely.
     var isScheduleToolEnabled = true {
@@ -251,6 +258,7 @@ final class AppModel {
         if UserDefaults.standard.object(forKey: "velachat.edge-blur-enabled") != nil {
             isEdgeBlurEnabled = UserDefaults.standard.bool(forKey: "velachat.edge-blur-enabled")
         }
+        isAppleIntelligenceEnabled = UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled")
         if UserDefaults.standard.object(forKey: "velachat.schedule-tool-enabled") != nil {
             isScheduleToolEnabled = UserDefaults.standard.bool(forKey: "velachat.schedule-tool-enabled")
         }
@@ -829,7 +837,7 @@ final class AppModel {
             guard let self, let conversation else { return }
             var titleText = ""
             do {
-                if AppleIntelligence.isAvailable {
+                if self.canUseAppleIntelligence {
                     // On-device: instant, free, and never burns provider quota.
                     titleText = try await AppleIntelligence.complete(prompt: prompt)
                 } else if profile.kind != .appleIntelligence {
@@ -886,7 +894,7 @@ final class AppModel {
             guard let self, let conversation else { return }
             var titleText = ""
             do {
-                if AppleIntelligence.isAvailable {
+                if self.canUseAppleIntelligence {
                     titleText = try await AppleIntelligence.complete(prompt: prompt)
                 } else if profile.kind == .appleIntelligence {
                     return
@@ -1891,7 +1899,7 @@ final class AppModel {
             var summaryText = ""
             do {
                 let promptWordCount = prompt.split(separator: " ").count
-                if AppleIntelligence.isAvailable, promptWordCount < AppleIntelligence.contextBudgetWords {
+                if self.canUseAppleIntelligence, promptWordCount < AppleIntelligence.contextBudgetWords {
                     // On-device: free, instant-ish, and the transcript
                     // never leaves the Mac just to be summarized.
                     summaryText = try await AppleIntelligence.complete(prompt: prompt)
@@ -1981,7 +1989,7 @@ final class AppModel {
             var text = ""
             do {
                 let promptWordCount = prompt.split(separator: " ").count
-                if AppleIntelligence.isAvailable, promptWordCount < AppleIntelligence.contextBudgetWords {
+                if self.canUseAppleIntelligence, promptWordCount < AppleIntelligence.contextBudgetWords {
                     text = try await AppleIntelligence.complete(prompt: prompt)
                 } else if profile.kind == .appleIntelligence {
                     throw AppleIntelligence.Unavailable(reason: AppleIntelligence.unavailabilityReason ?? "The conversation is too long for the on-device model.")

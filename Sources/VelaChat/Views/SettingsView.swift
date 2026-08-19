@@ -188,9 +188,11 @@ struct SettingsView: View {
                         }
                     }
                 }
+                Toggle("Use Apple Intelligence", isOn: $appModel.isAppleIntelligenceEnabled)
                 Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
                 Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
                 KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
+                Toggle("Use Apple Intelligence", isOn: $appModel.isAppleIntelligenceEnabled)
                 Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
                 Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
                 Picker("Message width", selection: $appModel.messageWidth) {
@@ -577,7 +579,8 @@ struct SettingsView: View {
     /// Preview disappears for good once any real provider is usable.
     private var visibleProfiles: [ProviderProfile] {
         appModel.providers.profiles.filter { profile in
-            profile.kind != .preview || !appModel.providers.hasConfiguredRealProvider
+            if profile.kind == .appleIntelligence { return appModel.isAppleIntelligenceEnabled }
+            return profile.kind != .preview || !appModel.providers.hasConfiguredRealProvider
         }
     }
 
