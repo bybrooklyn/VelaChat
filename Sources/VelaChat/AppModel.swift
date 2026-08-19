@@ -1393,7 +1393,12 @@ final class AppModel {
                 record.isRunning = true
                 enqueue(.activity(record), for: assistantID, conversation: conversation)
             case .activityFinished(let id, let result, let isError):
-                enqueue(.activityUpdate(id: id, result: result, isError: isError), for: assistantID, conversation: conversation)
+                // Persisted per-message forever — cap so one huge page fetch
+                // doesn't bloat history (the model already saw the full text).
+                let capped = result.count > 4_096
+                    ? String(result.prefix(4_096)) + "\n\n[Truncated — kept the first 4 KB.]"
+                    : result
+                enqueue(.activityUpdate(id: id, result: capped, isError: isError), for: assistantID, conversation: conversation)
             }
         }
         if promptTokens != nil || completionTokens != nil {

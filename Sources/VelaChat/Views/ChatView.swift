@@ -1480,17 +1480,38 @@ struct AssistantTimeline: View {
         return items
     }
 
+    private var allActivities: [ActivityRecord] {
+        message.segments.compactMap {
+            if case .activity(let record) = $0 { return record }
+            return nil
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(items) { item in
-                switch item {
-                case .text(_, let content):
-                    RichMessageText(text: content, isUser: false)
-                case .activities(let records):
-                    ActivityLine(records: records)
+            if !message.isStreaming, !allActivities.isEmpty {
+                // Finished: the whole streamed stack settles into one dim
+                // summary line on top — the response owns the screen, the
+                // full per-call record stays one click away.
+                ActivityLine(records: allActivities, style: .summary)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                ForEach(items) { item in
+                    if case .text(_, let content) = item {
+                        RichMessageText(text: content, isUser: false)
+                    }
+                }
+            } else {
+                ForEach(items) { item in
+                    switch item {
+                    case .text(_, let content):
+                        RichMessageText(text: content, isUser: false)
+                    case .activities(let records):
+                        ActivityLine(records: records)
+                    }
                 }
             }
         }
+        .animation(.easeOut(duration: 0.25), value: message.isStreaming)
     }
 }
 
@@ -1499,7 +1520,10 @@ struct AssistantTimeline: View {
 /// emphasized when several calls collapse into one line. Click to unfold
 /// the real arguments and results in place.
 struct ActivityLine: View {
+    enum Style { case interleaved, summary }
+
     let records: [ActivityRecord]
+    var style: Style = .interleaved
     @State private var isExpanded = false
     @State private var isHovering = false
 
@@ -1507,6 +1531,7 @@ struct ActivityLine: View {
     private var isError: Bool { records.contains { $0.isError } }
 
     private var label: String {
+        if style == .summary { return summaryLabel }
         guard records.count > 1 else {
             guard let record = records.first else { return "" }
             if record.isRunning { return record.kind.runningLabel(argument: record.argument) }
@@ -1531,6 +1556,37 @@ struct ActivityLine: View {
         }
         var sentence = parts.joined(separator: ", ")
         if let first = sentence.first {
+            sentence = first.uppercased() + sentence.dropFirst()
+        }
+        return sentence
+    }
+
+    /// The one-line settle of a finished reply's whole activity stack:
+    /// successes aggregated per kind, failures counted as "blocked" —
+    /// "Browsed the web · read 2 pages, 8 blocked".
+    private var summaryLabel: String {
+        let succeeded = records.filter { !$0.isError && !$0.isRunning }
+        let failed = records.filter { $0.isError }
+        guard records.count > 1 else {
+            guard let record = records.first else { return "" }
+            if record.isError { return record.kind.finishedLabel(argument: record.argument) + " — failed" }
+            return record.kind.finishedLabel(argument: record.argument)
+        }
+        var orderedKinds: [ActivityKind] = []
+        var counts: [ActivityKind: Int] = [:]
+        for record in succeeded {
+            if counts[record.kind] == nil { orderedKinds.append(record.kind) }
+            counts[record.kind, default: 0] += 1
+        }
+        var parts = orderedKinds.map { ($0, counts[$0] ?? 0) }.map { $0.0.aggregateUnit(count: $0.1) }
+        if !failed.isEmpty {
+            parts.append("\(failed.count) blocked")
+        }
+        let browsed = records.contains { $0.kind == .webSearch || $0.kind == .fetchURL }
+        var sentence = parts.joined(separator: ", ")
+        if browsed {
+            sentence = "Browsed the web · " + sentence
+        } else if let first = sentence.first {
             sentence = first.uppercased() + sentence.dropFirst()
         }
         return sentence
@@ -1562,15 +1618,24 @@ struct ActivityLine: View {
     }
 
     private var symbol: String {
-        records.first?.kind.symbol ?? "circle"
+        if style == .summary, records.contains(where: { $0.kind == .webSearch || $0.kind == .fetchURL }) {
+            return "globe"
+        }
+        return records.first?.kind.symbol ?? "circle"
+    }
+
+    /// In summary style a few blocked pages shouldn't paint the whole line
+    /// as an error — only an all-failed stack does.
+    private var showsErrorTint: Bool {
+        style == .summary ? records.allSatisfy(\.isError) : isError
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Image(systemName: isError ? "exclamationmark.triangle" : symbol)
+                Image(systemName: showsErrorTint ? "exclamationmark.triangle" : symbol)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(isError ? Theme.danger.opacity(0.85) : Theme.tertiaryText)
+                    .foregroundStyle(showsErrorTint ? Theme.danger.opacity(0.85) : Theme.tertiaryText)
                     .frame(width: 16)
                 if isRunning {
                     ShimmerText(text: label, font: .callout)
