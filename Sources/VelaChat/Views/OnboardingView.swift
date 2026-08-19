@@ -49,7 +49,7 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.secondaryText)
                 .multilineTextAlignment(.center)
             Button("Continue") { step = 1 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .tint(Theme.accentStrong)
                 .controlSize(.large)
                 .padding(.top, 8)
@@ -77,7 +77,7 @@ struct OnboardingView: View {
                     .foregroundStyle(Theme.secondaryText))
             }
             Button("Continue") { step = 2 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .tint(Theme.accentStrong)
                 .controlSize(.large)
                 .padding(.top, 6)
@@ -122,7 +122,7 @@ struct OnboardingView: View {
                 Label("Start chatting now", systemImage: "arrow.up.circle.fill")
                     .frame(minWidth: 220)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .tint(Theme.accentStrong)
             .controlSize(.large)
             Button("Connect your own provider") {

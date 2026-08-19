@@ -495,8 +495,8 @@ private struct ModelPaletteView: View {
                 }
                 Spacer()
                 Button("Done") { isPresented = false }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Theme.accent)
+                    .buttonStyle(.glass)
+                    .tint(Theme.accent)
             }
             .padding(.bottom, 12)
 
@@ -753,8 +753,8 @@ private struct ThinkingPaletteView: View {
                 }
                 Spacer()
                 Button("Done") { isPresented = false }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Theme.accent)
+                    .buttonStyle(.glass)
+                    .tint(Theme.accent)
             }
             .padding(.bottom, 12)
 
