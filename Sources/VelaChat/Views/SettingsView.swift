@@ -287,6 +287,7 @@ struct SettingsView: View {
 
             Section {
                 Toggle("Workspace files", isOn: $appModel.isWorkspaceEnabled)
+                Toggle("Conversation search", isOn: $appModel.isConversationSearchEnabled)
                 if let conversation = appModel.activeConversation {
                     Button("Reveal This Conversation's Workspace in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([SandboxManager.directory(for: conversation.id)])

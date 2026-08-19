@@ -123,6 +123,12 @@ final class AppModel {
     var isWorkspaceEnabled = true {
         didSet { UserDefaults.standard.set(isWorkspaceEnabled, forKey: "velachat.workspace-enabled") }
     }
+    /// Gates `search_conversations` — the tool that lets the model read
+    /// excerpts of other conversations. On by default; the off switch exists
+    /// because it's a real privacy boundary, not because it's risky.
+    var isConversationSearchEnabled = true {
+        didSet { UserDefaults.standard.set(isConversationSearchEnabled, forKey: "velachat.conversation-search-enabled") }
+    }
     var searchByMessage: [UUID: WebSearchRecord] = [:]
     var toolUsesByMessage: [UUID: [ToolUseRecord]] = [:]
 
@@ -131,8 +137,13 @@ final class AppModel {
     var canUseWebSearch: Bool {
         guard let kind = selectedProvider?.kind else { return false }
         if !isNativeSearchNone(kind.nativeWebSearch) { return true }
+        // The Codex OAuth path can't carry tools on the wire yet — showing
+        // the toggle there would promise a search that never happens.
+        guard kind != .codex else { return false }
         let hasEndpoint = !searchEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return hasEndpoint && (selectedModelInfo?.supportsTools ?? false)
+        let supportsTools = selectedModelInfo?.supportsTools
+            ?? RemoteModel(id: currentModelID).supportsTools
+        return hasEndpoint && supportsTools
     }
 
     /// Explains, in the composer tooltip, which search path a send will take.
@@ -191,6 +202,9 @@ final class AppModel {
         }
         if UserDefaults.standard.object(forKey: "velachat.workspace-enabled") != nil {
             isWorkspaceEnabled = UserDefaults.standard.bool(forKey: "velachat.workspace-enabled")
+        }
+        if UserDefaults.standard.object(forKey: "velachat.conversation-search-enabled") != nil {
+            isConversationSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.conversation-search-enabled")
         }
         isWebSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.web-search-enabled")
         let corruptionNotice = restoreHistory()
@@ -852,22 +866,6 @@ final class AppModel {
         saveHistory()
 
         var requestMessages = requestHistory(for: conversation)
-        let trimmedInstructions = customInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedInstructions.isEmpty {
-            requestMessages.insert(ChatMessage(role: "system", content: trimmedInstructions), at: 0)
-        }
-        // Active skills' bodies become extra scoped context for the rest of
-        // this conversation — the same shape custom instructions already
-        // use, just per-conversation instead of global.
-        for path in conversation.activeSkillPaths.reversed() {
-            guard let skill = skills.skills.first(where: { $0.folderPath == path }) else { continue }
-            requestMessages.insert(ChatMessage(role: "system", content: "Skill \"\(skill.name)\":\n\n\(skill.body)"), at: 0)
-        }
-        if !memories.isEmpty {
-            requestMessages.insert(ChatMessage(role: "system", content: "Remembered facts about the user, true across every conversation:\n\(boundedMemoryText())"), at: 0)
-        }
-        requestMessages.insert(ChatMessage(role: "system", content: Self.memoryInstruction), at: 0)
-        requestMessages.insert(ChatMessage(role: "system", content: Self.askUserQuestionInstruction), at: 0)
         let model = conversation.model.isEmpty ? providers.effectiveModel(for: profile) : conversation.model
         let credential = providers.credential(for: profile)
         let thinking = availableThinkingLevels.contains(thinkingLevel) ? thinkingLevel : .auto
@@ -878,23 +876,62 @@ final class AppModel {
         // only the fallback for providers with no built-in search.
         let nativeSearch = isWebSearchEnabled ? profile.kind.nativeWebSearch : .none
         let usesNativeSearch = !isNativeSearchNone(nativeSearch)
-        let modelSupportsTools = modelInfo?.supportsTools ?? false
-        // Real tool calling when the model actually supports it — the model
-        // decides whether to search at all, rather than VelaChat always
-        // pre-fetching before it even sees the prompt. `search_conversations`
-        // is offered unconditionally (independent of the web-search
-        // toggle) — that's the "let the AI search past conversations"
-        // memory capability, not a web feature.
+        // Catalog entry when there is one, ID-based inference otherwise —
+        // an uncataloged compatible endpoint or a manual model override used
+        // to silently lose all tools because `modelInfo` came back nil.
+        // The Codex OAuth path has no tool support on the wire yet, so it
+        // reports none rather than attaching tools that get dropped.
+        let modelSupportsTools = (modelInfo ?? RemoteModel(id: model)).supportsTools && profile.kind != .codex
         var tools: [ToolCatalog.Definition] = []
         if modelSupportsTools {
-            tools.append(ToolCatalog.searchConversations)
+            if isConversationSearchEnabled {
+                tools.append(ToolCatalog.searchConversations)
+            }
             if isWebSearchEnabled, !usesNativeSearch, !trimmedSearchEndpoint.isEmpty {
                 tools.append(ToolCatalog.webSearch)
             }
+            tools.append(ToolCatalog.fetchURL)
+            tools.append(ToolCatalog.currentDatetime)
+            tools.append(ToolCatalog.calculator)
             if isWorkspaceEnabled {
                 tools.append(contentsOf: [ToolCatalog.writeFile, ToolCatalog.readFile, ToolCatalog.listWorkspaceFiles])
             }
         }
+        var attachmentTexts: [String: String] = [:]
+        for message in conversation.realMessages {
+            for attachment in message.attachments {
+                if let text = attachment.textContent, !text.isEmpty {
+                    attachmentTexts[attachment.filename] = text
+                }
+            }
+        }
+        if modelSupportsTools, !attachmentTexts.isEmpty {
+            tools.append(ToolCatalog.readAttachment)
+        }
+        // System stack, top to bottom: the user's own instructions lead,
+        // then durable memories and skills, then the app's tool inventory
+        // and conventions — the user's words always outrank boilerplate.
+        var systemMessages: [ChatMessage] = []
+        let trimmedInstructions = customInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedInstructions.isEmpty {
+            systemMessages.append(ChatMessage(role: "system", content: trimmedInstructions))
+        }
+        if !memories.isEmpty {
+            systemMessages.append(ChatMessage(role: "system", content: "Remembered facts about the user, true across every conversation:\n\(boundedMemoryText())"))
+        }
+        // Active skills' bodies become extra scoped context for the rest of
+        // this conversation — the same shape custom instructions already
+        // use, just per-conversation instead of global.
+        for path in conversation.activeSkillPaths {
+            guard let skill = skills.skills.first(where: { $0.folderPath == path }) else { continue }
+            systemMessages.append(ChatMessage(role: "system", content: "Skill \"\(skill.name)\":\n\n\(skill.body)"))
+        }
+        if let inventory = ToolCatalog.inventoryInstruction(tools: tools, nativeSearch: usesNativeSearch) {
+            systemMessages.append(ChatMessage(role: "system", content: inventory))
+        }
+        systemMessages.append(ChatMessage(role: "system", content: Self.askUserQuestionInstruction))
+        systemMessages.append(ChatMessage(role: "system", content: Self.memoryInstruction))
+        requestMessages.insert(contentsOf: systemMessages, at: 0)
         let toolContext = ToolCatalog.ExecutionContext(
             conversationSummaries: conversations
                 .filter { $0.id != conversation.id }
@@ -906,7 +943,8 @@ final class AppModel {
                     )
                 },
             searchEndpoint: trimmedSearchEndpoint,
-            workspaceDirectory: SandboxManager.directory(for: conversation.id)
+            workspaceDirectory: SandboxManager.directory(for: conversation.id),
+            attachmentTexts: attachmentTexts
         )
         // Providers/models without real tool-calling support keep the old
         // pre-fetch behavior exactly as before — nothing regresses for them.
@@ -1158,14 +1196,15 @@ final class AppModel {
         return trimmed
     }
 
-    /// Mirrors Claude Code's own auto-compact threshold (~83.5% of the
-    /// context window) rather than a fixed token count, since context
-    /// windows here range from small local models to million-token hosted
-    /// ones. Only fires when the window is actually known.
+    /// Fires at 95% of the detected context window (explicit user choice —
+    /// compaction should be a late safety net, not an eager trimmer), scaled
+    /// to the window rather than a fixed token count since windows here
+    /// range from small local models to million-token hosted ones. Only
+    /// fires when the window is actually known.
     private func autoCompactIfNeeded(_ conversation: Conversation) {
         guard let window = contextWindow(for: conversation), window > 0 else { return }
         let used = tokenEstimate(for: conversation)
-        guard Double(used) / Double(window) >= 0.835 else { return }
+        guard Double(used) / Double(window) >= 0.95 else { return }
         compactConversation(conversation, isAutomatic: true)
     }
 
