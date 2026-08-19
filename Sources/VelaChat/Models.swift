@@ -664,6 +664,10 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// superseded first. Elements never carry their own alternates — edit
     /// history stays a flat list on the current message rather than a tree.
     var alternates: [ChatMessage] = []
+    /// The ordered render timeline (text runs + activity lines) — see
+    /// `MessageSegment`. Empty on user messages and on assistant messages
+    /// saved before this field existed; `content` remains canonical.
+    var segments: [MessageSegment] = []
 
     init(role: String, content: String, reasoning: String? = nil, error: String? = nil, isStreaming: Bool = false, providerName: String? = nil, modelID: String? = nil, isPinned: Bool = false, attachments: [Attachment] = [], alternates: [ChatMessage] = []) {
         self.id = UUID()
@@ -695,6 +699,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         attachments = try container.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
         usage = try container.decodeIfPresent(UsageSummary.self, forKey: .usage)
         alternates = try container.decodeIfPresent([ChatMessage].self, forKey: .alternates) ?? []
+        segments = try container.decodeIfPresent([MessageSegment].self, forKey: .segments) ?? []
     }
 
     /// If this message's content contains a well-formed ```ask-user fenced
@@ -924,12 +929,14 @@ enum ChatStreamEvent: Sendable {
     /// `nil` when the provider doesn't report it at all (not the same as
     /// zero — zero means "reported, no hit this time").
     case usage(prompt: Int?, completion: Int?, cachedTokens: Int?)
-    /// A tool was actually called and executed — surfaced for UI
-    /// transparency (`ToolUseDisclosure`, ChatView.swift). The multi-round
-    /// request/response exchange itself already happened inside
-    /// `CompatibleChatClient` by the time this fires; callers never see the
-    /// raw tool_calls/tool_result wire messages.
-    case toolUse(name: String, query: String, result: String)
+    /// A tool call began executing — the transcript shows a running
+    /// activity line at the exact point in the reply where the model
+    /// paused. The multi-round request/response exchange happens inside
+    /// `CompatibleChatClient`; callers never see raw wire messages.
+    case activityStarted(id: UUID, name: String, argument: String)
+    /// The matching call finished (or failed — the error text still goes
+    /// back to the model as the tool result so it can retry).
+    case activityFinished(id: UUID, result: String, isError: Bool)
 }
 
 struct UsageSummary: Codable, Equatable {

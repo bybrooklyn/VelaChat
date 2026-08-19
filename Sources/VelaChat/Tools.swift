@@ -404,14 +404,16 @@ enum ToolCatalog {
     private static func webSearchResult(query: String, context: ExecutionContext) async -> String {
         let trimmedEndpoint = context.searchEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedEndpoint.isEmpty else {
-            return "Web search isn't configured — no SearXNG endpoint is set in Settings."
+            // "Error" prefix is load-bearing: it's how activity lines know a
+            // call failed (see `activityFinished` emission in ChatAPI).
+            return "Error: web search isn't configured — no SearXNG endpoint is set in Settings."
         }
         do {
             let results = try await CompatibleChatClient.shared.searchWeb(query: query, endpoint: trimmedEndpoint)
             guard !results.isEmpty else { return "No results found for \"\(query)\"." }
             return results.map { "- \($0.title)\n  \($0.url)\n  \($0.snippet)" }.joined(separator: "\n\n")
         } catch {
-            return "Web search failed: \(error.localizedDescription)"
+            return "Error: web search failed — \(error.localizedDescription)"
         }
     }
 }

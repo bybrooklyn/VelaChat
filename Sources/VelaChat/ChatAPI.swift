@@ -305,7 +305,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 think: settings.think,
                 keepAlive: profile.kind == .ollama ? "10m" : nil
             )
-            request.httpBody = try Self.encodeWithTools(body, tools: tools)
+            request.httpBody = try Self.encodeWithTools(body, tools: round < maxRounds - 1 ? tools : [])
 
             let (bytes, response) = try await session.bytes(for: request)
             try await Self.checkStream(response: response, bytes: bytes)
@@ -313,6 +313,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             var consecutiveParseFailures = 0
             var pendingToolCalls: [Int: (id: String, name: String, arguments: String)] = [:]
             var sawToolCalls = false
+            var textForThisRound = ""
 
             for try await line in bytes.lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -340,6 +341,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 }
                 let content = choice.delta.contentText
                 let reasoning = choice.delta.reasoningText
+                if !content.isEmpty { textForThisRound += content }
                 if !content.isEmpty || !reasoning.isEmpty {
                     onEvent(.delta(content: content, reasoning: reasoning))
                 }
@@ -361,16 +363,30 @@ final class CompatibleChatClient: @unchecked Sendable {
             guard sawToolCalls, !pendingToolCalls.isEmpty, let toolContext, round < maxRounds - 1 else { return }
 
             let calls = pendingToolCalls.sorted { $0.key < $1.key }.map(\.value)
+            // The model's own preamble text from this round is replayed with
+            // the tool calls — dropping it (as this loop originally did)
+            // made the model lose its own train of thought between rounds.
             wireMessages.append(APIMessage(
                 role: "assistant",
-                text: "",
+                text: textForThisRound,
                 imageDataURLs: [],
                 toolCalls: calls.map { .init(id: $0.id, function: .init(name: $0.name, arguments: $0.arguments)) }
             ))
             for call in calls {
+                let activityID = UUID()
+                onEvent(.activityStarted(id: activityID, name: call.name, argument: ToolCatalog.displayArgument(from: call.arguments)))
                 let result = await ToolCatalog.execute(name: call.name, argumentsJSON: call.arguments, context: toolContext)
-                onEvent(.toolUse(name: call.name, query: ToolCatalog.displayArgument(from: call.arguments), result: result))
+                onEvent(.activityFinished(id: activityID, result: result, isError: result.hasPrefix("Error")))
                 wireMessages.append(APIMessage(role: "tool", text: result, imageDataURLs: [], toolCallID: call.id))
+            }
+            if round == maxRounds - 2 {
+                // Next round is the last: it goes out without tools plus this
+                // nudge, so the reply always ends in text instead of dying
+                // silently with unanswered tool calls.
+                wireMessages.append(APIMessage(role: "system", text: "Tool budget for this reply is exhausted — answer now with what you have.", imageDataURLs: []))
+                let noteID = UUID()
+                onEvent(.activityStarted(id: noteID, name: "note", argument: "Paused tool use — answering with what it has"))
+                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (5 rounds) was reached.", isError: false))
             }
         }
     }
@@ -629,7 +645,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             addHeaders(to: &request, profile: ProviderProfile(kind: .codex, name: "Codex", endpoint: "", model: model), credential: credential)
             request.httpBody = try Self.encodeCodexBody(
                 CodexResponsesBody(model: model, thinking: thinking, input: inputItems),
-                tools: tools
+                tools: round < maxRounds - 1 ? tools : []
             )
 
             let (bytes, response) = try await session.bytes(for: request)
@@ -694,9 +710,17 @@ final class CompatibleChatClient: @unchecked Sendable {
                 inputItems.append(.functionCall(callID: call.callID, name: call.name, arguments: call.arguments))
             }
             for call in pendingCalls {
+                let activityID = UUID()
+                onEvent(.activityStarted(id: activityID, name: call.name, argument: ToolCatalog.displayArgument(from: call.arguments)))
                 let result = await ToolCatalog.execute(name: call.name, argumentsJSON: call.arguments, context: toolContext)
-                onEvent(.toolUse(name: call.name, query: ToolCatalog.displayArgument(from: call.arguments), result: result))
+                onEvent(.activityFinished(id: activityID, result: result, isError: result.hasPrefix("Error")))
                 inputItems.append(.functionCallOutput(callID: call.callID, output: result))
+            }
+            if round == maxRounds - 2 {
+                inputItems.append(.message(role: "developer", content: [.text("Tool budget for this reply is exhausted — answer now with what you have.", isOutput: false)]))
+                let noteID = UUID()
+                onEvent(.activityStarted(id: noteID, name: "note", argument: "Paused tool use — answering with what it has"))
+                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (5 rounds) was reached.", isError: false))
             }
         }
     }
@@ -812,7 +836,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             if let anthropicThinking {
                 bodyJSON["thinking"] = ["type": "enabled", "budget_tokens": anthropicThinking.budgetTokens]
             }
-            if !tools.isEmpty { bodyJSON["tools"] = tools.map(Self.anthropicToolWireObject) }
+            if !tools.isEmpty, round < maxRounds - 1 { bodyJSON["tools"] = tools.map(Self.anthropicToolWireObject) }
             request.httpBody = try JSONSerialization.data(withJSONObject: bodyJSON)
 
             let (bytes, response) = try await session.bytes(for: request)
@@ -883,11 +907,19 @@ final class CompatibleChatClient: @unchecked Sendable {
 
             var toolResultContent: [[String: Any]] = []
             for call in calls {
+                let activityID = UUID()
+                onEvent(.activityStarted(id: activityID, name: call.name, argument: ToolCatalog.displayArgument(from: call.json)))
                 let result = await ToolCatalog.execute(name: call.name, argumentsJSON: call.json, context: toolContext)
-                onEvent(.toolUse(name: call.name, query: ToolCatalog.displayArgument(from: call.json), result: result))
+                onEvent(.activityFinished(id: activityID, result: result, isError: result.hasPrefix("Error")))
                 toolResultContent.append(["type": "tool_result", "tool_use_id": call.id, "content": result])
             }
             turnsJSON.append(["role": "user", "content": toolResultContent])
+            if round == maxRounds - 2 {
+                turnsJSON.append(["role": "user", "content": [["type": "text", "text": "(Tool budget for this reply is exhausted — answer now with what you have.)"]]])
+                let noteID = UUID()
+                onEvent(.activityStarted(id: noteID, name: "note", argument: "Paused tool use — answering with what it has"))
+                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (5 rounds) was reached.", isError: false))
+            }
         }
     }
 

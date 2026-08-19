@@ -167,10 +167,11 @@ final class AppModel {
     private var compactingConversationIDs: Set<UUID> = []
 
     /// Decouples the on-screen reveal pace from provider chunk size: network
-    /// tokens land in `pendingReveal` and a per-message task drains them a
-    /// word at a time, so replies feel like a smooth typewriter regardless
-    /// of whether the provider streams in tiny or huge chunks.
-    private var pendingReveal: [UUID: String] = [:]
+    /// events land in an ordered per-message op queue (text, reasoning,
+    /// activity lines) and a task drains them in order — text a word at a
+    /// time, activities in place — so replies feel like a smooth typewriter
+    /// and the timeline order always matches what actually happened.
+    private var revealQueues: [UUID: [RevealOp]] = [:]
     private var revealTasks: [UUID: Task<Void, Never>] = [:]
     private var historySaveTask: Task<Void, Never>?
 
@@ -975,7 +976,7 @@ final class AppModel {
                 if profile.kind == .preview {
                     try await PreviewResponder.stream(for: text, model: model) { [weak self, weak conversation] token in
                         guard let self, let conversation else { return }
-                        self.append(token: token, reasoning: "", to: conversation, assistantID: assistantID)
+                        self.enqueue(.text(token), for: assistantID, conversation: conversation)
                     }
                 } else {
                     let events = CompatibleChatClient.shared.streamChatEvents(
@@ -1038,15 +1039,39 @@ final class AppModel {
         send(lastUser.content, replacingReplyWith: nil, restoring: (conversation, snapshot))
     }
 
-    private func append(token: String, reasoning: String, to conversation: Conversation, assistantID: UUID) {
+    /// One unit of buffered reveal work. Ops apply strictly in order, so an
+    /// activity line can never appear before the text the model wrote ahead
+    /// of the call has finished revealing — the timeline on screen always
+    /// matches the order things actually happened.
+    private enum RevealOp {
+        case text(String)
+        case reasoning(String)
+        case activity(ActivityRecord)
+        case activityUpdate(id: UUID, result: String, isError: Bool)
+    }
+
+    private func enqueue(_ op: RevealOp, for assistantID: UUID, conversation: Conversation) {
         guard conversation.messages.contains(where: { $0.id == assistantID }) else { return }
-        if !token.isEmpty {
-            pendingReveal[assistantID, default: ""] += token
-            ensureRevealTask(for: assistantID, conversation: conversation)
+        var queue = revealQueues[assistantID] ?? []
+        // Consecutive same-kind chunks coalesce so the queue stays short.
+        switch op {
+        case .text(let chunk):
+            if case .text(let existing) = queue.last {
+                queue[queue.count - 1] = .text(existing + chunk)
+            } else {
+                queue.append(op)
+            }
+        case .reasoning(let chunk):
+            if case .reasoning(let existing) = queue.last {
+                queue[queue.count - 1] = .reasoning(existing + chunk)
+            } else {
+                queue.append(op)
+            }
+        case .activity, .activityUpdate:
+            queue.append(op)
         }
-        if !reasoning.isEmpty, let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
-            conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + reasoning
-        }
+        revealQueues[assistantID] = queue
+        ensureRevealTask(for: assistantID, conversation: conversation)
         // `updatedAt` is deliberately NOT touched here — it's @Observable,
         // and writing it per token re-rendered every observer ~36x/second.
         // It's stamped once in `send` and once when generation ends.
@@ -1057,18 +1082,39 @@ final class AppModel {
         revealTasks[assistantID] = Task { [weak self, weak conversation] in
             while !Task.isCancelled {
                 guard let self, let conversation else { return }
-                guard var pending = self.pendingReveal[assistantID], !pending.isEmpty else {
+                guard var queue = self.revealQueues[assistantID], !queue.isEmpty else {
                     self.revealTasks[assistantID] = nil
                     return
                 }
-                let chunk = Self.popNextWord(from: &pending)
-                self.pendingReveal[assistantID] = pending
                 guard let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) else {
                     self.revealTasks[assistantID] = nil
+                    self.revealQueues[assistantID] = nil
                     return
                 }
-                conversation.messages[index].content += chunk
-                try? await Task.sleep(nanoseconds: 28_000_000)
+                switch queue[0] {
+                case .text(var pending):
+                    let chunk = Self.popNextWord(from: &pending)
+                    if pending.isEmpty { queue.removeFirst() } else { queue[0] = .text(pending) }
+                    self.revealQueues[assistantID] = queue
+                    conversation.messages[index].appendTimelineText(chunk)
+                    try? await Task.sleep(nanoseconds: 28_000_000)
+                case .reasoning(var pending):
+                    // Faster drip than the answer text — reasoning chains
+                    // run long, and the answer shouldn't wait behind them.
+                    let chunk = Self.popNextWord(from: &pending)
+                    if pending.isEmpty { queue.removeFirst() } else { queue[0] = .reasoning(pending) }
+                    self.revealQueues[assistantID] = queue
+                    conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + chunk
+                    try? await Task.sleep(nanoseconds: 8_000_000)
+                case .activity(let record):
+                    queue.removeFirst()
+                    self.revealQueues[assistantID] = queue
+                    conversation.messages[index].appendActivity(record)
+                case .activityUpdate(let id, let result, let isError):
+                    queue.removeFirst()
+                    self.revealQueues[assistantID] = queue
+                    conversation.messages[index].updateActivity(id: id, result: result, isError: isError)
+                }
             }
         }
     }
@@ -1100,9 +1146,20 @@ final class AppModel {
     private func flushReveal(for assistantID: UUID, conversation: Conversation) {
         revealTasks[assistantID]?.cancel()
         revealTasks[assistantID] = nil
-        guard let remaining = pendingReveal.removeValue(forKey: assistantID), !remaining.isEmpty else { return }
+        guard let queue = revealQueues.removeValue(forKey: assistantID), !queue.isEmpty else { return }
         guard let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) else { return }
-        conversation.messages[index].content += remaining
+        for op in queue {
+            switch op {
+            case .text(let chunk):
+                conversation.messages[index].appendTimelineText(chunk)
+            case .reasoning(let chunk):
+                conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + chunk
+            case .activity(let record):
+                conversation.messages[index].appendActivity(record)
+            case .activityUpdate(let id, let result, let isError):
+                conversation.messages[index].updateActivity(id: id, result: result, isError: isError)
+            }
+        }
     }
 
     private func apply(_ event: ChatStreamEvent, to conversation: Conversation, assistantID: UUID) {
@@ -1110,26 +1167,27 @@ final class AppModel {
     }
 
     private func apply(_ events: [ChatStreamEvent], to conversation: Conversation, assistantID: UUID) {
-        var content = ""
-        var reasoning = ""
         var promptTokens: Int?
         var completionTokens: Int?
         var cachedTokens: Int?
+        // Events enqueue in arrival order — deltas must NOT be merged across
+        // an activity boundary, or the interleaving is lost.
         for event in events {
             switch event {
-            case .delta(let nextContent, let nextReasoning):
-                content += nextContent
-                reasoning += nextReasoning
+            case .delta(let content, let reasoning):
+                if !content.isEmpty { enqueue(.text(content), for: assistantID, conversation: conversation) }
+                if !reasoning.isEmpty { enqueue(.reasoning(reasoning), for: assistantID, conversation: conversation) }
             case .usage(let prompt, let completion, let cached):
                 promptTokens = prompt ?? promptTokens
                 completionTokens = completion ?? completionTokens
                 cachedTokens = cached ?? cachedTokens
-            case .toolUse(let name, let query, let result):
-                toolUsesByMessage[assistantID, default: []].append(ToolUseRecord(name: name, query: query, result: result))
+            case .activityStarted(let id, let name, let argument):
+                var record = ActivityRecord(id: id, kind: .from(toolName: name), toolName: name, argument: argument)
+                record.isRunning = true
+                enqueue(.activity(record), for: assistantID, conversation: conversation)
+            case .activityFinished(let id, let result, let isError):
+                enqueue(.activityUpdate(id: id, result: result, isError: isError), for: assistantID, conversation: conversation)
             }
-        }
-        if !content.isEmpty || !reasoning.isEmpty {
-            append(token: content, reasoning: reasoning, to: conversation, assistantID: assistantID)
         }
         if promptTokens != nil || completionTokens != nil {
             let summary = UsageSummary(promptTokens: promptTokens, completionTokens: completionTokens, cachedTokens: cachedTokens)
@@ -1470,6 +1528,7 @@ final class AppModel {
         for conversation in conversations {
             for index in conversation.messages.indices where conversation.messages[index].isStreaming {
                 conversation.messages[index].isStreaming = false
+                conversation.messages[index].reconcileRunningActivities()
                 if conversation.messages[index].content.isEmpty, conversation.messages[index].error == nil {
                     conversation.messages[index].error = "Interrupted before finishing — the app closed or crashed."
                 }
