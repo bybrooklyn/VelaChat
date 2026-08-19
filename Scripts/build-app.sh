@@ -8,6 +8,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Marketing version from the newest tag, build number from the commit count —
+# Sparkle compares CFBundleVersion, so it must increase monotonically.
+SHORT_VERSION="$(git -C "$ROOT" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+SHORT_VERSION="${SHORT_VERSION:-1.0.0}"
+BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
+# VelaChat's Sparkle update-signing public key. The matching private
+# key exists only as the SPARKLE_PRIVATE_KEY GitHub secret, so only CI
+# can publish an update this app will accept.
+SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-sYsviqSat9JcwnMdI6EWW50orQ9wZpsTeiRlxzeMVUE=}"
 CONFIG="debug"
 if [[ "${1:-}" == "--release" ]]; then
   CONFIG="release"
@@ -38,9 +47,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundleIdentifier</key>
     <string>com.velachat.desktop</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>__BUILD_NUMBER__</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>__SHORT_VERSION__</string>
     <key>CFBundleExecutable</key>
     <string>VelaChat</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
@@ -59,6 +68,12 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <string>Copyright © 2026 VelaChat contributors</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/bybrooklyn/VelaChat/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>__SPARKLE_PUBLIC_KEY__</string>
+    <key>SUEnableInstallerLauncherService</key>
+    <false/>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
@@ -67,6 +82,21 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+# Placeholders filled after the heredoc so the plist stays a literal block.
+/usr/bin/sed -i '' \
+  -e "s|__BUILD_NUMBER__|$BUILD_NUMBER|" \
+  -e "s|__SHORT_VERSION__|$SHORT_VERSION|" \
+  -e "s|__SPARKLE_PUBLIC_KEY__|$SPARKLE_PUBLIC_KEY|" \
+  "$CONTENTS/Info.plist"
+
+# Sparkle ships XPC services and its own framework; copy whatever SwiftPM
+# produced next to the binary so the updater can actually launch.
+SPARKLE_FRAMEWORK="$(find "$ROOT/.build" -maxdepth 6 -name "Sparkle.framework" -type d 2>/dev/null | head -1)"
+if [[ -n "$SPARKLE_FRAMEWORK" ]]; then
+  mkdir -p "$CONTENTS/Frameworks"
+  cp -R "$SPARKLE_FRAMEWORK" "$CONTENTS/Frameworks/"
+fi
 
 IDENTITY="VelaChat Local Dev"
 if security find-certificate -c "$IDENTITY" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then

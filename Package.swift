@@ -15,7 +15,8 @@ let package = Package(
         // Line Tools-only toolchain. Swap back to the upstream git URL if
         // building with full Xcode.
         .package(path: "Vendor/HighlightSwift"),
-        .package(path: "Vendor/KeyboardShortcuts")
+        .package(path: "Vendor/KeyboardShortcuts"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
         .executableTarget(
@@ -23,7 +24,8 @@ let package = Package(
             dependencies: [
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "HighlightSwift", package: "HighlightSwift"),
-                .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts")
+                .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
+                .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/VelaChat"
         )

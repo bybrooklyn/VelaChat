@@ -7,3 +7,8 @@ build/
 
 # macOS
 .DS_Store
+
+# Sparkle signing material must never be committed — the private key lives
+# only in the SPARKLE_PRIVATE_KEY GitHub secret.
+*.pem
+sparkle_private.key

@@ -3,6 +3,15 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppModel.self) private var appModel
 
+    /// Clamped on read as well as on write: a value saved by an older
+    /// build (or any future accident) can never make the expanded
+    /// sidebar narrower than its own content needs.
+    private static var rememberedSidebarWidth: CGFloat {
+        let saved = UserDefaults.standard.double(forKey: "velachat.sidebar-width")
+        guard saved > 0 else { return 274 }
+        return min(max(saved, 220), 420)
+    }
+
     var body: some View {
         Group {
             if appModel.hasOnboarded {
@@ -32,11 +41,7 @@ struct RootView: View {
                 // launch's starting point instead of always resetting to 274.
                 .navigationSplitViewColumnWidth(
                     min: appModel.isSidebarRail ? AppModel.sidebarRailWidth : 220,
-                    ideal: appModel.isSidebarRail
-                        ? AppModel.sidebarRailWidth
-                        : (UserDefaults.standard.double(forKey: "velachat.sidebar-width").rounded() > 0
-                            ? UserDefaults.standard.double(forKey: "velachat.sidebar-width")
-                            : 274),
+                    ideal: appModel.isSidebarRail ? AppModel.sidebarRailWidth : Self.rememberedSidebarWidth,
                     max: appModel.isSidebarRail ? AppModel.sidebarRailWidth : 420
                 )
         } detail: {

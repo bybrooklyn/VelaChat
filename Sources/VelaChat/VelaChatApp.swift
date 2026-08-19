@@ -18,6 +18,7 @@ struct VelaChatApp: App {
     }
 
     @State private var windowChrome = WindowChrome()
+    @State private var updater = UpdaterController()
     @State private var artifactPresenter = ArtifactPresenter()
 
     static let mainWindowID = "vela.main"
@@ -31,6 +32,7 @@ struct VelaChatApp: App {
                 .tint(Theme.accent)
                 .frame(minWidth: 960, minHeight: 620)
                 .preferredColorScheme(.dark)
+                .environment(updater)
                 .background(WindowConfigurator(chrome: windowChrome))
         }
         .defaultSize(width: 1_180, height: 780)
@@ -39,6 +41,10 @@ struct VelaChatApp: App {
         // intermittent "app launches to nothing" this project kept hitting.
         .defaultLaunchBehavior(.presented)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Conversation") {
                     _ = appModel.newConversation()

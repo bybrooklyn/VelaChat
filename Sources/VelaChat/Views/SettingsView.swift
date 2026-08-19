@@ -192,6 +192,7 @@ struct SettingsView: View {
                 Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
                 Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
                 KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
+                UpdatesRow()
                 Picker("Message width", selection: $appModel.messageWidth) {
                     ForEach(MessageWidthPreset.allCases) { preset in
                         Text(preset.displayName).tag(preset)
@@ -813,6 +814,30 @@ private struct McpServerSheet: View {
         }
         .padding(20)
         .frame(width: 440)
+    }
+}
+
+/// Sparkle's controls, kept honest: the app is ad-hoc signed, so updates
+/// are verified by Sparkle's own key rather than by a Developer ID.
+private struct UpdatesRow: View {
+    @Environment(UpdaterController.self) private var updater
+
+    var body: some View {
+        LabeledContent("Updates") {
+            HStack(spacing: 10) {
+                Toggle("Check automatically", isOn: Binding(
+                    get: { updater.automaticallyChecks },
+                    set: { updater.automaticallyChecks = $0 }
+                ))
+                .toggleStyle(.switch)
+                Button("Check Now") { updater.checkForUpdates() }
+                    .buttonStyle(.bordered)
+                    .disabled(!updater.canCheckForUpdates)
+                Text(updater.lastCheckDescription)
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+        }
     }
 }
 

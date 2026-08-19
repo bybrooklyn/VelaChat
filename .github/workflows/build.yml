@@ -1,0 +1,104 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# A newer commit makes an in-flight run redundant. macOS runners bill at a
+# 10x multiplier, so cancelling superseded work is real money.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build .app
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version || true
+
+      # SwiftPM's clone/checkout cache and the build directory. Keyed on the
+      # resolved dependency graph, so a dependency bump invalidates it while
+      # ordinary source edits reuse it.
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.cache/org.swift.swiftpm
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'Package.swift') }}-${{ hashFiles('Sources/**/*.swift') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'Package.swift') }}-
+            spm-${{ runner.os }}-
+
+      - name: Build release
+        run: swift build -c release
+
+      - name: Run tests
+        run: |
+          # No test target yet — this stays green until one exists, then
+          # starts gating for real without touching the workflow.
+          if swift test --list-tests >/dev/null 2>&1; then
+            swift test
+          else
+            echo "No tests defined yet; skipping."
+          fi
+
+      - name: Package .app
+        run: ./Scripts/build-app.sh --release
+
+      - name: Verify the bundle
+        run: |
+          test -x build/VelaChat.app/Contents/MacOS/VelaChat
+          test -f build/VelaChat.app/Contents/Info.plist
+          codesign --verify --verbose build/VelaChat.app
+
+      - name: Zip
+        run: ditto -c -k --keepParent build/VelaChat.app VelaChat.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VelaChat-${{ github.sha }}
+          path: VelaChat.zip
+          retention-days: 14
+
+      # Tag pushes become real releases. The app is ad-hoc signed (no Apple
+      # Developer ID), so first launch needs right-click -> Open; Sparkle
+      # validates updates with its own EdDSA key rather than the signature.
+      - name: Sign the update with Sparkle's key
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: ./Scripts/sign-update.sh VelaChat.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" VelaChat.zip \
+            --title "VelaChat ${GITHUB_REF_NAME}" \
+            --notes "Ad-hoc signed build. First launch: right-click the app and choose Open." \
+            --generate-notes
+
+  lint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color

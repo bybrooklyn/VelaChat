@@ -37,7 +37,12 @@ struct SidebarView: View {
             GeometryReader { geometry in
                 Color.clear
                     .onChange(of: geometry.size.width) { _, newValue in
-                        guard newValue > 0 else { return }
+                        // Only the expanded width is worth remembering, and
+                        // only within the range the column actually allows.
+                        // Persisting the rail's 60pt made the *expanded*
+                        // sidebar come back too narrow to fit its own
+                        // "New Chat" label.
+                        guard !appModel.isSidebarRail, newValue >= 220, newValue <= 420 else { return }
                         UserDefaults.standard.set(newValue, forKey: "velachat.sidebar-width")
                     }
             }

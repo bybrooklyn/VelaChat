@@ -662,6 +662,9 @@ final class AppModel {
         guard !didStart else { return }
         didStart = true
         startNetworkMonitor()
+        if providers.chatGPTSessionPresent {
+            Task { await ChatGPTWebClient.shared.startKeepAlive() }
+        }
         if let active = activeConversation, let providerID = active.providerID {
             providers.select(providerID, markExplicit: false)
         }

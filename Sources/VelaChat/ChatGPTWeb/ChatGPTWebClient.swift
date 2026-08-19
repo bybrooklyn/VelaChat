@@ -53,6 +53,7 @@ actor ChatGPTWebClient {
     private(set) var accountLabel: String?
     private(set) var planName: String?
     private var refreshTask: Task<String, Error>?
+    private var keepAliveTask: Task<Void, Never>?
     private var modelCache: (at: Date, models: [RemoteModel])?
     /// Stable non-secret device identifier — the reference explicitly
     /// warns against generating a fresh one per launch.
@@ -82,6 +83,9 @@ actor ChatGPTWebClient {
     }
 
     func signOut() {
+        keepAliveTask?.cancel()
+        keepAliveTask = nil
+        importedBrowserName = nil
         cookie = nil
         accessToken = nil
         tokenExpiresAt = nil
@@ -172,6 +176,42 @@ actor ChatGPTWebClient {
         return false
     }
 
+    /// Which browser the session was imported from, so a rotated cookie
+    /// can be picked up again without asking.
+    private var importedBrowserName: String? {
+        get { UserDefaults.standard.string(forKey: "velachat.chatgpt-import-browser") }
+        set { UserDefaults.standard.set(newValue, forKey: "velachat.chatgpt-import-browser") }
+    }
+
+    func rememberImportSource(_ name: String) {
+        importedBrowserName = name
+    }
+
+    private func reimportFromBrowser() async {
+        guard let name = importedBrowserName,
+              let browser = BrowserCookieImport.availableBrowsers().first(where: { $0.name == name }),
+              let header = try? BrowserCookieImport.cookieHeader(from: browser),
+              header != cookie else { return }
+        cookie = header
+        accessToken = nil
+        tokenExpiresAt = nil
+        SecureStore.set(header, for: Self.cookieAccount)
+    }
+
+    /// Periodic refresh so a session rarely expires mid-conversation. Cheap
+    /// (one session endpoint call), and silent when it fails — the request
+    /// path still recovers on its own.
+    func startKeepAlive() {
+        guard keepAliveTask == nil, cookie != nil else { return }
+        keepAliveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20 * 60 * 1_000_000_000)
+                guard let self, await self.isConfigured else { return }
+                _ = try? await self.refreshAccessToken()
+            }
+        }
+    }
+
     // MARK: - Authenticated requests
 
     /// Headers per the reference authedFetch: Bearer token, UA, device
@@ -213,6 +253,11 @@ actor ChatGPTWebClient {
             if http.statusCode == 401, !didRefresh {
                 didRefresh = true
                 accessToken = nil
+                // The cookie itself may have rotated in the browser the
+                // session came from. Re-reading it there is silent and
+                // usually enough; only if that fails does the user see a
+                // sign-in prompt.
+                await reimportFromBrowser()
                 continue
             }
             if isIdempotent, [429, 500, 502, 503, 504].contains(http.statusCode), attempt < 2 {
