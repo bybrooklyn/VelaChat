@@ -488,3 +488,73 @@ the round above.
   only, no standing working directory), Phase 5 (artifacts), @-references,
   attachment inclusion-controls UI, ZIP/audio/video/generic-folder
   attachments.
+
+## "Visual-trust-recovery" round (2026-08-19) — first real commits
+
+After the "do all that + rest of phases" round, the user reported the app
+crashing on launch (`swift run`/raw binary — `UNUserNotificationCenter`
+aborts without a real `.app` bundle behind it) and, once fixed, reacted
+strongly negatively to the Liquid Glass UI work — "you broke the old
+theme," repeated across many messages with real screenshots. This became
+its own multi-round plan-mode pass (see git log for the four resulting
+commits — **this repo's first commits ever**, previously zero despite
+substantial prior work).
+
+**Root-cause pattern behind nearly every visual bug found**: custom-drawn
+chrome layered on top of chrome the system (or Liquid Glass itself) already
+draws — a doubled sidebar/chat divider (native `NavigationSplitView`
+divider + a hand-drawn one), a doubled row-selection outline (native
+`List` selection chrome + custom background, fixed by rewriting the
+sidebar as a plain `ScrollView`), and two buttons whose icon color exactly
+matched their own glass tint (rendering as blank circles).
+
+**Shipped, in commit order**:
+1. Crash fix + doubled-chrome fixes (sidebar list→ScrollView, sidebar/chat
+   divider, search-toggle button) + pill/fullscreen-button removal.
+2. Full bug-fix batch: two invisible-icon buttons, 7 native-blue focus
+   rings on `.roundedBorder` fields (confirmed `.tint()` doesn't fix
+   this — AppKit's focus ring ignores it; the real fix is
+   `.textFieldStyle(.plain)` + a manual flat background/stroke, now a
+   shared `flatFieldStyle()` modifier in `Materials.swift`), model picker
+   auto-fetch-on-open, composer pills flattened off `GlassEffectContainer`
+   (was visually fusing adjacent pills into one blob) onto flat chips with
+   real press feedback, sidebar row outline shown at rest not just on
+   hover, corner-radius bump, list-mutation animations, several smaller
+   fixes (hardcoded radius, silent artifact-save failure, mermaid CDN
+   error/loading state, dead `isPressed` param, missing empty/loading
+   states).
+3. **Error handling pass**, per explicit request: a real data-integrity
+   race (Stop immediately followed by Send could let a cancelled
+   generation's completion handler stomp a new one's state — fixed via
+   `Conversation.currentGenerationID`), manual "Regenerate Title" silently
+   failing and corrupting `titleIsCustom` on failure, compaction silently
+   discarding its result, `send()`'s busy-guard having no feedback,
+   Codex/Anthropic streaming loops missing the `consecutiveParseFailures`
+   escape hatch the generic path already had.
+4. Model picker rework (removed the now-redundant per-provider refresh
+   icon, widened the popover 460×420 → 560×560, added a real
+   "Recommended" badge), a typewriter erase/type animation for
+   conversation-title changes, Settings restructured from one 10-section
+   scroll into three tabs (Providers / General / Tools & Skills) — all
+   verified via screenshots (including Settings' three tabs via the
+   established temporary-default-then-revert technique).
+5. Remaining spacing consolidation (two competing popover-row padding
+   conventions unified, sidebar header inset aligned to its siblings).
+
+**Known real gap, not yet resolved**: the auto-title-generation bug's
+actual root cause (why the network call fails) is still unconfirmed — the
+related bugs around it were fixed and a failure log line was added
+(`[VelaChat] Title generation failed...`, visible in Console.app), but no
+live failure was ever actually observed, since this sandbox can't drive
+the UI interactively to send a fresh message and watch. Worth checking
+next real session.
+
+**Explicitly deferred, not forgotten**: the large feature-backlog rethink
+(item D in the plan) needs its own scoped conversation, not blind
+implementation — the user flagged wanting to reconsider the earlier
+"everything now"/"do all that" backlog but never specified which parts.
+The original paused roadmap (provider logos sourced from real brand
+assets, @-references in the composer, artifact version history/diffing,
+attachments v2 — ZIP/audio/video, a real test suite + CI, import from
+ChatGPT/Claude exports) is still fully unbuilt, exactly where the
+previous round's plan file left it.
