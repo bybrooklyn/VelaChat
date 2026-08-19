@@ -511,6 +511,8 @@ private struct ModelPaletteRow: View {
     let recommended: Bool
     let action: () -> Void
 
+    @State private var isHovering = false
+
     var body: some View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 10) {
@@ -531,26 +533,20 @@ private struct ModelPaletteRow: View {
                                 .padding(.vertical, 1)
                                 .background(Theme.accent, in: Capsule())
                         }
-                        if model.supportsReasoning {
-                            Text("Think")
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(Theme.reasoningAccent)
-                        }
-                        if model.isCloudHosted {
-                            Text("Cloud")
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(Theme.modelAccent)
-                        }
                     }
-                    Text(model.id)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(Theme.secondaryText)
-                        .lineLimit(1)
+                    // One subtitle line, not three — the description when the
+                    // catalog has one, the raw ID otherwise. The full ID is
+                    // always in the tooltip.
                     if let description = model.description, !description.isEmpty {
                         Text(description)
                             .font(.caption)
                             .foregroundStyle(Theme.secondaryText)
-                            .lineLimit(2)
+                            .lineLimit(1)
+                    } else {
+                        Text(model.id)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(Theme.secondaryText)
+                            .lineLimit(1)
                     }
                     HStack(spacing: 9) {
                         if let context = model.contextLabel {
@@ -558,6 +554,10 @@ private struct ModelPaletteRow: View {
                         }
                         if let resource = model.quantizationLevel != nil ? model.resourceLabel : model.sizeLabel {
                             Label(resource, systemImage: "cube")
+                        }
+                        if model.supportsReasoning {
+                            Label("Think", systemImage: "brain")
+                                .foregroundStyle(Theme.reasoningAccent)
                         }
                         if model.supportsVision {
                             Label("Vision", systemImage: "eye")
@@ -582,10 +582,16 @@ private struct ModelPaletteRow: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
-            .background(selected ? Theme.accentSoft.opacity(0.82) : Color.clear, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+            .background(
+                selected ? Theme.accentSoft.opacity(0.82) : (isHovering ? Theme.controlBackground.opacity(0.55) : Color.clear),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+        .help(model.id)
     }
 }
 

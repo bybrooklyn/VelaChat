@@ -71,6 +71,10 @@ struct ChatView: View {
                 .frame(maxWidth: contentWidth)
                 .frame(maxWidth: .infinity)
                 .animation(.spring(response: 0.35, dampingFraction: 0.82), value: appModel.activeConversation?.messages.count ?? 0)
+                // Replacing the stack per-conversation makes switching chats
+                // a quiet crossfade instead of an instant swap.
+                .id(appModel.activeConversationID)
+                .animation(.easeOut(duration: 0.16), value: appModel.activeConversationID)
             }
             // Reserves room under the floating glass header so the first
             // message never starts underneath it.

@@ -22,7 +22,7 @@ struct SidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             sidebarHeader
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 14)
                 .padding(.top, 10)
                 .padding(.bottom, 12)
 
@@ -614,8 +614,8 @@ private struct ConversationRow: View {
                     .foregroundStyle(Theme.tertiaryText)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
         // Selected rows are filled; everything else always shows a faint
         // hairline outline, brightening on hover — a fully-invisible resting
         // state read as "rows with no border at all" rather than a calm

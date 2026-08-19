@@ -36,11 +36,16 @@ struct RootView: View {
         }
     }
 
+    /// A quiet crossfade between chat and Settings, instead of the panes
+    /// swapping in one frame.
     @ViewBuilder
     private var detail: some View {
-        switch appModel.section {
-        case .chat: ChatView()
-        case .settings: SettingsView()
+        ZStack {
+            switch appModel.section {
+            case .chat: ChatView().transition(.opacity)
+            case .settings: SettingsView().transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: appModel.section)
     }
 }

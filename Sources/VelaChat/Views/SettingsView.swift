@@ -2,16 +2,6 @@ import SwiftUI
 import AppKit
 import KeyboardShortcuts
 
-/// Was one continuous 10-section scroll — split into tabs so a quick visit
-/// (e.g. "just let me add a provider key") doesn't mean scrolling past
-/// everything else to get there.
-private enum SettingsTab: String, CaseIterable, Identifiable {
-    case providers = "Providers"
-    case general = "General"
-    case tools = "Tools & Skills"
-    var id: Self { self }
-}
-
 struct SettingsView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowChrome.self) private var chrome
@@ -21,7 +11,6 @@ struct SettingsView: View {
     @State private var isAddingSnippet = false
     @State private var newMemoryText = ""
     @State private var accentPreset = AccentPreset.current
-    @State private var settingsTab: SettingsTab = .providers
 
     private var topBarHeight: CGFloat { chrome.isFullScreen ? 44 : 52 }
 
@@ -34,18 +23,6 @@ struct SettingsView: View {
         // empty reserved strip above it.
         VStack(spacing: 0) {
             header
-            Picker("", selection: $settingsTab) {
-                ForEach(SettingsTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 4)
-            .frame(maxWidth: 760)
-            .frame(maxWidth: .infinity, alignment: .center)
             NavigationStack {
                 settingsForm
                     .navigationDestination(item: $editingProfileID) { id in
@@ -106,7 +83,6 @@ struct SettingsView: View {
             // Providers lead, because they're the thing you actually come
             // here to change, and they now live inline instead of behind a
             // separate "Connections" screen.
-            if settingsTab == .providers {
             Section {
                 ForEach(visibleProfiles) { profile in
                     Button {
@@ -142,11 +118,9 @@ struct SettingsView: View {
             } header: {
                 Text("Providers")
             } footer: {
-                Text("Every provider here speaks the same OpenAI chat-completions format — the “OpenAI Compatible” option is that same protocol pointed at any other server. Keys are stored in your macOS Keychain and requests go directly to the provider.")
-            }
+                Text("Keys stay in your macOS Keychain. Requests go straight to the provider.")
             }
 
-            if settingsTab == .general {
             Section {
                 TextEditor(text: $appModel.customInstructions)
                     .font(.body)
@@ -156,7 +130,7 @@ struct SettingsView: View {
             } header: {
                 Text("Custom Instructions")
             } footer: {
-                Text("Sent with every message from now on \u{2014} tell the model about yourself and how you want it to respond. It's invisible in the conversation, not shown as a chat message.")
+                Text("Sent invisibly with every message \u{2014} who you are and how the model should respond.")
             }
 
             Section {
@@ -197,11 +171,9 @@ struct SettingsView: View {
             } header: {
                 Text("Memory")
             } footer: {
-                Text("Durable facts included in every conversation, not just one \u{2014} add them yourself, or confirm one the model proposes mid-reply. Separate from Custom Instructions: a list of discrete, individually editable facts instead of one freeform block.")
-            }
+                Text("Facts the model keeps across every conversation \u{2014} yours to edit or remove.")
             }
 
-            if settingsTab == .tools {
             Section {
                 if appModel.skills.skills.isEmpty {
                     Label("No skills found yet.", systemImage: "sparkles")
@@ -256,7 +228,7 @@ struct SettingsView: View {
             } header: {
                 Text("Skills")
             } footer: {
-                Text("Real SKILL.md folders, auto-discovered from ~/.claude/skills and ~/.codex/skills \u{2014} anything already there just shows up, no import step. Invoke one by name from the / menu in the composer; its instructions become scoped context for that conversation.")
+                Text("Auto-discovered from ~/.claude/skills and ~/.codex/skills. Invoke one from the / menu.")
             }
 
             Section {
@@ -296,7 +268,7 @@ struct SettingsView: View {
             } header: {
                 Text("Prompt Snippets")
             } footer: {
-                Text("Save a prompt once, invoke it instantly from the / menu by name instead of retyping it.")
+                Text("Save a prompt once, reuse it from the / menu.")
             }
 
             Section {
@@ -310,7 +282,7 @@ struct SettingsView: View {
             } header: {
                 Text("Web Search")
             } footer: {
-                Text("Perplexity searches the live web on every request, and OpenRouter searches through its :online routing \u{2014} both work with no setup here. For every other provider, a SearXNG instance (free and keyless \u{2014} pick one from searx.space or self-host) is used as the fallback. Toggle search on in the composer.")
+                Text("A SearXNG fallback for providers without built-in search (pick one from searx.space). Toggle search on in the composer.")
             }
 
             Section {
@@ -325,17 +297,15 @@ struct SettingsView: View {
             } header: {
                 Text("Tools")
             } footer: {
-                Text("When on (and the model supports tools), the model can search your past conversations, and read/write files in a real, private folder on disk \u{2014} a separate one for every conversation, never your actual files unless you put them there yourself. There's no shell/command-execution tool: one was built and tested with real macOS sandboxing, but it couldn't be made to reliably confine even trivial commands, so it wasn't shipped rather than ship something that only looks safe.")
-            }
+                Text("Lets tool-capable models search your past conversations and use a private per-conversation folder. There is no shell or command execution.")
             }
 
-            if settingsTab == .general {
             Section {
                 KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
             } header: {
                 Text("Global Shortcut")
             } footer: {
-                Text("Works from anywhere on the Mac, even while another app is active.")
+                Text("Works from anywhere on the Mac.")
             }
 
             Section {
@@ -426,12 +396,10 @@ struct SettingsView: View {
                     Label("Read the MIT license", systemImage: "arrow.up.right.square")
                 }
                 .foregroundStyle(Theme.accent)
-                Text("VelaChat is free and open source software, released under the MIT license \u{2014} use it, fork it, and ship it however you like.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.secondaryText)
             } header: {
                 Text("About VelaChat")
-            }
+            } footer: {
+                Text("Free and open source \u{2014} use it, fork it, ship it.")
             }
         }
         .formStyle(.grouped)
