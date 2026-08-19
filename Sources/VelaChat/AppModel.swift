@@ -51,6 +51,7 @@ final class AppModel {
     // surface.
 
     let providers = ProviderStore()
+    let usage = UsageStore()
     let skills = SkillsStore()
     var promptSnippets: [PromptSnippet] = [] {
         didSet {
@@ -1651,8 +1652,25 @@ final class AppModel {
         completeGeneration(for: conversation, assistantID: assistantID)
     }
 
+    /// One ledger entry per finished reply, from the final persisted
+    /// summary — providers emit .usage several times mid-stream, so the
+    /// per-event path must never feed the ledger directly.
+    private func recordUsage(for conversation: Conversation, assistantID: UUID) {
+        guard let providerID = conversation.providerID,
+              let message = conversation.messages.first(where: { $0.id == assistantID }),
+              let summary = usageByMessage[assistantID] ?? message.usage else { return }
+        let modelInfo = providers.modelInfo(for: providerID, model: message.modelID ?? conversation.model)
+        usage.record(
+            providerID: providerID,
+            promptTokens: summary.promptTokens,
+            completionTokens: summary.completionTokens,
+            costUSD: summary.costUSD(for: modelInfo)
+        )
+    }
+
     private func completeGeneration(for conversation: Conversation, assistantID: UUID) {
         flushReveal(for: assistantID, conversation: conversation)
+        recordUsage(for: conversation, assistantID: assistantID)
         // The end-of-reply state changes (streaming indicator out, action
         // row and usage label in) fade rather than popping in one frame.
         withAnimation(.easeOut(duration: 0.3)) {
@@ -1920,6 +1938,7 @@ final class AppModel {
             conversation.messages[index].isStreaming = false
             conversation.messages[index].error = message
         }
+        recordUsage(for: conversation, assistantID: assistantID)
         conversation.updatedAt = Date()
         // See the matching comment in `finishGeneration` — same race guard.
         if conversation.currentGenerationID == assistantID {

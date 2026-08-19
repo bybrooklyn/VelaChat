@@ -1105,8 +1105,13 @@ private struct MessageRow: View {
 
                     if !message.isStreaming {
                         HStack(spacing: 10) {
-                            if let usage = (appModel.usageByMessage[displayedMessage.id] ?? displayedMessage.usage)?.label {
-                                Text(usage)
+                            if let summary = appModel.usageByMessage[displayedMessage.id] ?? displayedMessage.usage,
+                               let label = summary.label {
+                                let cost = summary.costUSD(for: appModel.providers.modelInfo(
+                                    for: appModel.activeConversation?.providerID ?? UUID(),
+                                    model: displayedMessage.modelID ?? ""
+                                ))
+                                Text(cost.map { label + String(format: " · $%.4f", $0) } ?? label)
                                     .font(.caption2)
                                     .foregroundStyle(Theme.tertiaryText)
                             }
