@@ -604,6 +604,7 @@ final class CompatibleChatClient: @unchecked Sendable {
 
         let (bytes, response) = try await session.bytes(for: request)
         try await Self.checkStream(response: response, bytes: bytes)
+        var consecutiveParseFailures = 0
         for try await line in bytes.lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmed.hasPrefix("data:") else { continue }
@@ -613,7 +614,17 @@ final class CompatibleChatClient: @unchecked Sendable {
             if let message = GenericErrorEnvelope.message(from: data), !message.isEmpty {
                 throw APIError.message(message)
             }
-            guard let event = try? decoder.decode(CodexResponseEvent.self, from: data) else { continue }
+            // Matches the generic OpenAI-compatible path's escape hatch
+            // (below) — without this, a persistently malformed stream just
+            // finished silently with an empty reply instead of a real error.
+            guard let event = try? decoder.decode(CodexResponseEvent.self, from: data) else {
+                consecutiveParseFailures += 1
+                if consecutiveParseFailures >= 3 {
+                    throw APIError.message("The response stream could not be parsed.")
+                }
+                continue
+            }
+            consecutiveParseFailures = 0
             switch event.type {
             case "response.output_text.delta":
                 if let delta = event.delta, !delta.isEmpty { onEvent(.delta(content: delta, reasoning: "")) }
@@ -739,12 +750,24 @@ final class CompatibleChatClient: @unchecked Sendable {
 
             var textForThisRound = ""
             var toolBlocks: [Int: (id: String, name: String, json: String)] = [:]
+            var consecutiveParseFailures = 0
             for try await line in bytes.lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard trimmed.hasPrefix("data:") else { continue }
                 let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
                 guard !payload.isEmpty, let data = payload.data(using: .utf8) else { continue }
-                guard let event = try? decoder.decode(AnthropicStreamEvent.self, from: data) else { continue }
+                // Matches the generic OpenAI-compatible path's escape hatch
+                // — without this, a persistently malformed stream just
+                // finished silently with an empty reply instead of a real
+                // error.
+                guard let event = try? decoder.decode(AnthropicStreamEvent.self, from: data) else {
+                    consecutiveParseFailures += 1
+                    if consecutiveParseFailures >= 3 {
+                        throw APIError.message("The response stream could not be parsed.")
+                    }
+                    continue
+                }
+                consecutiveParseFailures = 0
                 switch event.type {
                 case "content_block_start":
                     if let block = event.contentBlock, block.type == "tool_use", let index = event.index {

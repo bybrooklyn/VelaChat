@@ -460,10 +460,12 @@ final class AppModel {
     /// "already custom" and "exactly two messages" guards, since an explicit
     /// user request should always run regardless of how the title got there.
     func regenerateTitle(for conversation: Conversation) {
-        guard let profile = providers.selected, profile.kind != .preview else { return }
+        guard let profile = providers.selected, profile.kind != .preview else {
+            postNotice("Choose a provider first.", to: conversation)
+            return
+        }
         guard conversation.messages.contains(where: { $0.role == "user" }),
               conversation.messages.contains(where: { $0.role == "assistant" }) else { return }
-        conversation.titleIsCustom = false
         let model = conversation.model.isEmpty ? providers.effectiveModel(for: profile) : conversation.model
         let credential = providers.credential(for: profile)
         generateTitleIfNeeded(for: conversation, profile: profile, model: model, credential: credential, force: true)
@@ -471,10 +473,25 @@ final class AppModel {
 
     /// Fires once, right after the very first exchange completes, using
     /// whatever model/provider the conversation is already on — no separate
-    /// "titling model" configuration. Silent on failure: a truncated first
-    /// message is a perfectly fine fallback title, never worth an error.
+    /// "titling model" configuration. Silent on failure for the automatic
+    /// (post-first-exchange) path — a truncated first message is a
+    /// perfectly fine fallback title, never worth interrupting the user
+    /// over. `force` (the manual "Regenerate Title" action) is a real user
+    /// click, though, so it gets a real notice on failure instead of
+    /// silently doing nothing — see the shared `catch` below. Every
+    /// failure is also logged (visible in Console.app/stderr), so a
+    /// pattern of silent automatic failures is at least diagnosable
+    /// instead of invisible.
     private func generateTitleIfNeeded(for conversation: Conversation, profile: ProviderProfile, model: String, credential: ProviderCredential, force: Bool = false) {
-        guard !conversation.titleIsCustom, (force || conversation.realMessages.count == 2), profile.kind != .preview else { return }
+        // `force` bypasses both the "already custom" and "exactly two
+        // messages" gates — an explicit user request should always run.
+        // `titleIsCustom` itself is only ever flipped back to `false` on
+        // actual success, below, not pre-emptively here — clearing it
+        // before the network call could resolve used to mean a failed
+        // regenerate silently and permanently forgot the user's manual
+        // title even though nothing else changed.
+        guard force || (!conversation.titleIsCustom && conversation.realMessages.count == 2),
+              profile.kind != .preview else { return }
         guard let firstUser = conversation.messages.first(where: { $0.role == "user" }),
               let firstAssistant = conversation.messages.first(where: { $0.role == "assistant" }),
               !firstAssistant.content.isEmpty else { return }
@@ -501,14 +518,20 @@ final class AppModel {
                     if case .delta(let content, _) = event { titleText += content }
                 }
             } catch {
+                print("[VelaChat] Title generation failed for \"\(conversation.title)\": \(error)")
+                if force { self.postNotice("Couldn't generate a title: \(error.localizedDescription)", to: conversation) }
                 return
             }
-            guard !conversation.titleIsCustom else { return }
+            guard !conversation.titleIsCustom || force else { return }
             let cleaned = titleText
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\"'.“”"))
-            guard !cleaned.isEmpty, !Self.looksLikeBadTitle(cleaned) else { return }
+            guard !cleaned.isEmpty, !Self.looksLikeBadTitle(cleaned) else {
+                if force { self.postNotice("The model didn't return a usable title.", to: conversation) }
+                return
+            }
             conversation.title = String(cleaned.prefix(60))
+            conversation.titleIsCustom = false
             self.saveHistory()
         }
     }
@@ -740,7 +763,10 @@ final class AppModel {
             return
         }
         let conversation = activeConversation ?? newConversation()
-        guard !conversation.isGenerating else { return }
+        guard !conversation.isGenerating else {
+            postNotice("Already generating a reply.", to: conversation)
+            return
+        }
         if conversation.providerID != profile.id {
             conversation.providerID = profile.id
             conversation.model = profile.model
@@ -764,6 +790,7 @@ final class AppModel {
         conversation.messages.append(assistant)
         conversation.updatedAt = Date()
         conversation.isGenerating = true
+        conversation.currentGenerationID = assistantID
         conversation.draftText = ""
         conversation.draftAttachments = []
         conversation.generationProviderName = profile.name
@@ -1032,8 +1059,15 @@ final class AppModel {
         if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
             conversation.messages[index].isStreaming = false
         }
-        conversation.isGenerating = false
-        conversation.generationTask = nil
+        // Only touch shared generation state (`isGenerating`/`generationTask`)
+        // if this is still the *current* generation. A Stop immediately
+        // followed by a new Send starts a new generation before this
+        // cancelled task's completion handler gets a chance to run — without
+        // this check, it would stomp the new generation's state once it did.
+        if conversation.currentGenerationID == assistantID {
+            conversation.isGenerating = false
+            conversation.generationTask = nil
+        }
         saveHistory()
         notifyIfBackgrounded(conversation: conversation, assistantID: assistantID)
         autoCompactIfNeeded(conversation)
@@ -1151,12 +1185,22 @@ final class AppModel {
             }
             if conversation.id == self.activeConversationID { self.statusMessage = nil }
             let cleaned = summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !cleaned.isEmpty else { return }
+            guard !cleaned.isEmpty else {
+                if !isAutomatic { self.postNotice("The model didn't return a usable summary.", to: conversation) }
+                return
+            }
             // The marker lands right after the last message the summary
             // actually covers — not the end of the whole span — so the
             // recency buffer (and any pinned messages) stay correctly on
             // the "not summarized" side of the boundary.
-            guard let insertAfterIndex = conversation.messages.firstIndex(where: { $0.id == lastSummarizedID }) else { return }
+            guard let insertAfterIndex = conversation.messages.firstIndex(where: { $0.id == lastSummarizedID }) else {
+                // The message the summary was anchored to was deleted while
+                // this was in flight — the summary itself is still real
+                // work the user is waiting on, so say so rather than
+                // letting "Compacting…" just silently vanish.
+                if !isAutomatic { self.postNotice("Compaction finished, but the conversation changed too much while it ran to safely insert the summary. Try again.", to: conversation) }
+                return
+            }
             conversation.messages.insert(ChatMessage(role: "compaction", content: cleaned), at: insertAfterIndex + 1)
             self.saveHistory()
         }
@@ -1257,8 +1301,11 @@ final class AppModel {
             conversation.messages[index].isStreaming = false
             conversation.messages[index].error = message
         }
-        conversation.isGenerating = false
-        conversation.generationTask = nil
+        // See the matching comment in `finishGeneration` — same race guard.
+        if conversation.currentGenerationID == assistantID {
+            conversation.isGenerating = false
+            conversation.generationTask = nil
+        }
         saveHistory()
     }
 

@@ -816,6 +816,15 @@ final class Conversation: Identifiable {
     var isGenerating: Bool = false
     var generationProviderName: String = ""
     var generationTask: Task<Void, Never>?
+    /// The assistant message ID the *current* generation is for — checked
+    /// by `finishGeneration`/`failGeneration` before they mutate
+    /// `isGenerating`/`generationTask`. Without this, a Stop immediately
+    /// followed by a new Send let the just-cancelled task's completion
+    /// handler (which runs asynchronously, after the new generation has
+    /// already started) stomp the new generation's state once it woke up
+    /// on its cancellation. Ephemeral, like `generationTask` — not
+    /// persisted.
+    var currentGenerationID: UUID?
 
     init(id: UUID = UUID(), title: String = "New conversation", messages: [ChatMessage] = [], providerID: UUID? = nil, model: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = []) {
         self.id = id
