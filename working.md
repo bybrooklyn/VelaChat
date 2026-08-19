@@ -667,3 +667,72 @@ surfaceLow/Mid/High tokens, Theme.Motion tokens, VelaIconButtonStyle
 sweep, sheet chrome unification, sidebar gutter pass, accent-as-fill
 badge rework, noticeKind-driven error tinting, provider-identity
 language unification, Radius.field token.
+
+---
+
+## Session 2026-08-19 (round 5) — usage redesign, ChatGPT provider, resilience, agentic core
+
+Interleaved build order, one commit per phase, all pushed.
+
+**Usage (a2cec17).** `ProviderKind.usageStyle` splits the popover three
+ways: subscription providers (Codex, ChatGPT) show ONLY real plan
+windows; API-key providers show local meters + live rate headers; local
+providers hide the gauge entirely. `QuotaSnapshot` is Codable and
+snapshots persist (`velachat.quota-snapshots`, 7-day prune) with an
+honest "as of" age — headers only arrive on responses, so there is no
+free refresh except ChatGPT's own probe. Local counts moved to a new
+Statistics section (the previously-dead `ProviderUsageRow`).
+
+**ChatGPT Web provider — scoped Swift port** (542e906, 6eb5646) of
+`~/data/chatgpt-web-runtime-v0.9.0`. No bun/node, no local server, no
+compat adapters. `ChatGPTWeb/`: session-cookie auth via
+`/api/auth/session` (Keychain, single-flight refresh, stable
+oai-device-id, challenge detection), account model discovery with
+reasoning efforts, sentinel-gated SSE conversation turns with
+prefix-diffed snapshots, real continuation via conversation+node
+mapping (diverged local history starts a fresh upstream conversation
+with explicit replay), stream-drop recovery from conversation state,
+stop_conversation on Stop. **Login is a WKWebView sheet on chatgpt.com**
+— a real browser context, so Cloudflare passes; cookies are read from
+the web view's own store and validated before persisting. Chat surface
+only; Work/Codex/websocket/native-tools are in ideas.md.
+
+**Resilience (d3570e1).** NWPathMonitor → `isOnline` + composer chip;
+offline sends hold their turn and fire on reconnect (10 min cap);
+transient pre-stream failures retry twice with jittered backoff; once
+any event has arrived, retries stop (replay could duplicate the turn).
+Stream idle timeouts 3600s → 180s.
+
+**AI pass (621c07d).** SystemPrompt now takes a `Context` and stamps
+date/time+timezone, model, provider, user's first name, workspace file
+listing, attachments, skills, memory count, plus preamble conventions
+and errors-are-feedback guidance. `current_datetime` retired. ask-user
+cards take 1–4 questions with header chips and recommended markers
+(legacy payloads still decode). Auto-continue on length cuts (max 2).
+Tool budget 5 → 10 with real loop detection in all three loops.
+`ToolCatalog.execute` gained a 120s timeout race and JSON-argument
+repair.
+
+**Agentic core (a3cb15f, 34a9847).** `update_plan` → live checklist
+card; `edit_file` + `search_files`; `run_command` behind
+`CommandRunner`'s deliberately conservative allowlist (only known
+read-only binaries and read-only git subcommands auto-approve —
+operators, paths, sudo, `find -exec` and anything unknown pause on an
+approval card with editable command, separate always-allow and
+explicitly-armed allow-all); conversations can adopt a **real folder**
+as workspace root (+ menu), still escape-proofed by
+`SandboxManager.resolve`. `spawn_agents` runs ≤3 parallel subagents
+with a read-only tool slice (no nesting/shell/writes/memory), off by
+default, with per-fan-out confirmation and an optional cheaper model.
+
+**Utility tools (307e7fe).** `create_schedule_item` (EventKit writes,
+SDK-verified), `system_status` (IOKit battery, disk, memory, uptime),
+`analyze_image` (Vision OCR + classification, offered only to
+non-vision models). `ideas.md` created with everything deferred.
+
+**Not done / next.** ChatGPT tool emulation, uploads, and native web
+search (P8) were the planned cut line and remain unbuilt. The ChatGPT
+provider has NOT been exercised against a live account in this session
+— sign-in, discovery, and a streamed reply still need a real run. The
+visual audit's token sweeps (surface/motion tokens, icon-button and
+sheet unification, sidebar gutters) are still outstanding from round 4.

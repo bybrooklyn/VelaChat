@@ -1,0 +1,162 @@
+import SwiftUI
+import AppKit
+import MarkdownUI
+import HighlightSwift
+
+/// Maps VelaChat's own `Theme` palette onto swift-markdown-ui's `Theme` type,
+/// so rendered responses (tables, lists, code blocks, blockquotes) read as
+/// part of the app rather than a generic document viewer dropped into it.
+extension MarkdownUI.Theme {
+    static func vela(isUser: Bool) -> MarkdownUI.Theme {
+        let bodyColor = isUser ? Color.white : Theme.text
+        let secondaryColor = isUser ? Color.white.opacity(0.75) : Theme.secondaryText
+
+        return MarkdownUI.Theme()
+            .text {
+                ForegroundColor(bodyColor)
+                FontSize(15)
+            }
+            .code {
+                FontFamilyVariant(.monospaced)
+                FontSize(.em(0.9))
+                ForegroundColor(isUser ? Color.white : Theme.accent)
+                BackgroundColor(isUser ? Color.white.opacity(0.15) : Theme.controlBackground)
+            }
+            .strong {
+                FontWeight(.semibold)
+            }
+            .link {
+                ForegroundColor(Theme.accent)
+            }
+            .heading1 { configuration in
+                configuration.label
+                    .markdownTextStyle {
+                        FontWeight(.semibold)
+                        FontSize(.em(1.4))
+                    }
+                    .markdownMargin(top: 12, bottom: 8)
+            }
+            .heading2 { configuration in
+                configuration.label
+                    .markdownTextStyle {
+                        FontWeight(.semibold)
+                        FontSize(.em(1.25))
+                    }
+                    .markdownMargin(top: 12, bottom: 8)
+            }
+            .heading3 { configuration in
+                configuration.label
+                    .markdownTextStyle {
+                        FontWeight(.semibold)
+                        FontSize(.em(1.1))
+                    }
+                    .markdownMargin(top: 10, bottom: 6)
+            }
+            .paragraph { configuration in
+                configuration.label
+                    .fixedSize(horizontal: false, vertical: true)
+                    .relativeLineSpacing(.em(0.22))
+                    .markdownMargin(top: 0, bottom: 10)
+            }
+            .blockquote { configuration in
+                HStack(spacing: 0) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(secondaryColor.opacity(0.4))
+                        .frame(width: 3)
+                    configuration.label
+                        .markdownTextStyle { ForegroundColor(secondaryColor) }
+                        .relativePadding(.horizontal, length: .em(1))
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .markdownMargin(top: 0, bottom: 10)
+            }
+            .codeBlock { configuration in
+                VelaCodeBlock(configuration: configuration, isUser: isUser)
+            }
+            .listItem { configuration in
+                configuration.label.markdownMargin(top: .em(0.25))
+            }
+            .taskListMarker { configuration in
+                Image(systemName: configuration.isCompleted ? "checkmark.square.fill" : "square")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Theme.accent, secondaryColor.opacity(0.3))
+                    .imageScale(.small)
+            }
+            .table { configuration in
+                configuration.label
+                    .fixedSize(horizontal: false, vertical: true)
+                    .markdownTableBorderStyle(.init(color: secondaryColor.opacity(0.25)))
+                    .markdownTableBackgroundStyle(
+                        .alternatingRows(Color.clear, secondaryColor.opacity(0.06))
+                    )
+                    .markdownMargin(top: 0, bottom: 10)
+            }
+            .tableCell { configuration in
+                configuration.label
+                    .markdownTextStyle {
+                        if configuration.row == 0 { FontWeight(.semibold) }
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 10)
+            }
+            .thematicBreak {
+                Divider()
+                    .overlay(secondaryColor.opacity(0.3))
+                    .markdownMargin(top: 12, bottom: 12)
+            }
+    }
+}
+
+private struct VelaCodeBlock: View {
+    let configuration: CodeBlockConfiguration
+    let isUser: Bool
+    @State private var copied = false
+
+    private var languageLabel: String {
+        guard let language = configuration.language, !language.isEmpty else { return "Code" }
+        return language.capitalized
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(languageLabel)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.tertiaryText)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(configuration.content, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(copied ? Theme.success : Theme.tertiaryText)
+                .help(copied ? "Copied" : "Copy code")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                CodeText(configuration.content)
+                    .codeTextStyle(.plain)
+                    .codeTextColors(.theme(.xcode))
+                    .highlightMode(configuration.language.map { .languageAlias($0) } ?? .automatic)
+                    .font(.system(.callout, design: .monospaced))
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
+            }
+        }
+        .background(Theme.controlBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
+        }
+        .markdownMargin(top: 4, bottom: 10)
+    }
+}

@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:unsloth fork}",
+            "name": "Debug VelaChat",
+            "target": "VelaChat",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug VelaChat"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:unsloth fork}",
+            "name": "Release VelaChat",
+            "target": "VelaChat",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release VelaChat"
+        }
+    ]
+}
