@@ -106,6 +106,11 @@ struct ChatView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 composer
             }
+            // macOS 26 draws an automatic blur band where scroll content
+            // meets the titlebar. With a transparent titlebar and no
+            // toolbar that reads as a stray frosted strip across the top,
+            // so the transcript opts out of it explicitly.
+            .scrollEdgeEffectHidden(true, for: .top)
             .onChange(of: appModel.activeConversation?.messages.count ?? 0) { _, _ in
                 scrollToLast(proxy)
             }
@@ -125,26 +130,6 @@ struct ChatView: View {
                 guard now.timeIntervalSince(lastScrollAt) > 0.03 else { return }
                 lastScrollAt = now
                 scrollToLast(proxy, animated: false)
-            }
-            .overlay(alignment: .topLeading) {
-                if appModel.sidebarVisibility == .detailOnly {
-                    Button {
-                        appModel.toggleSidebar()
-                    } label: {
-                        Image(systemName: "sidebar.leading")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Theme.secondaryText)
-                            .padding(8)
-                            .glassChip(in: Circle())
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Show Sidebar")
-                    // Clears the traffic-light zone in windowed mode.
-                    .padding(.leading, 16)
-                    .padding(.top, chrome.isFullScreen ? 10 : 34)
-                    .transition(.opacity)
-                }
             }
             .overlay {
                 if let approval = appModel.pendingApproval,

@@ -31,11 +31,13 @@ struct RootView: View {
                 // SidebarView's own GeometryReader) and using that as next
                 // launch's starting point instead of always resetting to 274.
                 .navigationSplitViewColumnWidth(
-                    min: 220,
-                    ideal: UserDefaults.standard.double(forKey: "velachat.sidebar-width").rounded() > 0
-                        ? UserDefaults.standard.double(forKey: "velachat.sidebar-width")
-                        : 274,
-                    max: 420
+                    min: appModel.isSidebarRail ? AppModel.sidebarRailWidth : 220,
+                    ideal: appModel.isSidebarRail
+                        ? AppModel.sidebarRailWidth
+                        : (UserDefaults.standard.double(forKey: "velachat.sidebar-width").rounded() > 0
+                            ? UserDefaults.standard.double(forKey: "velachat.sidebar-width")
+                            : 274),
+                    max: appModel.isSidebarRail ? AppModel.sidebarRailWidth : 420
                 )
         } detail: {
             detail

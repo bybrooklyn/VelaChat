@@ -97,7 +97,7 @@ final class ProviderStore {
         recentModelKeys = defaults.stringArray(forKey: "velachat.model-recents") ?? []
         let loadedProfiles: [ProviderProfile]
         if let data = defaults.data(forKey: profilesKey),
-           let saved = try? JSONDecoder().decode([ProviderProfile].self, from: data),
+           let saved = Self.decodeProfiles(data),
            !saved.isEmpty {
             loadedProfiles = saved
         } else {
@@ -140,6 +140,21 @@ final class ProviderStore {
         Task { [weak self] in self?.primeKeyCache() }
     }
 
+    /// Retiring a `ProviderKind` case (Preview) would otherwise make the
+    /// whole saved array fail to decode, silently wiping every custom
+    /// endpoint and key binding the user had. Unknown kinds are dropped
+    /// individually instead.
+    private static func decodeProfiles(_ data: Data) -> [ProviderProfile]? {
+        if let decoded = try? JSONDecoder().decode([ProviderProfile].self, from: data) {
+            return decoded
+        }
+        guard var array = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        let known = Set(ProviderKind.allCases.map(\.rawValue))
+        array.removeAll { !known.contains(($0["kind"] as? String) ?? "") }
+        guard let cleaned = try? JSONSerialization.data(withJSONObject: array) else { return nil }
+        return try? JSONDecoder().decode([ProviderProfile].self, from: cleaned)
+    }
+
     var selected: ProviderProfile? {
         profiles.first { $0.id == selectedID }
     }
@@ -154,11 +169,10 @@ final class ProviderStore {
         hasKeyByID[id] ?? false
     }
 
-    /// True once at least one real (non-Preview) provider is actually usable:
-    /// a hosted provider with a stored key, or a local server that has really
+    /// True once at least one provider is actually usable: a hosted
+    /// provider with a stored key, or a local server that has really
     /// answered with a model catalog. A keyless local provider that isn't
-    /// running must not count, or Preview would vanish on a fresh install and
-    /// leave the app with nothing that works.
+    /// running must not count.
     var hasConfiguredRealProvider: Bool {
         profiles.contains(where: isConfigured)
     }
@@ -170,7 +184,6 @@ final class ProviderStore {
     /// local provider that isn't running must not count, or it would show
     /// as "configured" with nothing behind it.
     func isConfigured(_ profile: ProviderProfile) -> Bool {
-        guard profile.kind != .preview else { return false }
         if profile.kind == .appleIntelligence {
             return UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled") && AppleIntelligence.isAvailable
         }
@@ -213,7 +226,8 @@ final class ProviderStore {
         didStartDiscovery = true
 
         let hasExplicitChoice = defaults.bool(forKey: explicitSelectionKey)
-        guard !hasExplicitChoice, selected?.kind == .preview else {
+        let currentIsUsable = selected.map(isConfigured) ?? false
+        guard !hasExplicitChoice, !currentIsUsable else {
             discoverIfNeeded(id: selectedID)
             return
         }
@@ -223,15 +237,15 @@ final class ProviderStore {
             return
         }
         if let configured = profiles.first(where: { profile in
-            profile.kind != .preview && hasStoredKey(for: profile.id)
+            hasStoredKey(for: profile.id)
         }) {
             select(configured.id)
             return
         }
         // Try local servers first (if one's actually running, nothing leaves
-        // this Mac), then a keyless remote fallback like blockrun.ai — a real
-        // working connection beats leaving a fresh install on canned Preview
-        // replies.
+        // this Mac), then the keyless blockrun.ai fallback. There is no
+        // canned-reply provider to fall back to any more, so a fresh
+        // install must land on something that genuinely answers.
         let autoTryProfiles = profiles.filter { $0.kind.isLocal } + profiles.filter { $0.kind == .blockrun }
         if !autoTryProfiles.isEmpty {
             Task { [weak self] in
@@ -261,14 +275,7 @@ final class ProviderStore {
     }
 
     func discoverIfNeeded(id: UUID) {
-        guard let profile = profile(id: id), profile.kind != .preview else {
-            if profile(id: id)?.kind == .preview {
-                modelsByID[id] = [RemoteModel(id: "preview", name: "Preview", supportsReasoning: false)]
-                refreshedAtByID[id] = Date()
-                statusByID[id] = .connected("Offline preview")
-            }
-            return
-        }
+        guard profile(id: id) != nil else { return }
         selectRecommendedModelIfNeeded(id: id)
         let isFresh = refreshedAtByID[id].map { Date().timeIntervalSince($0) < refreshInterval } ?? false
         guard !isFresh else { return }
@@ -276,8 +283,8 @@ final class ProviderStore {
     }
 
     func ensureReady(id: UUID) async -> ProviderProfile? {
-        guard let profile = profile(id: id) else { return nil }
-        if profile.kind != .preview, modelsByID[id] == nil || statusByID[id].map(isFailed) == true {
+        guard profile(id: id) != nil else { return nil }
+        if modelsByID[id] == nil || statusByID[id].map(isFailed) == true {
             await discoveryTask(for: id).value
         }
         return self.profile(id: id)
@@ -464,10 +471,6 @@ final class ProviderStore {
 
     func test(id: UUID) async {
         guard let profile = profile(id: id) else { return }
-        if profile.kind == .preview {
-            statusByID[id] = .connected("Offline preview ready")
-            return
-        }
         if profile.kind == .appleIntelligence {
             await refreshModels(id: id, autoSelect: true)
             return
@@ -520,12 +523,7 @@ final class ProviderStore {
     }
 
     func refreshModels(id: UUID, autoSelect: Bool = true) async {
-        guard let profile = profile(id: id), profile.kind != .preview, profile.kind != .appleIntelligence else {
-            if profile(id: id)?.kind == .preview {
-                modelsByID[id] = [RemoteModel(id: "preview", name: "Preview")]
-                refreshedAtByID[id] = Date()
-                statusByID[id] = .connected("Offline preview ready")
-            }
+        guard let profile = profile(id: id), profile.kind != .appleIntelligence else {
             if profile(id: id)?.kind == .appleIntelligence {
                 if !UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled") {
                     modelsByID[id] = []
@@ -610,6 +608,19 @@ final class ProviderStore {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             return try await attempt()
         }
+    }
+
+    /// Fresh quota headers for the usage gauge. Only providers with a key
+    /// (or a keyless endpoint) are probed — never a provider that would
+    /// just 401, and never a local one where quota is meaningless.
+    func refreshQuotaHeaders(for id: UUID, apply: @MainActor @escaping (QuotaSnapshot) -> Void) async {
+        guard let profile = profile(id: id), !profile.kind.isLocal else { return }
+        if profile.kind.requiresKey, !isConfigured(profile) { return }
+        guard let snapshot = await CompatibleChatClient.shared.probeQuotaHeaders(
+            profile: profile,
+            credential: credential(for: profile)
+        ) else { return }
+        apply(snapshot)
     }
 
     func saveProfiles() {

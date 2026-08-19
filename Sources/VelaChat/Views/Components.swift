@@ -213,6 +213,10 @@ struct ModelPickerButton: View {
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .contentTransition(.opacity)
+                    // A stable floor so the control doesn't visibly shrink
+                    // and grow as the label resolves from "Finding a
+                    // model…" to a real ID.
+                    .frame(minWidth: 78, alignment: .leading)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Theme.tertiaryText)
@@ -441,11 +445,11 @@ private struct ModelPaletteView: View {
     @State private var query = ""
 
     private var groupProfiles: [ProviderProfile] {
-        let configured = appModel.providers.profiles.filter { $0.kind != .preview && appModel.providers.isConfigured($0) }
-        if configured.isEmpty, let preview = appModel.providers.profiles.first(where: { $0.kind == .preview }) {
-            return [preview]
-        }
-        return configured
+        // Every provider is listed, configured or not — the picker's job
+        // is to show what you could switch to, and an unconfigured row
+        // still explains what it needs.
+        let configured = appModel.providers.profiles.filter { appModel.providers.isConfigured($0) }
+        return configured.isEmpty ? appModel.providers.profiles : configured
     }
 
     private func filteredModels(for profile: ProviderProfile) -> [RemoteModel] {
@@ -670,7 +674,7 @@ private struct ModelPaletteGroup: View {
             // reachable for the rare case a catalog genuinely needs a
             // forced re-fetch.
             .contextMenu {
-                if profile.kind != .preview {
+                if true {
                     Button {
                         Task { await appModel.providers.refreshModels(id: profile.id) }
                     } label: {

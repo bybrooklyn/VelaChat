@@ -20,22 +20,12 @@ struct SidebarView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            sidebarHeader
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .padding(.bottom, 12)
-
-            topActionsRow
-                .padding(.horizontal, 10)
-                .padding(.bottom, 14)
-
-            conversationList
-
-            settingsFooter
-                .padding(.horizontal, 10)
-                .padding(.top, 8)
-                .padding(.bottom, 12)
+        Group {
+            if appModel.isSidebarRail {
+                railBody
+            } else {
+                expandedBody
+            }
         }
         .sidebarMaterial(tint: Theme.sidebarBackground)
         // No custom divider here — `NavigationSplitView` (RootView.swift)
@@ -65,6 +55,136 @@ struct SidebarView: View {
         }
     }
 
+    private var expandedBody: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sidebarHeader
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+                .padding(.bottom, 12)
+
+            topActionsRow
+                .padding(.horizontal, 10)
+                .padding(.bottom, 14)
+
+            conversationList
+
+            settingsFooter
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+        }
+    }
+
+    /// The narrow state: the same actions as icons with tooltips, plus the
+    /// most recent conversations as compact glyphs, so you can still switch
+    /// chats without expanding. The toggle keeps its exact shape and place
+    /// in both states — it is the one control that must never move.
+    private var railBody: some View {
+        VStack(spacing: 8) {
+            sidebarToggleButton
+                .padding(.top, 10)
+
+            railButton(symbol: "square.and.pencil", help: "New Chat (⌘N)", tint: Theme.accentStrong) {
+                _ = appModel.newConversation()
+                appModel.section = .chat
+            }
+            railButton(symbol: "magnifyingglass", help: "Search conversations (⇧⌘F)") {
+                appModel.toggleSidebar()
+                DispatchQueue.main.async {
+                    isSearchExpanded = true
+                    searchFocused = true
+                }
+            }
+            UsageGaugeButton()
+
+            Divider()
+                .padding(.horizontal, 12)
+
+            ScrollView {
+                VStack(spacing: 5) {
+                    ForEach(orderedConversations.prefix(14)) { conversation in
+                        railConversationButton(conversation)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+
+            Spacer(minLength: 0)
+
+            railButton(symbol: "gearshape", help: "Settings (⌘,)") {
+                appModel.section = .settings
+            }
+            .padding(.bottom, 12)
+        }
+        .frame(width: AppModel.sidebarRailWidth)
+    }
+
+    private func railButton(
+        symbol: String,
+        help: String,
+        tint: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint == nil ? Theme.secondaryText : Theme.accentForeground)
+                .frame(width: 34, height: 34)
+                .background(
+                    tint ?? Theme.controlBackground.opacity(0.75),
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                        .stroke(Theme.controlStroke.opacity(tint == nil ? 0.6 : 0), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    /// One conversation as a glyph. The title lives in the tooltip, and
+    /// the active chat keeps the same accent treatment its full row has.
+    private func railConversationButton(_ conversation: Conversation) -> some View {
+        let selected = appModel.activeConversationID == conversation.id
+        return Button {
+            appModel.selectConversation(conversation)
+        } label: {
+            Image(systemName: conversation.isPinned ? "pin.fill" : (conversation.realMessages.isEmpty ? "bubble.left" : "text.bubble"))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(selected ? Theme.accent : Theme.tertiaryText)
+                .frame(width: 34, height: 30)
+                .background(
+                    selected ? Theme.sidebarSelection.opacity(0.55) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(conversation.title)
+    }
+
+    /// Shared by both states so the control is literally the same view —
+    /// same size, same chrome, same position at the top of the sidebar.
+    private var sidebarToggleButton: some View {
+        Button {
+            appModel.toggleSidebar()
+        } label: {
+            Image(systemName: appModel.isSidebarRail ? "sidebar.leading" : "sidebar.left")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.secondaryText)
+                .frame(width: 28, height: 28)
+                .background(Theme.controlBackground.opacity(0.75), in: Circle())
+                .overlay {
+                    Circle().stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1)
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(appModel.isSidebarRail ? "Expand Sidebar" : "Collapse to Icons")
+    }
+
     /// Brand only. The new-chat action used to be crammed into this row right
     /// beside the system sidebar-toggle button, which made the whole corner
     /// read as two colliding buttons — it now has its own full-width row.
@@ -81,18 +201,9 @@ struct SidebarView: View {
             }
             Spacer(minLength: 0)
             // The app's own sidebar toggle, opposite the wordmark — the
-            // system toolbar (and its long band) is hidden entirely.
-            Button {
-                appModel.toggleSidebar()
-            } label: {
-                Image(systemName: "sidebar.leading")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.secondaryText)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Hide Sidebar")
+            // system toolbar (and its long band) is hidden entirely. Same
+            // view the rail uses, so it keeps its shape across states.
+            sidebarToggleButton
         }
     }
 

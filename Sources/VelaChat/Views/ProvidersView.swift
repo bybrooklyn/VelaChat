@@ -178,7 +178,7 @@ struct ProviderEditorView: View {
                         Image(systemName: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
-                    .disabled(appModel.providers.status(for: profile.id) == .connecting || profile.kind == .preview)
+                    .disabled(appModel.providers.status(for: profile.id) == .connecting)
                 }
                 if profile.kind == .compatible {
                     TextField("Optional model override", text: $model)
@@ -430,11 +430,6 @@ struct ProviderEditorView: View {
         case .compatible:
             Section("Compatible endpoint") {
                 Text("Works with vLLM, llama.cpp server, LiteLLM, Jan, TGI, and anything else implementing POST /chat/completions — the same format the hosted providers above use.")
-                    .foregroundStyle(Theme.secondaryText)
-            }
-        case .preview:
-            Section("Preview") {
-                Text("Preview replies are generated locally so the interface can be explored without an account or server. It disappears from this list once you configure a real provider.")
                     .foregroundStyle(Theme.secondaryText)
             }
         }

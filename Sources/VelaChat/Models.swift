@@ -109,7 +109,6 @@ enum NativeWebSearch {
 }
 
 enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
-    case preview = "Preview"
     case appleIntelligence = "Apple Intelligence"
     case openAI = "OpenAI"
     case anthropic = "Anthropic"
@@ -132,7 +131,6 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// Brand color, used for the logo tile and any accenting.
     var tint: Color {
         switch self {
-        case .preview: Theme.accent
         case .appleIntelligence: Color(hex: 0xE8E4F0)
         case .openAI, .codex, .chatGPT: Color(hex: 0x10A37F)
         case .anthropic: Color(hex: 0xD97757)
@@ -152,7 +150,6 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var shortDescription: String {
         switch self {
-        case .preview: "Offline sample replies"
         case .appleIntelligence: "On-device Apple Intelligence — private, free, works offline"
         case .openAI: "OpenAI’s own API — the OpenAI-compatible standard"
         case .anthropic: "Claude, via Anthropic’s native Messages API"
@@ -175,7 +172,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// Every hosted provider here speaks the same `/chat/completions` shape
     /// that OpenAI defined — surfaced in the UI so the relationship between
     /// "OpenAI" and "OpenAI Compatible" reads as one family, not two ideas.
-    var speaksOpenAIProtocol: Bool { self != .preview && self != .codex && self != .appleIntelligence && self != .chatGPT }
+    var speaksOpenAIProtocol: Bool { self != .codex && self != .appleIntelligence && self != .chatGPT }
 
     var isLocal: Bool { self == .ollama || self == .lmStudio || self == .appleIntelligence }
 
@@ -187,7 +184,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     var usageStyle: UsageStyle {
         switch self {
         case .codex, .chatGPT: .subscription
-        case .ollama, .lmStudio, .preview, .appleIntelligence: .local
+        case .ollama, .lmStudio, .appleIntelligence: .local
         default: .metered
         }
     }
@@ -210,7 +207,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .ollama: "ollama.com"
         case .lmStudio: "lmstudio.ai"
         case .blockrun: "blockrun.ai"
-        case .preview, .compatible, .appleIntelligence: nil
+        case .compatible, .appleIntelligence: nil
         }
     }
 
@@ -227,7 +224,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     var requiresKey: Bool {
         switch self {
         // ChatGPT signs in with a browser session, never an API key.
-        case .preview, .ollama, .lmStudio, .blockrun, .appleIntelligence, .chatGPT: false
+        case .ollama, .lmStudio, .blockrun, .appleIntelligence, .chatGPT: false
         default: true
         }
     }
@@ -247,7 +244,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .ollama: URL(string: "https://ollama.com")
         case .lmStudio: URL(string: "https://lmstudio.ai")
         case .blockrun: URL(string: "https://blockrun.ai")
-        case .preview, .compatible, .appleIntelligence, .chatGPT: nil
+        case .compatible, .appleIntelligence, .chatGPT: nil
         }
     }
 
@@ -255,7 +252,6 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// Normal operation always replaces this with a live discovered model.
     var automaticFallbackModel: String {
         switch self {
-        case .preview: "preview"
         case .appleIntelligence: "on-device"
         case .openAI: "gpt-5.6-terra"
         case .anthropic: "claude-sonnet-5"
@@ -303,7 +299,6 @@ struct ProviderProfile: Identifiable, Codable, Equatable, Sendable {
 
     static func defaults() -> [ProviderProfile] {
         [
-            ProviderProfile(kind: .preview, name: "Preview", endpoint: "preview://local", model: "preview"),
             ProviderProfile(kind: .appleIntelligence, name: "Apple Intelligence", endpoint: "appleintelligence://local", model: "on-device"),
             ProviderProfile(kind: .openAI, name: "OpenAI", endpoint: "https://api.openai.com/v1"),
             ProviderProfile(kind: .anthropic, name: "Anthropic", endpoint: "https://api.anthropic.com/v1"),
@@ -491,7 +486,7 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
             hasProviderSignal = lowerID.contains("gemini-3") || lowerID.contains("thinking")
         case .xai:
             hasProviderSignal = lowerID.contains("grok-4") || lowerID.contains("grok-3-mini")
-        case .openRouter, .compatible, .preview, .groq, .mistral, .perplexity, .blockrun:
+        case .openRouter, .compatible, .groq, .mistral, .perplexity, .blockrun:
             hasProviderSignal = false
         }
 
@@ -517,7 +512,7 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
             return [.auto, .off, .low, .medium, .high, .extraHigh, .max]
         case .openRouter, .compatible, .anthropic, .google, .xai, .blockrun:
             return [.auto, .off, .low, .medium, .high]
-        case .preview, .groq, .mistral, .perplexity, .chatGPT:
+        case .groq, .mistral, .perplexity, .chatGPT:
             return [.auto]
         }
     }
@@ -686,7 +681,7 @@ enum ModelCatalog {
         case .perplexity:
             if lower.contains("sonar-pro") { score += 100 }
             else if lower.contains("sonar") { score += 80 }
-        case .groq, .mistral, .compatible, .preview:
+        case .groq, .mistral, .compatible:
             break
         }
         return score

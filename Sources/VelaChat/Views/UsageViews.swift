@@ -9,8 +9,11 @@ struct UsageGaugeButton: View {
     @State private var isPresented = false
 
     var body: some View {
-        if appModel.selectedProvider?.kind.usageStyle != ProviderKind.UsageStyle.local {
+        if let provider = appModel.selectedProvider, provider.kind.usageStyle != ProviderKind.UsageStyle.local {
             Button {
+                // A click always wants current numbers, staleness window
+                // or not.
+                appModel.refreshQuota(for: provider, force: true)
                 isPresented.toggle()
             } label: {
                 Image(systemName: "gauge.with.needle")
@@ -27,6 +30,13 @@ struct UsageGaugeButton: View {
             }
             .buttonStyle(.plain)
             .help("Usage for the current provider")
+            // Hovering starts the refresh so the numbers are already
+            // current by the time the popover opens. Debounced by
+            // staleness inside `refreshQuota`, so repeated hovers are free.
+            .onHover { hovering in
+                guard hovering else { return }
+                appModel.refreshQuota(for: provider)
+            }
             .popover(isPresented: $isPresented, arrowEdge: .bottom) {
                 UsagePopover()
             }
@@ -70,8 +80,8 @@ struct UsagePopover: View {
         .padding(14)
         .frame(width: 300)
         .task {
-            if let provider = appModel.selectedProvider, provider.kind == .chatGPT {
-                await appModel.refreshChatGPTQuota(provider.id)
+            if let provider = appModel.selectedProvider {
+                appModel.refreshQuota(for: provider, force: true)
             }
         }
     }

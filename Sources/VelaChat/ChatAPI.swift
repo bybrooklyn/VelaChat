@@ -48,6 +48,23 @@ final class CompatibleChatClient: @unchecked Sendable {
         }
     }
 
+    /// Reads rate-limit/quota headers without decoding a catalog. There is
+    /// no read-only usage endpoint on these providers, so the only honest
+    /// way to get fresh numbers is to make a real request and look at what
+    /// comes back — `/models` is the cheapest one that exists everywhere,
+    /// and the app already calls it routinely for discovery.
+    func probeQuotaHeaders(profile: ProviderProfile, credential: ProviderCredential) async -> QuotaSnapshot? {
+        guard profile.kind.speaksOpenAIProtocol || profile.kind == .anthropic else { return nil }
+        guard let url = try? endpointURL(profile: profile, path: "models") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        addHeaders(to: &request, profile: profile, credential: credential)
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse else { return nil }
+        return QuotaSnapshot(headers: http.allHeaderFields)
+    }
+
     func fetchModels(profile: ProviderProfile, credential: ProviderCredential) async throws -> [RemoteModel] {
         if profile.kind == .codex && credential.isCodexOAuth {
             return ModelCatalog.curated(for: .codex)
@@ -609,7 +626,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         // their own thinking/reasoning shape, so this generic mapping is
         // never consulted for them. Perplexity and Preview don't take a
         // reasoning parameter at all.
-        case .codex, .preview, .perplexity, .anthropic:
+        case .codex, .perplexity, .anthropic:
             return RequestSettings(reasoningEffort: nil, reasoning: nil, thinking: nil, think: nil)
         }
     }
@@ -630,7 +647,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 request.setValue(token, forHTTPHeaderField: "x-api-key")
             }
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        } else if !profile.kind.isLocal, profile.kind != .preview, let token = credential.token, !token.isEmpty {
+        } else if !profile.kind.isLocal, let token = credential.token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         if profile.kind == .codex, let accountID = credential.accountID {
@@ -1670,27 +1687,6 @@ enum APIError: Error, LocalizedError {
     }
 }
 
-// MARK: - Offline preview
-
-enum PreviewResponder {
-    static func stream(for prompt: String, model: String, emit: @escaping @MainActor (String) -> Void) async throws {
-        let response: String
-        let lower = prompt.lowercased()
-        if lower.contains("hello") || lower == "hi" {
-            response = "Hey — this is the offline Preview provider. Pick DeepSeek, OpenRouter, Ollama, OpenAI, or any compatible endpoint in Settings when you’re ready to use a real model."
-        } else if lower.contains("provider") || lower.contains("connect") {
-            response = "Chat keeps each provider separate. Your keys live in macOS Keychain, while endpoints and model names stay in your local settings. Try Ollama for a private local model, DeepSeek for a fast hosted API, or OpenRouter when you want a live model catalog."
-        } else {
-            response = "I’m the local preview response for “\(prompt)”. Connect a provider from Settings to stream a real answer into this conversation."
-        }
-        let words = response.split(separator: " ", omittingEmptySubsequences: true)
-        for (index, word) in words.enumerated() {
-            try Task.checkCancellation()
-            await emit(String(word) + (index == words.count - 1 ? "" : " "))
-            try await Task.sleep(nanoseconds: UInt64.random(in: 16_000_000...44_000_000))
-        }
-    }
-}
 
 /// Sums token usage across the rounds of one reply's tool loop. Within a
 /// single round providers report cumulative totals for that request (so

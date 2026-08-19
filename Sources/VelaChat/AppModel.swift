@@ -83,6 +83,12 @@ final class AppModel {
     /// (sidebar header + floating chip) fully replaces the system toolbar
     /// button — the toolbar band itself is hidden.
     var sidebarVisibility: NavigationSplitViewVisibility = .all
+    /// Narrow icon-rail mode instead of a full collapse. Persisted.
+    var isSidebarRail = false {
+        didSet { UserDefaults.standard.set(isSidebarRail, forKey: "velachat.sidebar-rail") }
+    }
+    /// Fixed rail width — also the column width while railed.
+    static let sidebarRailWidth: CGFloat = 60
     /// The accent hue, observable so picking a swatch actually repaints the
     /// app (Theme reads UserDefaults statically and can't notify anyone) —
     /// RootView re-renders on change via .id.
@@ -285,6 +291,39 @@ final class AppModel {
         quotaByProvider[providerID] = snapshot
     }
 
+    private var quotaRefreshTasks: [UUID: Task<Void, Never>] = [:]
+
+    /// Lazy quota refresh, triggered by hovering or opening the gauge.
+    /// Debounced by staleness so hovering repeatedly costs nothing, and
+    /// deduplicated so a hover already in flight isn't started twice.
+    /// `force` (a click) ignores the staleness window but not the dedupe.
+    func refreshQuota(for provider: ProviderProfile, force: Bool = false) {
+        let staleAfter: TimeInterval = force ? 0 : 120
+        if let existing = quotaByProvider[provider.id],
+           Date().timeIntervalSince(existing.capturedAt) < staleAfter {
+            return
+        }
+        guard quotaRefreshTasks[provider.id] == nil else { return }
+        quotaRefreshTasks[provider.id] = Task { [weak self] in
+            defer { self?.quotaRefreshTasks[provider.id] = nil }
+            guard let self else { return }
+            switch provider.kind {
+            case .chatGPT:
+                await self.refreshChatGPTQuota(provider.id)
+            case .ollama, .lmStudio, .appleIntelligence:
+                return  // nothing to ask, nothing to spend
+            default:
+                // No usage endpoint exists for these — the only honest way
+                // to get fresh numbers is a real request whose headers we
+                // read. A catalog fetch is the cheapest one available and
+                // is something the app already does routinely.
+                await self.providers.refreshQuotaHeaders(for: provider.id) { [weak self] snapshot in
+                    self?.quotaByProvider[provider.id] = snapshot
+                }
+            }
+        }
+    }
+
     private func restoreQuotaSnapshots() {
         guard let data = UserDefaults.standard.data(forKey: "velachat.quota-snapshots"),
               let saved = try? JSONDecoder().decode([UUID: QuotaSnapshot].self, from: data) else { return }
@@ -375,6 +414,7 @@ final class AppModel {
             isHoverTimestampsEnabled = UserDefaults.standard.bool(forKey: "velachat.hover-timestamps-enabled")
         }
         isAppleIntelligenceEnabled = UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled")
+        isSidebarRail = UserDefaults.standard.bool(forKey: "velachat.sidebar-rail")
         restoreQuotaSnapshots()
         if UserDefaults.standard.object(forKey: "velachat.agent-tools-enabled") != nil {
             isAgentToolsEnabled = UserDefaults.standard.bool(forKey: "velachat.agent-tools-enabled")
@@ -843,9 +883,15 @@ final class AppModel {
         hasOnboarded = false
     }
 
+    /// The sidebar never fully collapses any more — it narrows to an icon
+    /// rail. Besides being easier to get back from, this keeps
+    /// `NavigationSplitView`'s column alive: a real collapse made it
+    /// re-install its toolbar, which left a blurred band across the
+    /// titlebar that survived until relaunch.
     func toggleSidebar() {
-        withAnimation(.easeOut(duration: 0.2)) {
-            sidebarVisibility = sidebarVisibility == .detailOnly ? .all : .detailOnly
+        withAnimation(.easeOut(duration: 0.24)) {
+            isSidebarRail.toggle()
+            sidebarVisibility = .all
         }
     }
 
@@ -938,7 +984,7 @@ final class AppModel {
     /// "already custom" and "exactly two messages" guards, since an explicit
     /// user request should always run regardless of how the title got there.
     func regenerateTitle(for conversation: Conversation) {
-        guard let profile = providers.selected, profile.kind != .preview else {
+        guard let profile = providers.selected else {
             postNotice("Choose a provider first.", to: conversation)
             return
         }
@@ -1016,7 +1062,7 @@ final class AppModel {
         // regenerate silently and permanently forgot the user's manual
         // title even though nothing else changed.
         guard force || (isAutoTitleEnabled && !conversation.titleIsCustom && conversation.realMessages.count == 2),
-              profile.kind != .preview else { return }
+              true else { return }
         guard let firstUser = conversation.messages.first(where: { $0.role == "user" }),
               let firstAssistant = conversation.messages.first(where: { $0.role == "assistant" }),
               !firstAssistant.content.isEmpty else { return }
@@ -1376,7 +1422,7 @@ final class AppModel {
             section = .settings
             return
         }
-        if profile.kind != .preview && !providers.hasDiscoveredModels(for: profile.id) {
+        if !providers.hasDiscoveredModels(for: profile.id) {
             guard !pendingDiscoverySends.contains(profile.id) else {
                 restoreOnBail()
                 return
@@ -1420,7 +1466,7 @@ final class AppModel {
             // A real title starts generating NOW, in parallel with the
             // reply, from the user's message alone — it typically lands in
             // the sidebar while the reply is still streaming.
-            if isAutoTitleEnabled, profile.kind != .preview, !text.isEmpty {
+            if isAutoTitleEnabled, !text.isEmpty {
                 generateInstantTitle(for: conversation, userText: text, profile: profile)
             }
         }
@@ -1721,12 +1767,7 @@ final class AppModel {
                 }
             }
             do {
-                if profile.kind == .preview {
-                    try await PreviewResponder.stream(for: text, model: model) { [weak self, weak conversation] token in
-                        guard let self, let conversation else { return }
-                        self.enqueue(.text(token), for: assistantID, conversation: conversation)
-                    }
-                } else if profile.kind == .appleIntelligence {
+                if profile.kind == .appleIntelligence {
                     try await AppleIntelligence.streamChat(messages: finalMessages) { [weak self, weak conversation] delta in
                         Task { @MainActor [weak self, weak conversation] in
                             guard let self, let conversation else { return }
@@ -1781,15 +1822,25 @@ final class AppModel {
                                 if !batch.isEmpty {
                                     self?.apply(batch, to: conversation, assistantID: assistantID)
                                 }
+                                // Only worth mentioning once it actually
+                                // worked — and as one line, not one per try.
+                                self?.noteRetrySummary(attempts: attempt, to: conversation, assistantID: assistantID)
                                 break
                             } catch is CancellationError {
                                 throw CancellationError()
                             } catch where !deliveredEvents && attempt < 2 && Self.isTransientFailure(error) {
                                 attempt += 1
                                 let delay = Double(attempt * attempt) * 2 + Double.random(in: 0...0.5)
-                                self?.postRetryNote("Connection hiccup — retrying in \(Int(delay))s", to: conversation, assistantID: assistantID,
-                                                    finish: "Retried after a transient failure")
                                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                            } catch {
+                                // Retries exhausted (or the failure was never
+                                // retryable). This MUST reach the user as a
+                                // real error — a silently empty reply after
+                                // two invisible retries is the worst
+                                // possible outcome.
+                                throw attempt > 0
+                                    ? APIError.message("\(error.localizedDescription) (after \(attempt) automatic \(attempt == 1 ? "retry" : "retries"))")
+                                    : error
                             }
                         }
                         // Auto-continue: only on a provider-reported length
@@ -1925,6 +1976,18 @@ final class AppModel {
         record.isRunning = true
         enqueue(.activity(record), for: assistantID, conversation: conversation)
         enqueue(.activityUpdate(id: record.id, result: finish, isError: false), for: assistantID, conversation: conversation)
+    }
+
+    /// One line for a whole retry sequence rather than a stack of notes:
+    /// a reply that limped through three attempts should read as "this
+    /// connection is flaky", not as three separate events.
+    private func noteRetrySummary(attempts: Int, to conversation: Conversation, assistantID: UUID) {
+        guard attempts > 0 else { return }
+        let label = attempts == 1 ? "Retried once — connection unstable" : "Retried \(attempts) times — connection unstable"
+        var record = ActivityRecord(id: UUID(), kind: .note, toolName: "note", argument: label)
+        record.isRunning = false
+        record.result = "The provider or network failed before the reply started; VelaChat retried automatically."
+        enqueue(.activity(record), for: assistantID, conversation: conversation)
     }
 
     func stopGeneration(for conversation: Conversation? = nil) {
@@ -2283,7 +2346,7 @@ final class AppModel {
     /// touched or hidden, only left out of future request payloads.
     func compactConversation(_ conversation: Conversation, isAutomatic: Bool = false) {
         guard !compactingConversationIDs.contains(conversation.id) else { return }
-        guard let providerID = conversation.providerID, let profile = providers.profile(id: providerID), profile.kind != .preview else {
+        guard let providerID = conversation.providerID, let profile = providers.profile(id: providerID) else {
             if !isAutomatic { postNotice("Choose a real provider before compacting.", to: conversation) }
             return
         }
@@ -2386,7 +2449,7 @@ final class AppModel {
     /// the "older" portion. Copied to the clipboard rather than written
     /// into the conversation, since the whole point is to leave with you.
     func generateHandoffDocument(for conversation: Conversation) {
-        guard let providerID = conversation.providerID, let profile = providers.profile(id: providerID), profile.kind != .preview else {
+        guard let providerID = conversation.providerID, let profile = providers.profile(id: providerID) else {
             postNotice("Choose a real provider before generating a handoff.", to: conversation)
             return
         }

@@ -167,6 +167,20 @@ private struct WindowConfigurator: NSViewRepresentable {
                     (notification.object as? NSWindow)?.toolbar = nil
                 }
             })
+            // NavigationSplitView also re-installs its toolbar when the
+            // sidebar column resizes past certain thresholds, which left a
+            // blurred band across the titlebar that survived until
+            // relaunch. Same one-shot response as the fullscreen
+            // transitions — still not the didUpdate loop AGENTS.md warns
+            // about.
+            tokens.append(center.addObserver(
+                forName: NSWindow.didResizeNotification, object: window, queue: .main
+            ) { notification in
+                MainActor.assumeIsolated {
+                    guard let window = notification.object as? NSWindow, window.toolbar != nil else { return }
+                    window.toolbar = nil
+                }
+            })
         }
 
         deinit {

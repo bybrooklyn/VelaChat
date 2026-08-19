@@ -608,7 +608,7 @@ struct SettingsView: View {
     private var visibleProfiles: [ProviderProfile] {
         appModel.providers.profiles.filter { profile in
             if profile.kind == .appleIntelligence { return appModel.isAppleIntelligenceEnabled }
-            return profile.kind != .preview || !appModel.providers.hasConfiguredRealProvider
+            return true
         }
     }
 

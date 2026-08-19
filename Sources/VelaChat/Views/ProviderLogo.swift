@@ -31,7 +31,6 @@ struct ProviderLogo: View {
         case .xai: base = Color(hex: 0x0D0D0D)
         case .ollama: base = Color(hex: 0x101010)
         case .perplexity: base = Color(hex: 0x0F3B44)
-        case .preview: base = Theme.markBackground
         default: base = kind.tint
         }
         return LinearGradient(
@@ -63,7 +62,6 @@ struct ProviderLogo: View {
         case .lmStudio: LMStudioMark().fill(glyphColor)
         case .blockrun: BlockRunMark().fill(glyphColor)
         case .compatible: ServerMark().fill(glyphColor)
-        case .preview: SparkleMark().fill(Theme.accent)
         }
     }
 }
