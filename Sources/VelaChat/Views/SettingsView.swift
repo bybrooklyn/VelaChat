@@ -2,6 +2,94 @@ import SwiftUI
 import AppKit
 import KeyboardShortcuts
 
+/// The jump-rail's section catalog — order matches the cards.
+enum SettingsSection: String, CaseIterable, Identifiable {
+    case providers = "Providers"
+    case instructions = "Instructions"
+    case memory = "Memory"
+    case skills = "Skills"
+    case snippets = "Snippets"
+    case webSearch = "Web Search"
+    case tools = "Tools"
+    case shortcut = "Shortcut"
+    case general = "General"
+    case statistics = "Statistics"
+    case about = "About"
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .providers: "server.rack"
+        case .instructions: "person.text.rectangle"
+        case .memory: "brain"
+        case .skills: "sparkles"
+        case .snippets: "text.badge.plus"
+        case .webSearch: "globe"
+        case .tools: "wrench.and.screwdriver"
+        case .shortcut: "keyboard"
+        case .general: "gearshape"
+        case .statistics: "chart.bar.xaxis"
+        case .about: "info.circle"
+        }
+    }
+}
+
+private struct SettingsSectionPreference: PreferenceKey {
+    static let defaultValue: [SettingsSection: CGFloat] = [:]
+    static func reduce(value: inout [SettingsSection: CGFloat], nextValue: () -> [SettingsSection: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
+/// One glass card per settings area — icon tile, title, content, footer —
+/// replacing the grouped Form's plain rows.
+private struct SettingsCard<Content: View>: View {
+    let section: SettingsSection
+    var footer: Text? = nil
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                Image(systemName: section.symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 24, height: 24)
+                    .background(Theme.accentSoft.opacity(0.8), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                Text(section.rawValue)
+                    .font(.headline)
+                    .foregroundStyle(Theme.text)
+            }
+            content()
+                .toggleStyle(.switch)
+                .tint(Theme.accentStrong)
+                .controlSize(.small)
+            if let footer {
+                footer
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.controlBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
+        }
+        .id(section)
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: SettingsSectionPreference.self,
+                    value: [section: geometry.frame(in: .named("settings-scroll")).minY]
+                )
+            }
+        }
+    }
+}
+
 struct SettingsView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowChrome.self) private var chrome
@@ -10,6 +98,7 @@ struct SettingsView: View {
     @State private var editingProfileID: UUID?
     @State private var isAddingSnippet = false
     @State private var isAddingProvider = false
+    @State private var activeSection: SettingsSection = .providers
     @State private var newMemoryText = ""
 
     private var topBarHeight: CGFloat { chrome.isFullScreen ? 44 : 52 }
@@ -75,11 +164,14 @@ struct SettingsView: View {
 
     private var settingsForm: some View {
         @Bindable var appModel = appModel
-        return Form {
-            // Providers lead, because they're the thing you actually come
-            // here to change, and they now live inline instead of behind a
-            // separate "Connections" screen.
-            Section {
+        return HStack(alignment: .top, spacing: 0) {
+            ScrollViewReader { proxy in
+                HStack(alignment: .top, spacing: 0) {
+                    jumpRail(proxy: proxy)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                    SettingsCard(section: .providers, footer: Text("Keys stay in your macOS Keychain. Requests go straight to the provider.")) {
+
                 ForEach(visibleProfiles) { profile in
                     // Viewing a provider must not switch to it — selection
                     // is an explicit action inside the editor now.
@@ -112,25 +204,17 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accent)
-            } header: {
-                Text("Providers")
-            } footer: {
-                Text("Keys stay in your macOS Keychain. Requests go straight to the provider.")
-            }
+                    }
+                    SettingsCard(section: .instructions, footer: Text("Sent invisibly with every message \u{2014} who you are and how the model should respond.")) {
 
-            Section {
                 TextEditor(text: $appModel.customInstructions)
                     .font(.body)
                     .frame(minHeight: 90, maxHeight: 180)
                     .scrollContentBackground(.hidden)
                     .background(Theme.controlBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
-            } header: {
-                Text("Custom Instructions")
-            } footer: {
-                Text("Sent invisibly with every message \u{2014} who you are and how the model should respond.")
-            }
+                    }
+                    SettingsCard(section: .memory, footer: Text("Written by the model as you chat, kept on this Mac only \u{2014} yours to edit or remove, grouped by topic.")) {
 
-            Section {
                 if appModel.memories.isEmpty {
                     Label("Nothing remembered yet — the model saves facts as you chat.", systemImage: "brain")
                         .font(.caption)
@@ -175,13 +259,9 @@ struct SettingsView: View {
                     .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
                     .disabled(newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-            } header: {
-                Text("Memory")
-            } footer: {
-                Text("Written by the model as you chat, kept on this Mac only \u{2014} yours to edit or remove, grouped by topic.")
-            }
+                    }
+                    SettingsCard(section: .skills, footer: Text("Add any folder containing a SKILL.md \u{2014} the same format Claude Code and Codex use. Invoke one from the / menu.")) {
 
-            Section {
                 if appModel.skills.skills.isEmpty {
                     Label("No skills added yet.", systemImage: "sparkles")
                         .font(.caption)
@@ -224,13 +304,9 @@ struct SettingsView: View {
                 }
                 .buttonStyle(VelaIconButtonStyle())
                 .foregroundStyle(Theme.accent)
-            } header: {
-                Text("Skills")
-            } footer: {
-                Text("Add any folder containing a SKILL.md \u{2014} the same format Claude Code and Codex use. Invoke one from the / menu.")
-            }
+                    }
+                    SettingsCard(section: .snippets, footer: Text("Save a prompt once, reuse it from the / menu.")) {
 
-            Section {
                 if appModel.promptSnippets.isEmpty {
                     Label("No snippets saved yet.", systemImage: "text.badge.plus")
                         .font(.caption)
@@ -264,13 +340,9 @@ struct SettingsView: View {
                 }
                 .buttonStyle(VelaIconButtonStyle())
                 .foregroundStyle(Theme.accent)
-            } header: {
-                Text("Prompt Snippets")
-            } footer: {
-                Text("Save a prompt once, reuse it from the / menu.")
-            }
+                    }
+                    SettingsCard(section: .webSearch, footer: Text("A SearXNG fallback for providers without built-in search (pick one from searx.space). Toggle search on in the composer.")) {
 
-            Section {
                 LabeledContent("Fallback search") {
                     TextField("https://searx.example.org", text: $appModel.searchEndpoint)
                         .textFieldStyle(.plain)
@@ -278,13 +350,9 @@ struct SettingsView: View {
                         .textContentType(.URL)
                         .frame(maxWidth: 320)
                 }
-            } header: {
-                Text("Web Search")
-            } footer: {
-                Text("A SearXNG fallback for providers without built-in search (pick one from searx.space). Toggle search on in the composer.")
-            }
+                    }
+                    SettingsCard(section: .tools, footer: Text("Lets tool-capable models search your past conversations and use a private per-conversation folder. There is no shell or command execution.")) {
 
-            Section {
                 Toggle("Workspace files", isOn: $appModel.isWorkspaceEnabled)
                 Toggle("Conversation search", isOn: $appModel.isConversationSearchEnabled)
                 if let conversation = appModel.activeConversation {
@@ -294,21 +362,13 @@ struct SettingsView: View {
                     .buttonStyle(VelaIconButtonStyle())
                     .foregroundStyle(Theme.accent)
                 }
-            } header: {
-                Text("Tools")
-            } footer: {
-                Text("Lets tool-capable models search your past conversations and use a private per-conversation folder. There is no shell or command execution.")
-            }
+                    }
+                    SettingsCard(section: .shortcut, footer: Text("Works from anywhere on the Mac.")) {
 
-            Section {
                 KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
-            } header: {
-                Text("Global Shortcut")
-            } footer: {
-                Text("Works from anywhere on the Mac.")
-            }
+                    }
+                    SettingsCard(section: .general, footer: Text("Messages are never relayed through an app-owned server.")) {
 
-            Section {
                 LabeledContent("Accent color") {
                     HStack(spacing: 7) {
                         ForEach(AccentPreset.allCases) { preset in
@@ -328,6 +388,8 @@ struct SettingsView: View {
                         }
                     }
                 }
+                Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
+                Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
                 Picker("Message width", selection: $appModel.messageWidth) {
                     ForEach(MessageWidthPreset.allCases) { preset in
                         Text(preset.displayName).tag(preset)
@@ -362,25 +424,17 @@ struct SettingsView: View {
                 } message: {
                     Text("Custom endpoints are kept, but built-in endpoint and model values return to their defaults.")
                 }
-            } header: {
-                Text("General")
-            } footer: {
-                Text("Messages are never relayed through an app-owned server.")
-            }
+                    }
+                    SettingsCard(section: .statistics, footer: Text("Lifetime messages, tokens, and per-model usage.")) {
 
-            Section {
                 NavigationLink {
                     StatisticsView()
                 } label: {
                     Label("Statistics", systemImage: "chart.bar.xaxis")
                 }
-            } header: {
-                Text("Statistics")
-            } footer: {
-                Text("Lifetime messages, tokens, and per-model usage.")
-            }
+                    }
+                    SettingsCard(section: .about) {
 
-            Section {
                 HStack(spacing: 12) {
                     VelaMark(size: 34)
                     VStack(alignment: .leading, spacing: 2) {
@@ -401,11 +455,28 @@ struct SettingsView: View {
                     Label("MIT license \u{2014} free and open source", systemImage: "arrow.up.right.square")
                 }
                 .foregroundStyle(Theme.accent)
-            } header: {
-                Text("About")
+                    }
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 20)
+                        .frame(maxWidth: 760)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    .coordinateSpace(name: "settings-scroll")
+                    .onPreferenceChange(SettingsSectionPreference.self) { tops in
+                        // The section whose card top is nearest (but above)
+                        // the viewport's upper edge is "current".
+                        let current = tops
+                            .filter { $0.value < 140 }
+                            .max { $0.value < $1.value }?.key
+                            ?? tops.min { $0.value < $1.value }?.key
+                        if let current, current != activeSection {
+                            activeSection = current
+                        }
+                    }
+                }
             }
         }
-        .formStyle(.grouped)
         .frame(maxWidth: Theme.Layout.settingsWidth)
         .frame(maxWidth: .infinity, alignment: .center)
         .sheet(isPresented: $isAddingSnippet) {
@@ -422,6 +493,42 @@ struct SettingsView: View {
     /// fallback for `swift run`, where no bundle exists.
     private static var bundleVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? AppModel.appVersion
+    }
+
+    private func jumpRail(proxy: ScrollViewProxy) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(SettingsSection.allCases) { section in
+                Button {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo(section, anchor: .top)
+                    }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: section.symbol)
+                            .font(.system(size: 11, weight: .medium))
+                            .frame(width: 16)
+                        Text(section.rawValue)
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(activeSection == section ? Theme.accent : Theme.secondaryText)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(
+                        activeSection == section ? Theme.sidebarSelection.opacity(0.7) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: 150)
+        .padding(.leading, 14)
+        .padding(.top, 20)
+        .animation(.easeOut(duration: 0.15), value: activeSection)
     }
 
     private var memoryTopics: [String] {
@@ -553,7 +660,7 @@ private struct ProviderSettingsRow: View {
 
     var body: some View {
         HStack(spacing: 11) {
-            ProviderLogoView(kind: profile.kind, endpoint: profile.endpoint, size: 26)
+            ProviderLogoView(kind: profile.kind, endpoint: profile.endpoint, size: 22)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -581,7 +688,7 @@ private struct ProviderSettingsRow: View {
                 .font(.caption)
                 .foregroundStyle(Theme.tertiaryText)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
     }
 
