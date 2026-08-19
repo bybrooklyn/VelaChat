@@ -115,7 +115,7 @@ struct QuickComposerView: View {
 
     private func send() {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        appModel.send(text)
+        appModel.sendPreservingDraftText(text)
         text = ""
         openMainWindow()
     }

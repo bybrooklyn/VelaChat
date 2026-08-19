@@ -285,6 +285,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         // caller only ever sees normal delta/usage events plus `.toolUse`
         // for transparency — never the raw multi-round exchange.
         let maxRounds = 5
+        var usageTotals = ToolLoopUsage()
         for round in 0..<maxRounds {
             let url = try endpointURL(profile: profile, path: "chat/completions")
             var request = URLRequest(url: url)
@@ -338,7 +339,8 @@ final class CompatibleChatClient: @unchecked Sendable {
                 consecutiveParseFailures = 0
                 guard let choice = chunk.choices.first else {
                     if let usage = chunk.usage {
-                        onEvent(.usage(prompt: usage.promptTokens, completion: usage.completionTokens, cachedTokens: usage.cachedTokens))
+                        let totals = usageTotals.observe(prompt: usage.promptTokens, completion: usage.completionTokens, cached: usage.cachedTokens)
+                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
                     }
                     continue
                 }
@@ -359,11 +361,13 @@ final class CompatibleChatClient: @unchecked Sendable {
                     }
                 }
                 if let usage = chunk.usage {
-                    onEvent(.usage(prompt: usage.promptTokens, completion: usage.completionTokens, cachedTokens: usage.cachedTokens))
+                    let totals = usageTotals.observe(prompt: usage.promptTokens, completion: usage.completionTokens, cached: usage.cachedTokens)
+                    onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
                 }
             }
 
             guard sawToolCalls, !pendingToolCalls.isEmpty, let toolContext, round < maxRounds - 1 else { return }
+            usageTotals.finishRound()
 
             let calls = pendingToolCalls.sorted { $0.key < $1.key }.map(\.value)
             // The model's own preamble text from this round is replayed with
@@ -641,6 +645,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         // delta`, and replayed as typed `function_call` /
         // `function_call_output` input items keyed by `call_id`.
         let maxRounds = 5
+        var usageTotals = ToolLoopUsage()
         for round in 0..<maxRounds {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -706,7 +711,8 @@ final class CompatibleChatClient: @unchecked Sendable {
                     }
                 case "response.completed":
                     if let usage = event.response?.usage {
-                        onEvent(.usage(prompt: usage.inputTokens, completion: usage.outputTokens, cachedTokens: nil))
+                        let totals = usageTotals.observe(prompt: usage.inputTokens, completion: usage.outputTokens, cached: nil)
+                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
                     }
                 default:
                     continue
@@ -714,6 +720,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             }
 
             guard !pendingCalls.isEmpty, let toolContext, round < maxRounds - 1 else { return }
+            usageTotals.finishRound()
             for call in pendingCalls {
                 inputItems.append(.functionCall(callID: call.callID, name: call.name, arguments: call.arguments))
             }
@@ -814,6 +821,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         }
 
         let maxRounds = 5
+        var usageTotals = ToolLoopUsage()
         for round in 0..<maxRounds {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -890,11 +898,13 @@ final class CompatibleChatClient: @unchecked Sendable {
                     }
                 case "message_start":
                     if let usage = event.message?.usage {
-                        onEvent(.usage(prompt: usage.inputTokens, completion: usage.outputTokens, cachedTokens: usage.cacheReadInputTokens))
+                        let totals = usageTotals.observe(prompt: usage.inputTokens, completion: usage.outputTokens, cached: usage.cacheReadInputTokens)
+                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
                     }
                 case "message_delta":
                     if let usage = event.usage {
-                        onEvent(.usage(prompt: nil, completion: usage.outputTokens, cachedTokens: usage.cacheReadInputTokens))
+                        let totals = usageTotals.observe(prompt: nil, completion: usage.outputTokens, cached: usage.cacheReadInputTokens)
+                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
                     }
                 case "error":
                     if let message = event.error?.message { throw APIError.message(message) }
@@ -904,6 +914,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             }
 
             guard !toolBlocks.isEmpty, let toolContext, round < maxRounds - 1 else { return }
+            usageTotals.finishRound()
 
             let calls = toolBlocks.sorted { $0.key < $1.key }.map(\.value)
             var assistantContent: [[String: Any]] = []
@@ -1600,5 +1611,39 @@ enum PreviewResponder {
             await emit(String(word) + (index == words.count - 1 ? "" : " "))
             try await Task.sleep(nanoseconds: UInt64.random(in: 16_000_000...44_000_000))
         }
+    }
+}
+
+/// Sums token usage across the rounds of one reply's tool loop. Within a
+/// single round providers report cumulative totals for that request (so
+/// the latest value wins); each finished round's totals then bank into
+/// the base so the .usage events the app stores always carry the whole
+/// reply's spend — previously every round overwrote the last, and a
+/// five-round tool reply recorded only its final hop (~5x undercount).
+struct ToolLoopUsage {
+    private var basePrompt = 0, baseCompletion = 0, baseCached = 0
+    private var roundPrompt: Int?, roundCompletion: Int?, roundCached: Int?
+
+    /// Feed one provider-reported usage payload; returns the running
+    /// whole-reply totals to emit (nil where nothing was ever reported,
+    /// so unknown never masquerades as zero).
+    mutating func observe(prompt: Int?, completion: Int?, cached: Int?) -> (prompt: Int?, completion: Int?, cached: Int?) {
+        if let prompt { roundPrompt = prompt }
+        if let completion { roundCompletion = completion }
+        if let cached { roundCached = cached }
+        func total(_ base: Int, _ round: Int?) -> Int? {
+            base == 0 && round == nil ? nil : base + (round ?? 0)
+        }
+        return (total(basePrompt, roundPrompt), total(baseCompletion, roundCompletion), total(baseCached, roundCached))
+    }
+
+    /// Call between rounds — folds the finished round into the base.
+    mutating func finishRound() {
+        basePrompt += roundPrompt ?? 0
+        baseCompletion += roundCompletion ?? 0
+        baseCached += roundCached ?? 0
+        roundPrompt = nil
+        roundCompletion = nil
+        roundCached = nil
     }
 }

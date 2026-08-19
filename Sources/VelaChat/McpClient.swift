@@ -345,11 +345,23 @@ final class McpManager {
     }
 
     func call(prefixedName: String, argumentsJSON: String) async -> String {
-        guard let (serverName, toolName) = Self.split(prefixedName: prefixedName),
-              let config = servers.first(where: { Self.sanitized($0.name) == serverName }) else {
+        // A sanitized server name can itself contain "_" (e.g.
+        // "brave-search" → "brave_search"), so splitting on the first
+        // underscore misroutes; match the longest configured server
+        // prefix instead and treat the remainder as the tool name.
+        guard prefixedName.hasPrefix("mcp_") else {
             return "Error: no MCP server matches \"\(prefixedName)\"."
         }
-        return await client(for: config).callTool(name: toolName, argumentsJSON: argumentsJSON)
+        let rest = String(prefixedName.dropFirst(4))
+        let match = servers
+            .map { (config: $0, prefix: Self.sanitized($0.name) + "_") }
+            .filter { rest.hasPrefix($0.prefix) }
+            .max { $0.prefix.count < $1.prefix.count }
+        guard let match, rest.count > match.prefix.count else {
+            return "Error: no MCP server matches \"\(prefixedName)\"."
+        }
+        let toolName = String(rest.dropFirst(match.prefix.count))
+        return await client(for: match.config).callTool(name: toolName, argumentsJSON: argumentsJSON)
     }
 
     func stopAll() {
@@ -365,12 +377,5 @@ final class McpManager {
 
     static func prefixedName(server: String, tool: String) -> String {
         "mcp_\(sanitized(server))_\(tool)"
-    }
-
-    static func split(prefixedName: String) -> (server: String, tool: String)? {
-        guard prefixedName.hasPrefix("mcp_") else { return nil }
-        let rest = prefixedName.dropFirst(4)
-        guard let separator = rest.firstIndex(of: "_") else { return nil }
-        return (String(rest[..<separator]), String(rest[rest.index(after: separator)...]))
     }
 }

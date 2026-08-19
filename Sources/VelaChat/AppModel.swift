@@ -760,10 +760,16 @@ final class AppModel {
     /// request history stays coherent, every message re-id'd.
     func branchConversation(from message: ChatMessage, in conversation: Conversation) {
         guard let index = conversation.messages.firstIndex(where: { $0.id == message.id }) else { return }
-        let copied = conversation.messages[...index]
+        var copied = conversation.messages[...index]
             .filter { $0.role != "notice" }
             .map { $0.duplicatedWithFreshID() }
         guard !copied.isEmpty else { return }
+        // Branching mid-generation must not clone live streaming state —
+        // the copy would shimmer forever with no task behind it.
+        for i in copied.indices {
+            copied[i].isStreaming = false
+            copied[i].reconcileRunningActivities()
+        }
         let title = "(branch) " + conversation.title
         let branch = Conversation(
             title: String(title.prefix(60)),
@@ -1119,6 +1125,13 @@ final class AppModel {
         send(rawText, replacingReplyWith: nil, attachments: activeConversation?.draftAttachments ?? [])
     }
 
+    /// Quick-composer send: its text field is its own, so a send from the
+    /// menu bar consumes the shared draft attachments but must NOT wipe
+    /// whatever the user has half-typed in the main window's composer.
+    func sendPreservingDraftText(_ rawText: String) {
+        send(rawText, replacingReplyWith: nil, attachments: activeConversation?.draftAttachments ?? [], clearDraftText: false)
+    }
+
     /// Edits a past user message in place: removes it and everything after
     /// it (mirroring `retryLastMessage`), then resends the edited text. The
     /// reply that answered the original text is preserved as an alternate
@@ -1198,7 +1211,7 @@ final class AppModel {
         send("Continue exactly where you left off — no repetition, no preamble.")
     }
 
-    private func send(_ rawText: String, replacingReplyWith priorReply: ChatMessage?, attachments: [Attachment] = [], restoring: (conversation: Conversation, messages: [ChatMessage])? = nil) {
+    private func send(_ rawText: String, replacingReplyWith priorReply: ChatMessage?, attachments: [Attachment] = [], restoring: (conversation: Conversation, messages: [ChatMessage])? = nil, clearDraftText: Bool = true) {
         // Edit/regenerate/retry remove messages before calling here, so every
         // early bail must put them back — otherwise a missing provider or a
         // failed discovery silently destroys the user's messages.
@@ -1279,7 +1292,9 @@ final class AppModel {
         conversation.updatedAt = Date()
         conversation.isGenerating = true
         conversation.currentGenerationID = assistantID
-        conversation.draftText = ""
+        if clearDraftText {
+            conversation.draftText = ""
+        }
         conversation.draftAttachments = []
         conversation.generationProviderName = profile.name
         saveHistory()
@@ -1504,8 +1519,14 @@ final class AppModel {
         conversation.generationTask?.cancel()
         conversation.generationTask = nil
         if let index = conversation.messages.lastIndex(where: { $0.isStreaming }) {
-            flushReveal(for: conversation.messages[index].id, conversation: conversation)
+            let assistantID = conversation.messages[index].id
+            flushReveal(for: assistantID, conversation: conversation)
             conversation.messages[index].isStreaming = false
+            // Tools that were mid-flight when the user hit Stop must not
+            // shimmer forever — mark them interrupted.
+            conversation.messages[index].reconcileRunningActivities()
+            // A stopped reply still consumed tokens; count what we saw.
+            recordUsage(for: conversation, assistantID: assistantID)
         }
         conversation.isGenerating = false
         saveHistory()
@@ -2038,6 +2059,7 @@ final class AppModel {
         // thing twice.
         if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
             conversation.messages[index].isStreaming = false
+            conversation.messages[index].reconcileRunningActivities()
             conversation.messages[index].error = message
         }
         recordUsage(for: conversation, assistantID: assistantID)
