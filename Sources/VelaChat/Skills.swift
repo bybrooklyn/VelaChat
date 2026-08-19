@@ -23,27 +23,21 @@ struct PromptSnippet: Identifiable, Codable, Equatable {
 /// Codex CLI both already use, not a VelaChat-invented shape — a skill
 /// dropped into either tool's personal skills folder just works here too.
 struct Skill: Identifiable, Equatable, Sendable {
-    enum Source: String, Sendable {
-        case claudeCode = "Claude Code"
-        case codex = "Codex CLI"
-        case custom = "Added"
-    }
-
     var id: String { folderPath }
     let name: String
     let description: String
     let body: String
     let allowedTools: [String]?
     let folderPath: String
-    let source: Source
 }
 
-/// Discovers skills already sitting in `~/.claude/skills/` and
-/// `~/.codex/skills/` (both tools' real, documented personal-skills
-/// locations) with zero import step, plus any folder the user explicitly
-/// adds. Project-level `.claude/skills/`/`.codex/skills/` are deliberately
-/// out of scope — VelaChat has no standing "current project" concept to
-/// resolve those against yet.
+/// User-managed skills only: folders the user explicitly added (any folder
+/// containing a SKILL.md — the same format Claude Code and Codex use).
+/// Auto-discovery of ~/.claude/skills and ~/.codex/skills was removed by
+/// explicit user request — other tools' skill libraries silently leaking
+/// into the app was confusing, and the launch-time scan read every file on
+/// the main thread. A one-time migration (AppModel) keeps previously
+/// ACTIVATED auto-discovered skills working by adding their folders here.
 @MainActor
 @Observable
 final class SkillsStore {
@@ -84,22 +78,7 @@ final class SkillsStore {
         var discovered: [Skill] = []
         var failures: [String] = []
 
-        func scan(_ directory: URL, source: Skill.Source) {
-            guard let entries = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
-            for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-                let skillFile = entry.appendingPathComponent("SKILL.md")
-                guard fm.fileExists(atPath: skillFile.path) else { continue }
-                if let skill = Self.parse(fileURL: skillFile, folderPath: entry.path, source: source) {
-                    discovered.append(skill)
-                } else {
-                    failures.append(entry.path)
-                }
-            }
-        }
-
-        scan(home.appendingPathComponent(".claude/skills"), source: .claudeCode)
-        scan(home.appendingPathComponent(".codex/skills"), source: .codex)
-
+        _ = home  // kept for potential future use of user-relative paths
         for path in customFolderPaths {
             let entry = URL(fileURLWithPath: path)
             let skillFile = entry.appendingPathComponent("SKILL.md")
@@ -107,7 +86,7 @@ final class SkillsStore {
                 failures.append(path)
                 continue
             }
-            if let skill = Self.parse(fileURL: skillFile, folderPath: path, source: .custom) {
+            if let skill = Self.parse(fileURL: skillFile, folderPath: path) {
                 discovered.append(skill)
             } else {
                 failures.append(path)
@@ -122,7 +101,7 @@ final class SkillsStore {
     /// flat `key: value` YAML plus one list field (`allowed-tools`), not
     /// arbitrarily nested YAML, so a hand-rolled line parser covers the real
     /// format without pulling in a full YAML dependency for it.
-    private static func parse(fileURL: URL, folderPath: String, source: Skill.Source) -> Skill? {
+    private static func parse(fileURL: URL, folderPath: String) -> Skill? {
         guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
         var lines = text.components(separatedBy: .newlines)
         guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
@@ -165,6 +144,6 @@ final class SkillsStore {
 
         guard let name, !name.isEmpty, let description, !description.isEmpty else { return nil }
         let body = bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return Skill(name: name, description: description, body: body, allowedTools: allowedTools, folderPath: folderPath, source: source)
+        return Skill(name: name, description: description, body: body, allowedTools: allowedTools, folderPath: folderPath)
     }
 }

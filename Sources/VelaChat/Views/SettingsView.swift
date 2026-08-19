@@ -188,7 +188,7 @@ struct SettingsView: View {
 
             Section {
                 if appModel.skills.skills.isEmpty {
-                    Label("No skills found yet.", systemImage: "sparkles")
+                    Label("No skills added yet.", systemImage: "sparkles")
                         .font(.caption)
                         .foregroundStyle(Theme.tertiaryText)
                 } else {
@@ -197,12 +197,6 @@ struct SettingsView: View {
                             HStack(spacing: 6) {
                                 Text(skill.name)
                                     .font(.callout.weight(.medium))
-                                Text(skill.source.rawValue)
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundStyle(Theme.tertiaryText)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Theme.controlBackground, in: Capsule())
                             }
                             Text(skill.description)
                                 .font(.caption)
@@ -215,12 +209,10 @@ struct SettingsView: View {
                         }
                         .padding(.vertical, 2)
                         .contextMenu {
-                            if skill.source == .custom {
-                                Button(role: .destructive) {
-                                    appModel.skills.removeCustomFolder(skill.folderPath)
-                                } label: {
-                                    Label("Remove", systemImage: "trash")
-                                }
+                            Button(role: .destructive) {
+                                appModel.skills.removeCustomFolder(skill.folderPath)
+                            } label: {
+                                Label("Remove", systemImage: "trash")
                             }
                         }
                     }
@@ -240,7 +232,7 @@ struct SettingsView: View {
             } header: {
                 Text("Skills")
             } footer: {
-                Text("Auto-discovered from ~/.claude/skills and ~/.codex/skills. Invoke one from the / menu.")
+                Text("Add any folder containing a SKILL.md \u{2014} the same format Claude Code and Codex use. Invoke one from the / menu.")
             }
 
             Section {

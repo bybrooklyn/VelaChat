@@ -197,6 +197,21 @@ final class AppModel {
         if conversations.isEmpty {
             _ = newConversation()
         }
+        // One-time: auto-discovery of ~/.claude/skills and ~/.codex/skills
+        // is gone — skills from there that are ACTIVE in some conversation
+        // keep working by becoming explicit custom folders; everything else
+        // from those directories stops appearing (intended).
+        if !UserDefaults.standard.bool(forKey: "velachat.skills-migration-v1") {
+            UserDefaults.standard.set(true, forKey: "velachat.skills-migration-v1")
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let autoRoots = [home + "/.claude/skills/", home + "/.codex/skills/"]
+            let activePaths = Set(conversations.flatMap(\.activeSkillPaths))
+            for path in activePaths where autoRoots.contains(where: { path.hasPrefix($0) }) {
+                if FileManager.default.fileExists(atPath: path + "/SKILL.md") {
+                    skills.addCustomFolder(path)
+                }
+            }
+        }
         // Deferred until here rather than posted inside `restoreHistory()`
         // itself, since there's no guaranteed conversation to attach it to
         // until after the empty-history fallback above has run.
@@ -981,11 +996,22 @@ final class AppModel {
             systemMessages.append(ChatMessage(role: "system", content: "Remembered facts about the user, true across every conversation:\n\(relevantMemoryText(for: conversation))\(managementNote)"))
         }
         // Active skills' bodies become extra scoped context for the rest of
-        // this conversation — the same shape custom instructions already
-        // use, just per-conversation instead of global.
+        // this conversation — capped per skill and in total, since an
+        // uncapped 30KB SKILL.md silently cost thousands of tokens on
+        // every single message.
+        var skillBudget = 20_000
         for path in conversation.activeSkillPaths {
             guard let skill = skills.skills.first(where: { $0.folderPath == path }) else { continue }
-            systemMessages.append(ChatMessage(role: "system", content: "Skill \"\(skill.name)\":\n\n\(skill.body)"))
+            guard skillBudget > 0 else { break }
+            var body = skill.body
+            if body.count > 8_000 {
+                body = String(body.prefix(8_000)) + "\n\n[Truncated — the full skill file is on disk.]"
+            }
+            if body.count > skillBudget {
+                body = String(body.prefix(skillBudget)) + "\n\n[Truncated.]"
+            }
+            skillBudget -= body.count
+            systemMessages.append(ChatMessage(role: "system", content: "Skill \"\(skill.name)\":\n\n\(body)"))
         }
         if let inventory = ToolCatalog.inventoryInstruction(tools: tools, nativeSearch: usesNativeSearch) {
             systemMessages.append(ChatMessage(role: "system", content: inventory))
