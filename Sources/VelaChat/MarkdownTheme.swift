@@ -192,6 +192,7 @@ private struct VelaCodeBlock: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(savedFilename == nil ? Theme.tertiaryText : Theme.success)
                 .help("Save this block into the conversation's workspace")
+                .accessibilityLabel("Save this block into the conversation's workspace")
 
                 Button {
                     NSPasteboard.general.clearContents()
@@ -205,6 +206,7 @@ private struct VelaCodeBlock: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(copied ? Theme.success : Theme.tertiaryText)
                 .help(copied ? "Copied" : "Copy code")
+                .accessibilityLabel(copied ? "Copied" : "Copy code")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)

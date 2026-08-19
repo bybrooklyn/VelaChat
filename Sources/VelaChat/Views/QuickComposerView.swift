@@ -72,6 +72,7 @@ struct QuickComposerView: View {
                 .foregroundStyle(Theme.secondaryText)
                 .background(Theme.surfaceHigh, in: Circle())
                 .help("Attach a file")
+                .accessibilityLabel("Attach a file")
                 Button {
                     captureScreenshot()
                 } label: {
@@ -83,6 +84,7 @@ struct QuickComposerView: View {
                 .foregroundStyle(Theme.secondaryText)
                 .background(Theme.surfaceHigh, in: Circle())
                 .help("Capture a screenshot and attach it (space = whole window)")
+                .accessibilityLabel("Capture a screenshot and attach it (space = whole window)")
 
                 Spacer()
 

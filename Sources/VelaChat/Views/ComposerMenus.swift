@@ -456,5 +456,6 @@ struct PinnedMessagesButton: View {
             .frame(width: 320)
         }
         .help("Pinned messages")
+        .accessibilityLabel("Pinned messages")
     }
 }

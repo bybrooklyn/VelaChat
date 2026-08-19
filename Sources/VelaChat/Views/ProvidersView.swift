@@ -42,6 +42,7 @@ struct ProviderEditorView: View {
                         .buttonStyle(.plain)
                         .keyboardShortcut(.cancelAction)
                         .help("Back to the provider list (Esc)")
+                        .accessibilityLabel("Back to the provider list (Esc)")
                     }
                     Section {
                         HStack(spacing: 12) {

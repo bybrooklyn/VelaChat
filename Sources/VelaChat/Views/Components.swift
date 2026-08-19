@@ -228,6 +228,7 @@ struct ModelPickerButton: View {
             ModelPaletteView(isPresented: $isPresented)
         }
         .help("Choose a model. Your last choice is remembered for this provider.")
+        .accessibilityLabel("Choose a model. Your last choice is remembered for this provider.")
     }
 }
 
@@ -257,6 +258,7 @@ struct ThinkingPickerButton: View {
             ThinkingPaletteView(isPresented: $isPresented)
         }
         .help("Choose the exact thinking controls supported by the selected model.")
+        .accessibilityLabel("Choose the exact thinking controls supported by the selected model.")
     }
 }
 
@@ -308,6 +310,7 @@ struct ContextButton: View {
             ContextInspector()
         }
         .help(appModel.contextTooltip)
+        .accessibilityLabel(appModel.contextTooltip)
         .accessibilityLabel("Context window")
         .accessibilityValue(appModel.contextTooltip)
     }
@@ -337,6 +340,7 @@ struct WebSearchToggleButton: View {
         }
         .buttonStyle(VelaControlButtonStyle(tint: appModel.isWebSearchEnabled ? Theme.accentStrong : Theme.tertiaryText))
         .help(appModel.webSearchDescription)
+        .accessibilityLabel(appModel.webSearchDescription)
     }
 }
 
@@ -793,6 +797,7 @@ private struct ModelPaletteRow: View {
                         }
                         .buttonStyle(.plain)
                         .help(isFavorite ? "Remove from favorites" : "Add to favorites")
+                        .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
                     }
                 }
                 if selected {
@@ -812,6 +817,7 @@ private struct ModelPaletteRow: View {
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
         .help(model.id)
+        .accessibilityLabel(model.id)
     }
 }
 
@@ -1053,6 +1059,7 @@ struct CopyButton: View {
         .buttonStyle(.borderless)
         .foregroundStyle(copied ? Theme.success : Theme.tertiaryText)
         .help(copied ? "Copied" : "Copy response")
+        .accessibilityLabel(copied ? "Copied" : "Copy response")
         .animation(.easeOut(duration: 0.12), value: copied)
     }
 }

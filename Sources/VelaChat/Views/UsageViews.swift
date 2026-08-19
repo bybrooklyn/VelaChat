@@ -27,6 +27,7 @@ struct UsageGaugeButton: View {
             }
             .buttonStyle(.plain)
             .help("Usage for the current provider")
+            .accessibilityLabel("Usage for the current provider")
             // Hovering starts the refresh so the numbers are already
             // current by the time the popover opens. Debounced by
             // staleness inside `refreshQuota`, so repeated hovers are free.

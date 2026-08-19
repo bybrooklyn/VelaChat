@@ -390,6 +390,7 @@ struct ChatView: View {
                         .buttonStyle(AttachPlusButtonStyle())
                         .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isAttachMenuShown)
                         .help("Attach")
+                        .accessibilityLabel("Attach")
                         .popover(isPresented: $isAttachMenuShown, arrowEdge: .top) {
                             AttachMenu(
                                 onFile: { isAttachMenuShown = false; presentAttachPanel() },
@@ -433,6 +434,7 @@ struct ChatView: View {
                         .keyboardShortcut(.return, modifiers: [.command])
                         .disabled(!canSend && !appModel.isGenerating)
                         .help(appModel.isGenerating ? "Stop generating (⌘.)" : "Send message (⌘Return)")
+                        .accessibilityLabel(appModel.isGenerating ? "Stop generating (⌘.)" : "Send message (⌘Return)")
                         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: appModel.isGenerating)
                     }
                 }
@@ -713,6 +715,7 @@ private struct ArtifactPanel: View {
                     .buttonStyle(VelaIconButtonStyle())
                     .foregroundStyle(Theme.tertiaryText)
                     .help("Edit")
+                    .accessibilityLabel("Edit")
                 }
             }
             Button {
@@ -727,6 +730,7 @@ private struct ArtifactPanel: View {
             .buttonStyle(VelaIconButtonStyle())
             .foregroundStyle(copied ? Theme.success : Theme.tertiaryText)
             .help(copied ? "Copied" : "Copy source")
+            .accessibilityLabel(copied ? "Copied" : "Copy source")
             .animation(.easeOut(duration: 0.12), value: copied)
             Button {
                 downloadArtifact()
@@ -736,6 +740,7 @@ private struct ArtifactPanel: View {
             .buttonStyle(VelaIconButtonStyle())
             .foregroundStyle(Theme.tertiaryText)
             .help("Save to disk")
+            .accessibilityLabel("Save to disk")
             Button {
                 artifactPresenter.close()
             } label: {
@@ -744,6 +749,7 @@ private struct ArtifactPanel: View {
             .buttonStyle(VelaIconButtonStyle())
             .foregroundStyle(Theme.tertiaryText)
             .help("Close")
+            .accessibilityLabel("Close")
         }
         .padding(12)
     }

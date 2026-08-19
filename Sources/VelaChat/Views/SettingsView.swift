@@ -132,6 +132,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
             .help("Back to conversations (Esc)")
+            .accessibilityLabel("Back to conversations (Esc)")
 
             Text("Settings")
                 .font(.headline)
@@ -181,6 +182,7 @@ struct SettingsView: View {
                             }
                             .buttonStyle(.plain)
                             .help(preset.displayName)
+                            .accessibilityLabel(preset.displayName)
                             .animation(.easeOut(duration: 0.15), value: appModel.accentPreset)
                         }
                     }
@@ -976,6 +978,7 @@ private struct ProviderSettingsRow: View {
                 .font(.caption)
                 .foregroundStyle(Theme.warning)
                 .help("Needs an API key")
+                .accessibilityLabel("Needs an API key")
         } else if case .connecting = status {
             Circle()
                 .fill(Theme.warning)

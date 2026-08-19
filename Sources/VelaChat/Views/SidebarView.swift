@@ -147,6 +147,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     /// One conversation as a glyph. The title lives in the tooltip, and
@@ -168,6 +169,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .help(conversation.title)
+        .accessibilityLabel(conversation.title)
     }
 
     /// Shared by both states so the control is literally the same view —
@@ -188,6 +190,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .help(appModel.isSidebarRail ? "Expand Sidebar" : "Collapse to Icons")
+        .accessibilityLabel(appModel.isSidebarRail ? "Expand Sidebar" : "Collapse to Icons")
     }
 
     /// Brand only. The new-chat action used to be crammed into this row right
@@ -270,6 +273,7 @@ struct SidebarView: View {
         .buttonStyle(.plain)
         .frame(maxWidth: isSearchExpanded ? nil : .infinity, alignment: .leading)
         .help("Start a new conversation (⌘N)")
+        .accessibilityLabel("Start a new conversation (⌘N)")
     }
 
     private var searchToggleButton: some View {
@@ -291,6 +295,7 @@ struct SidebarView: View {
         .buttonStyle(.plain)
         .keyboardShortcut("f", modifiers: [.command, .shift])
         .help("Search conversations (⇧⌘F)")
+        .accessibilityLabel("Search conversations (⇧⌘F)")
     }
 
     private var searchField: some View {
@@ -321,6 +326,7 @@ struct SidebarView: View {
             .buttonStyle(.plain)
             .foregroundStyle(Theme.tertiaryText)
             .help("Close search (Esc)")
+            .accessibilityLabel("Close search (Esc)")
         }
         .padding(.horizontal, 10)
         .frame(height: 34)
@@ -533,6 +539,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .help("Open Settings")
+        .accessibilityLabel("Open Settings")
     }
 }
 
