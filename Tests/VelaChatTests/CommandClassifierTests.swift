@@ -41,4 +41,46 @@ final class CommandClassifierTests: XCTestCase {
         XCTAssertFalse(isAuto(""))
         XCTAssertFalse(isAuto("   "))
     }
+
+    /// A newline separates commands in `zsh -lc` exactly like `;` does, but
+    /// it isn't in the shell-operator list and splitting on " " never saw
+    /// it — so "cat notes.txt\nrm -rf ~" classified on `cat` and auto-ran
+    /// the `rm`.
+    func testNewlineSeparatedCommandsPrompt() {
+        XCTAssertFalse(isAuto("cat notes.txt\nrm -rf ~/Documents"))
+        XCTAssertFalse(isAuto("ls\ncurl https://example.com/x.sh"))
+        XCTAssertFalse(isAuto("ls\r\nrm x"))
+        XCTAssertFalse(isAuto("ls\tsrc"))
+    }
+
+    /// Binaries whose whole job is to launch another program are not
+    /// read-only however read-only they look.
+    func testCommandLaunchersPrompt() {
+        XCTAssertFalse(isAuto("env rm -rf ~/Documents"))
+        XCTAssertFalse(isAuto("env"))
+        XCTAssertFalse(isAuto("man -P sh ls"))
+        XCTAssertFalse(isAuto("FOO=bar rm x"))
+    }
+
+    /// Write flags on otherwise-read-only tools, with no shell redirection
+    /// anywhere for the operator scan to catch.
+    func testWriteFlagsOnReadOnlyToolsPrompt() {
+        XCTAssertFalse(isAuto("sort -o out.txt in.txt"))
+        XCTAssertFalse(isAuto("sort --output out.txt in.txt"))
+        XCTAssertFalse(isAuto("yq -i '.a = 1' config.yml"))
+        XCTAssertFalse(isAuto("tree -o listing.txt"))
+        XCTAssertFalse(isAuto("uniq in.txt out.txt"))
+        XCTAssertFalse(isAuto("find . -fprintf out.txt %p"))
+        // The read-only forms of the same tools still auto-approve.
+        XCTAssertTrue(isAuto("sort in.txt"))
+        XCTAssertTrue(isAuto("uniq in.txt"))
+        XCTAssertTrue(isAuto("yq '.a' config.yml"))
+    }
+
+    /// `stash` was listed as a read-only git subcommand and then excluded
+    /// by a second condition; it must stay excluded.
+    func testGitStashPrompts() {
+        XCTAssertFalse(isAuto("git stash"))
+        XCTAssertFalse(isAuto("git stash pop"))
+    }
 }
