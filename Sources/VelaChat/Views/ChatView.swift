@@ -488,7 +488,9 @@ private struct PinnedMessagesButton: View {
             // whole height the bottom inset offers, which is what made the
             // composer a tall empty slab regardless of the text inside it.
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 16)
+            // 34 matches the transcript's own text inset, so the caret and
+            // the messages above it sit on the same left edge.
+            .padding(.horizontal, 34)
             .padding(.top, 12)
             .padding(.bottom, 12)
             .frame(maxWidth: contentWidth)
@@ -1720,7 +1722,7 @@ private struct AskUserQuestionCard: View {
             }
             if interactive, !submitted {
                 Button("Send") { submit() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
                     .tint(Theme.accentStrong)
                     .disabled(!canSubmit)
             }

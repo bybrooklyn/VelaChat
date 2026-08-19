@@ -106,7 +106,7 @@ struct ProviderEditorView: View {
 
                         HStack {
                             Button("Save") { save(profile) }
-                                .buttonStyle(.borderedProminent)
+                                .buttonStyle(.glassProminent)
                                 .tint(Theme.accent)
                             Button {
                                 Task { await test(profile) }
@@ -355,7 +355,7 @@ struct ProviderEditorView: View {
                     .foregroundStyle(Theme.secondaryText)
                 HStack {
                     Button("Run codex login") { appModel.providers.launchCodexLogin() }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.glassProminent)
                         .tint(Theme.accent)
                     Button("Refresh auth") { appModel.providers.refreshCodex() }
                         .buttonStyle(.bordered)

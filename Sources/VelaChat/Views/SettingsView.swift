@@ -543,9 +543,10 @@ struct SettingsView: View {
                     .padding(.vertical, 6)
                     .background {
                         if activeSection == section {
+                            // Flat, matching sidebar rows — a glass chip on
+                            // this tiny rail read as a stray floating bead.
                             RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
                                 .fill(Theme.sidebarSelection.opacity(0.55))
-                                .glassChip(in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
                         }
                     }
                     .contentShape(Rectangle())
@@ -825,7 +826,7 @@ private struct AddProviderSheet: View {
                     isPresented = false
                     onCreate(id)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .tint(Theme.accentStrong)
                 .disabled(!canSave)
             }
@@ -861,7 +862,7 @@ private struct AddSnippetSheet: View {
                     appModel.addSnippet(name: name, body: snippetBody)
                     isPresented = false
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .tint(Theme.accent)
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || snippetBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

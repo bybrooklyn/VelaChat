@@ -987,7 +987,8 @@ private struct ContextInspector: View {
                     appModel.setContextWindowOverride(Int(editText.filter(\.isNumber)))
                     isEditingLimit = false
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
+                .tint(Theme.accent)
                 .disabled(Int(editText.filter(\.isNumber)) == nil)
                 Button("Cancel") { isEditingLimit = false }
                     .buttonStyle(.borderless)
