@@ -733,6 +733,7 @@ final class AppModel {
         // Recent conversations become searchable within seconds; older
         // ones fill in behind them without competing with the interface.
         memoryIndexer.startBackfill(conversations: conversations)
+        syncAllFactsToStore()
         if let active = activeConversation, let providerID = active.providerID {
             providers.select(providerID, markExplicit: false)
         }
@@ -1228,9 +1229,11 @@ final class AppModel {
     func addMemory(_ content: String) {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let item = MemoryItem(content: trimmed)
         withAnimation(.easeOut(duration: 0.18)) {
-            memories.append(MemoryItem(content: trimmed))
+            memories.append(item)
         }
+        syncFactToStore(item)
     }
 
     func updateMemory(_ memory: MemoryItem, content: String) {
@@ -1238,11 +1241,36 @@ final class AppModel {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         memories[index].content = trimmed
+        syncFactToStore(memories[index])
     }
 
     func removeMemory(_ memory: MemoryItem) {
         withAnimation(.easeOut(duration: 0.18)) {
             memories.removeAll { $0.id == memory.id }
+        }
+        Task { await MemoryStore.shared.deleteFact(id: memory.id) }
+    }
+
+    /// Facts still live in `memories` (Settings edits them directly), but
+    /// retrieval reads from the store — so each change is mirrored across.
+    /// Without this the fact half of recall silently never matches, which
+    /// is exactly the kind of gap that looks like "memory just isn't very
+    /// good" rather than a missing write.
+    private func syncFactToStore(_ item: MemoryItem) {
+        let id = item.id, content = item.content, topic = item.topic
+        Task {
+            await MemoryStore.shared.upsertFact(id: id, content: content, topic: topic)
+        }
+    }
+
+    /// One-time reconciliation at launch, so memories saved before the
+    /// store existed become searchable too.
+    func syncAllFactsToStore() {
+        let snapshot = memories.map { (id: $0.id, content: $0.content, topic: $0.topic) }
+        Task {
+            for fact in snapshot {
+                await MemoryStore.shared.upsertFact(id: fact.id, content: fact.content, topic: fact.topic)
+            }
         }
     }
 

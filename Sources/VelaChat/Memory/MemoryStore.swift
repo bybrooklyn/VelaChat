@@ -156,6 +156,30 @@ actor MemoryStore {
         return id
     }
 
+    /// Insert-or-replace by caller-supplied id, so the fact list the user
+    /// edits in Settings and the searchable copy here can't drift apart.
+    func upsertFact(id: UUID, content: String, topic: String?) {
+        open()
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        let embedding = MemoryEmbedder.shared.vector(for: trimmed)
+        guard let statement = prepare("""
+            INSERT INTO facts (id, content, topic, created_at, updated_at, use_count, source_conversation, embedding)
+            VALUES (?, ?, ?, ?, ?, 0, NULL, ?)
+            ON CONFLICT(id) DO UPDATE SET content = excluded.content, topic = excluded.topic,
+                updated_at = excluded.updated_at, embedding = excluded.embedding;
+            """) else { return }
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, id.uuidString)
+        bindText(statement, 2, trimmed)
+        bindText(statement, 3, topic)
+        sqlite3_bind_double(statement, 4, now)
+        sqlite3_bind_double(statement, 5, now)
+        bindBlob(statement, 6, embedding.map(Self.encode))
+        sqlite3_step(statement)
+    }
+
     func updateFact(id: UUID, content: String?, topic: String?) {
         open()
         if let content, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

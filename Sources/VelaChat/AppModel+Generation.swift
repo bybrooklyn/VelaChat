@@ -364,18 +364,34 @@ extension AppModel {
             // so this stays silent when nothing genuinely matches rather
             // than padding every request with vaguely-related history.
             if let self, self.isMemoryAllowed(for: profile) {
-                let recalled = await MemoryStore.shared.recall(query: text, excluding: conversation.id)
-                    .compactMap { hit -> MemoryRecall? in
-                        guard case .chunk(let conversationID, let messageID) = hit.source else { return nil }
-                        return MemoryRecall(origin: .conversation(id: conversationID, messageID: messageID), text: hit.text)
+                let hits = await MemoryStore.shared.recall(query: text, excluding: conversation.id)
+                let recalled = hits.map { hit -> MemoryRecall in
+                    switch hit.source {
+                    case .fact(let factID):
+                        MemoryRecall(origin: .fact(factID), text: hit.text)
+                    case .chunk(let conversationID, let messageID):
+                        MemoryRecall(origin: .conversation(id: conversationID, messageID: messageID), text: hit.text)
                     }
+                }
                 if !recalled.isEmpty {
                     self.recallByMessage[assistantID] = recalled
-                    let excerpts = recalled.prefix(4).map { "- \($0.text.prefix(400))" }.joined(separator: "\n")
-                    finalMessages.insert(ChatMessage(
-                        role: "system",
-                        content: "Possibly relevant excerpts from the user's earlier conversations (they cannot see these; use them if useful, ignore them if not):\n\(excerpts)"
-                    ), at: min(composeInsertIndex, finalMessages.count))
+                    // Facts are already in the prompt via relevantMemoryText;
+                    // only the conversation excerpts need adding here.
+                    let excerpts = recalled
+                        .filter { !$0.isFact }
+                        .prefix(4)
+                        .map { "- \($0.text.prefix(400))" }
+                        .joined(separator: "\n")
+                    if !excerpts.isEmpty {
+                        finalMessages.insert(ChatMessage(
+                            role: "system",
+                            content: "Possibly relevant excerpts from the user's earlier conversations (they cannot see these; use them if useful, ignore them if not):\n\(excerpts)"
+                        ), at: min(composeInsertIndex, finalMessages.count))
+                    }
+                    await MemoryStore.shared.noteFactUsed(recalled.compactMap {
+                        if case .fact(let id) = $0.origin { return id }
+                        return nil
+                    })
                 }
             }
             finalMessages.insert(ChatMessage(role: "system", content: SystemPrompt.compose(promptContext)), at: min(composeInsertIndex, finalMessages.count))
