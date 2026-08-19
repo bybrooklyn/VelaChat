@@ -623,3 +623,47 @@ assets, @-references in the composer, artifact version history/diffing,
 attachments v2 — ZIP/audio/video, a real test suite + CI, import from
 ChatGPT/Claude exports) is still fully unbuilt, exactly where the
 previous round's plan file left it.
+
+---
+
+## Session 2026-08-19 — fog killed; both audits' fixes applied
+
+**Scroll-edge fog: built to the grilled spec, rejected live, removed
+entirely at user request.** The scroll-aware blur+wash fog (built on
+`onScrollGeometryChange`, verified in the local SDK) rendered as a dark
+band over the transcript — the wash color sat darker than the surface's
+actual rendered background, the exact failure the native
+`scrollEdgeEffectStyle` had. The user said "just remove that feature
+completely": modifier, strips, all call sites, the Settings toggle, and
+`isEdgeBlurEnabled` are gone (commit 9215b0d). If fog ever returns, the
+lesson is: the wash must sample the *rendered* composite (vibrancy
+included), not `Theme.background`.
+
+**UX/state audit — all ranked items fixed** (commits bb8f6e5, 9b0f27e):
+duplicated General toggles deleted; MCP tool calls resolve servers by
+longest sanitized prefix (hyphenated names were 100% broken); stop/fail/
+branch reconcile running activity shimmer + Stop records partial usage;
+quick composer no longer wipes the main draft (`sendPreservingDraftText`);
+tool-loop usage accumulates across rounds via `ToolLoopUsage` in
+ChatAPI.swift (was ~5x undercount on 5-round replies); conversation
+switch closes artifact panel/find bar and scrolls to bottom; provider
+editor got a visible back row (Esc) and in-form Remove — the removed
+window toolbar was silently hiding both NavigationStack's back chevron
+AND the toolbar-placed Remove; syncFields no longer clobbers mid-edit
+fields; MCP tools now join the composed SystemPrompt inventory (compose
+moved inside generationTask after the merge) with a cold-start status
+message and a 10s tools/list timeout; workspace folders deleted with
+their conversation (`SandboxManager.cleanup`); prune keeps notice-only
+chats and bails under Settings; attach menu resets to root; per-message $
+priced against the reply's own provider.
+
+**Visual audit — concrete items fixed** (last commit): composer inner
+inset 16→34 (caret aligns with transcript text), jump-rail glass chip
+flattened, all six `.borderedProminent` primaries → `.glassProminent`.
+Artifact preview's white canvas kept deliberately (SVG/Mermaid wrappers
+hardcode white; unstyled HTML needs it). **Visual audit items NOT done**
+(details were lost to context compaction — re-derive before attempting):
+surfaceLow/Mid/High tokens, Theme.Motion tokens, VelaIconButtonStyle
+sweep, sheet chrome unification, sidebar gutter pass, accent-as-fill
+badge rework, noticeKind-driven error tinting, provider-identity
+language unification, Radius.field token.
