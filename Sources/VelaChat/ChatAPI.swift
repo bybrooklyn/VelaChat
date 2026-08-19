@@ -226,7 +226,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.timeoutInterval = 3_600
+                    request.timeoutInterval = 180  // idle timeout — resets on every received byte; an hour-long stall is not resilience
                     request.httpBody = try JSONEncoder().encode(OllamaPullRequest(model: name, stream: true))
 
                     let (bytes, response) = try await session.bytes(for: request)
@@ -295,7 +295,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             let url = try endpointURL(profile: profile, path: "chat/completions")
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 3_600
+            request.timeoutInterval = 180  // idle timeout — resets on every received byte; an hour-long stall is not resilience
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             addHeaders(to: &request, profile: profile, credential: credential)
@@ -656,7 +656,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         for round in 0..<maxRounds {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 3_600
+            request.timeoutInterval = 180  // idle timeout — resets on every received byte; an hour-long stall is not resilience
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             addHeaders(to: &request, profile: ProviderProfile(kind: .codex, name: "Codex", endpoint: "", model: model), credential: credential)
@@ -832,7 +832,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         for round in 0..<maxRounds {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 3_600
+            request.timeoutInterval = 180  // idle timeout — resets on every received byte; an hour-long stall is not resilience
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             addHeaders(to: &request, profile: ProviderProfile(kind: .anthropic, name: "Anthropic", endpoint: ""), credential: credential)

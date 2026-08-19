@@ -376,6 +376,18 @@ private struct PinnedMessagesButton: View {
                 .transition(.opacity)
             }
 
+            if !appModel.isOnline {
+                HStack(spacing: 6) {
+                    Image(systemName: "wifi.slash")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Offline — messages you send will go out when the connection returns")
+                        .font(.caption)
+                }
+                .foregroundStyle(Theme.warning)
+                .frame(maxWidth: contentWidth, alignment: .leading)
+                .transition(.opacity)
+            }
+
             if let conversation = appModel.activeConversation, !conversation.activeSkillPaths.isEmpty {
                 activeSkillsRow(conversation)
                     .transition(.opacity.combined(with: .move(edge: .top)))

@@ -5,6 +5,7 @@ import SwiftUI
 import AVFoundation
 import AppKit
 import UserNotifications
+import Network
 
 @MainActor
 @Observable
@@ -165,6 +166,53 @@ final class AppModel {
     var isClipboardToolEnabled = true {
         didSet { UserDefaults.standard.set(isClipboardToolEnabled, forKey: "velachat.clipboard-tool-enabled") }
     }
+    /// Live network reachability (NWPathMonitor). Drives the offline chip
+    /// and lets in-flight sends wait for the network instead of failing.
+    var isOnline = true
+    private let pathMonitor = NWPathMonitor()
+
+    func startNetworkMonitor() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let online = path.status == .satisfied
+            Task { @MainActor [weak self] in
+                guard let self, self.isOnline != online else { return }
+                withAnimation(.easeOut(duration: 0.2)) { self.isOnline = online }
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "vela.network-path"))
+    }
+
+    /// Polls reachability until it returns or the deadline passes. Used by
+    /// a queued send that was made while offline — the turn stays on
+    /// screen, honestly labeled, and fires the moment the network is back.
+    func waitForConnectivity(timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !isOnline {
+            if Date() > deadline || Task.isCancelled { return false }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        return !Task.isCancelled
+    }
+
+    /// True for failures worth an automatic, invisible-to-the-answer retry:
+    /// network faults and provider-side transience (429/5xx). A 4xx other
+    /// than 429 will fail identically on retry and is surfaced immediately.
+    nonisolated static func isTransientFailure(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+                 .dnsLookupFailed, .notConnectedToInternet, .dataNotAllowed, .secureConnectionFailed:
+                return true
+            default:
+                return false
+            }
+        }
+        if case APIError.status(let code, _) = error {
+            return code == 429 || (500..<600).contains(code)
+        }
+        return false
+    }
+
     var searchByMessage: [UUID: WebSearchRecord] = [:]
     /// Latest live quota data seen per provider — persisted so plan
     /// windows survive a relaunch, shown with an honest "as of" age
@@ -512,6 +560,7 @@ final class AppModel {
     func start() {
         guard !didStart else { return }
         didStart = true
+        startNetworkMonitor()
         if let active = activeConversation, let providerID = active.providerID {
             providers.select(providerID, markExplicit: false)
         }
@@ -1521,26 +1570,55 @@ final class AppModel {
                         }
                     }
                 } else {
-                    let events = CompatibleChatClient.shared.streamChatEvents(
-                        profile: profile,
-                        credential: credential,
-                        model: wireModel,
-                        thinking: thinking,
-                        modelInfo: modelInfo,
-                        messages: finalMessages,
-                        tools: tools,
-                        toolContext: tools.isEmpty ? nil : toolContext
-                    )
-                    var batch: [ChatStreamEvent] = []
-                    for try await event in events {
-                        batch.append(event)
-                        if batch.count >= 8 {
-                            self?.apply(batch, to: conversation, assistantID: assistantID)
-                            batch.removeAll(keepingCapacity: true)
+                    // Resilience wrapper: a send made offline waits for the
+                    // network (the turn stays on screen, honestly labeled);
+                    // transient failures before ANY event arrived retry with
+                    // backoff. Once events flowed, a retry could duplicate
+                    // the turn — those surface the normal error card.
+                    var deliveredEvents = false
+                    var attempt = 0
+                    while true {
+                        do {
+                            if let self, !self.isOnline {
+                                self.postRetryNote("Offline — waiting for the network", to: conversation, assistantID: assistantID,
+                                                   finish: "Sent once the connection returned")
+                                guard await self.waitForConnectivity(timeout: 600) else {
+                                    throw APIError.message("Still offline after 10 minutes — this reply wasn't sent. Try again when you're back online.")
+                                }
+                            }
+                            try Task.checkCancellation()
+                            let events = CompatibleChatClient.shared.streamChatEvents(
+                                profile: profile,
+                                credential: credential,
+                                model: wireModel,
+                                thinking: thinking,
+                                modelInfo: modelInfo,
+                                messages: finalMessages,
+                                tools: tools,
+                                toolContext: tools.isEmpty ? nil : toolContext
+                            )
+                            var batch: [ChatStreamEvent] = []
+                            for try await event in events {
+                                deliveredEvents = true
+                                batch.append(event)
+                                if batch.count >= 8 {
+                                    self?.apply(batch, to: conversation, assistantID: assistantID)
+                                    batch.removeAll(keepingCapacity: true)
+                                }
+                            }
+                            if !batch.isEmpty {
+                                self?.apply(batch, to: conversation, assistantID: assistantID)
+                            }
+                            break
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch where !deliveredEvents && attempt < 2 && Self.isTransientFailure(error) {
+                            attempt += 1
+                            let delay = Double(attempt * attempt) * 2 + Double.random(in: 0...0.5)
+                            self?.postRetryNote("Connection hiccup — retrying in \(Int(delay))s", to: conversation, assistantID: assistantID,
+                                                finish: "Retried after a transient failure")
+                            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                         }
-                    }
-                    if !batch.isEmpty {
-                        self?.apply(batch, to: conversation, assistantID: assistantID)
                     }
                 }
                 self?.finishGeneration(for: conversation, assistantID: assistantID)
@@ -1551,6 +1629,16 @@ final class AppModel {
                 self?.failGeneration(error.localizedDescription, for: conversation, assistantID: assistantID)
             }
         }
+    }
+
+    /// A quiet, self-resolving activity line for retry/offline waits —
+    /// the same visual language as tool calls, per the no-invisible-magic
+    /// rule.
+    private func postRetryNote(_ label: String, to conversation: Conversation, assistantID: UUID, finish: String) {
+        var record = ActivityRecord(id: UUID(), kind: .note, toolName: "note", argument: label)
+        record.isRunning = true
+        enqueue(.activity(record), for: assistantID, conversation: conversation)
+        enqueue(.activityUpdate(id: record.id, result: finish, isError: false), for: assistantID, conversation: conversation)
     }
 
     func stopGeneration(for conversation: Conversation? = nil) {
