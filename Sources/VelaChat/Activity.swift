@@ -16,7 +16,7 @@ enum ActivityKind: String, Codable, Sendable {
         case ToolCatalog.readFile.name: .fileRead
         case ToolCatalog.writeFile.name: .fileWrite
         case ToolCatalog.listWorkspaceFiles.name: .fileList
-        case ToolCatalog.currentDatetime.name: .datetime
+        case "current_datetime": .datetime  // retired tool; old transcripts still map
         case ToolCatalog.calculator.name: .calculation
         case ToolCatalog.readAttachment.name: .attachment
         case ToolCatalog.getSchedule.name: .schedule

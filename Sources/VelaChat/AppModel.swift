@@ -27,22 +27,24 @@ final class AppModel {
     /// is the matching reader; `AskUserQuestionCard` (ChatView.swift) is the
     /// interactive card rendered from it.
     static let askUserQuestionInstruction = """
-        You can ask the user a multiple-choice question when a real decision \
-        or ambiguity is worth pausing on, instead of guessing which way to go. \
-        To do this, reply with ONLY a fenced block in exactly this shape — \
+        # Asking the user
+        When a real decision or ambiguity is worth pausing on — not for \
+        routine replies — ask with a fenced block in exactly this shape, \
         nothing before or after it:
 
         ```ask-user
-        {"question": "Which approach should I take?", "options": [{"label": "Short option name", "description": "One-sentence explanation"}, {"label": "Another option", "description": "One-sentence explanation"}], "multiSelect": false, "allowNotes": true}
+        {"questions": [{"header": "Approach", "question": "Which approach should I take?", "multiSelect": false, "options": [{"label": "Short option name", "description": "One-sentence explanation", "recommended": true}, {"label": "Another option", "description": "One-sentence explanation"}]}], "allowNotes": true}
         ```
 
-        `options` needs at least two entries. Set `"multiSelect": true` only \
-        if picking more than one option at once genuinely makes sense. \
-        `allowNotes` (default true) lets the user add a free-text note \
-        alongside their pick — set it false only if a note wouldn't be useful. \
-        The user's choice (and any note) comes back to you as their next \
-        message. Use this sparingly, only for choices that actually matter — \
-        never for routine replies.
+        Rules: 1–4 questions per block, each with 2–4 mutually distinct \
+        options. `header` is a very short chip label (max ~12 chars, e.g. \
+        "Scope", "Auth"). Mark at most ONE option per question \
+        `"recommended": true` — the one you'd pick — and list it first. \
+        Set `"multiSelect": true` only when several options genuinely \
+        combine. Batch related decisions into one block instead of asking \
+        one at a time across replies. The user's selections (and any note) \
+        come back as their next message. Never use this for questions a \
+        tool or the conversation itself can answer.
         """
 
     // The old fenced ```remember``` propose-and-confirm flow is gone: the
@@ -212,6 +214,10 @@ final class AppModel {
         }
         return false
     }
+
+    /// Terminal finish reason per reply (transient) — "length" means the
+    /// provider cut the reply at its output cap and drives auto-continue.
+    var finishReasonByMessage: [UUID: String] = [:]
 
     var searchByMessage: [UUID: WebSearchRecord] = [:]
     /// Latest live quota data seen per provider — persisted so plan
@@ -1409,7 +1415,8 @@ final class AppModel {
                 tools.append(ToolCatalog.webSearch)
             }
             tools.append(ToolCatalog.fetchURL)
-            tools.append(ToolCatalog.currentDatetime)
+            // current_datetime is gone: the Environment section stamps the
+            // live date/time on every request instead.
             tools.append(ToolCatalog.calculator)
             tools.append(contentsOf: [ToolCatalog.saveMemory, ToolCatalog.searchMemory, ToolCatalog.editMemory])
             if isScheduleToolEnabled { tools.append(ToolCatalog.getSchedule) }
@@ -1535,11 +1542,23 @@ final class AppModel {
                 if hasEnabledServers { self.statusMessage = nil }
                 tools.append(contentsOf: mcpDefinitions)
             }
-            finalMessages.insert(ChatMessage(role: "system", content: SystemPrompt.compose(
+            var promptContext = SystemPrompt.Context(
                 tools: tools,
                 nativeSearch: usesNativeSearch,
-                hasMemories: modelSupportsTools
-            )), at: min(composeInsertIndex, finalMessages.count))
+                hasMemories: modelSupportsTools,
+                providerName: profile.name,
+                modelID: model
+            )
+            if let self {
+                promptContext.userFirstName = NSFullUserName().components(separatedBy: " ").first
+                promptContext.workspaceFiles = (try? FileManager.default.contentsOfDirectory(atPath: SandboxManager.directory(for: conversation.id).path))?.sorted() ?? []
+                promptContext.activeSkillNames = conversation.activeSkillPaths.compactMap { path in
+                    self.skills.skills.first(where: { $0.folderPath == path })?.name
+                }
+                promptContext.memoryCount = self.memories.count
+                promptContext.attachmentNames = conversation.realMessages.flatMap { $0.attachments.map(\.filename) }
+            }
+            finalMessages.insert(ChatMessage(role: "system", content: SystemPrompt.compose(promptContext)), at: min(composeInsertIndex, finalMessages.count))
             if shouldPrefetchSearch, let self {
                 do {
                     let results = try await CompatibleChatClient.shared.searchWeb(query: text, endpoint: trimmedSearchEndpoint)
@@ -1573,56 +1592,76 @@ final class AppModel {
                         }
                     }
                 } else {
-                    // Resilience wrapper: a send made offline waits for the
-                    // network (the turn stays on screen, honestly labeled);
-                    // transient failures before ANY event arrived retry with
-                    // backoff. Once events flowed, a retry could duplicate
-                    // the turn — those surface the normal error card.
-                    var deliveredEvents = false
-                    var attempt = 0
+                    // Two nested recoveries around the stream:
+                    // - inner (resilience): offline sends wait for the
+                    //   network; transient failures before ANY event
+                    //   arrived retry with backoff. Once events flowed, a
+                    //   retry could duplicate the turn — error card instead.
+                    // - outer (auto-continue): a reply cut at the output
+                    //   cap silently continues into the SAME message, at
+                    //   most twice, with a quiet activity note.
+                    var continueCount = 0
+                    var streamedText = ""
                     while true {
-                        do {
-                            if let self, !self.isOnline {
-                                self.postRetryNote("Offline — waiting for the network", to: conversation, assistantID: assistantID,
-                                                   finish: "Sent once the connection returned")
-                                guard await self.waitForConnectivity(timeout: 600) else {
-                                    throw APIError.message("Still offline after 10 minutes — this reply wasn't sent. Try again when you're back online.")
+                        var deliveredEvents = false
+                        var attempt = 0
+                        while true {
+                            do {
+                                if let self, !self.isOnline {
+                                    self.postRetryNote("Offline — waiting for the network", to: conversation, assistantID: assistantID,
+                                                       finish: "Sent once the connection returned")
+                                    guard await self.waitForConnectivity(timeout: 600) else {
+                                        throw APIError.message("Still offline after 10 minutes — this reply wasn't sent. Try again when you're back online.")
+                                    }
                                 }
-                            }
-                            try Task.checkCancellation()
-                            let events = CompatibleChatClient.shared.streamChatEvents(
-                                profile: profile,
-                                credential: credential,
-                                model: wireModel,
-                                thinking: thinking,
-                                modelInfo: modelInfo,
-                                messages: finalMessages,
-                                tools: tools,
-                                toolContext: tools.isEmpty ? nil : toolContext,
-                                conversationKey: conversation.id
-                            )
-                            var batch: [ChatStreamEvent] = []
-                            for try await event in events {
-                                deliveredEvents = true
-                                batch.append(event)
-                                if batch.count >= 8 {
+                                try Task.checkCancellation()
+                                let events = CompatibleChatClient.shared.streamChatEvents(
+                                    profile: profile,
+                                    credential: credential,
+                                    model: wireModel,
+                                    thinking: thinking,
+                                    modelInfo: modelInfo,
+                                    messages: finalMessages,
+                                    tools: tools,
+                                    toolContext: tools.isEmpty ? nil : toolContext,
+                                    conversationKey: conversation.id
+                                )
+                                var batch: [ChatStreamEvent] = []
+                                for try await event in events {
+                                    deliveredEvents = true
+                                    if case .delta(let content, _) = event { streamedText += content }
+                                    batch.append(event)
+                                    if batch.count >= 8 {
+                                        self?.apply(batch, to: conversation, assistantID: assistantID)
+                                        batch.removeAll(keepingCapacity: true)
+                                    }
+                                }
+                                if !batch.isEmpty {
                                     self?.apply(batch, to: conversation, assistantID: assistantID)
-                                    batch.removeAll(keepingCapacity: true)
                                 }
+                                break
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch where !deliveredEvents && attempt < 2 && Self.isTransientFailure(error) {
+                                attempt += 1
+                                let delay = Double(attempt * attempt) * 2 + Double.random(in: 0...0.5)
+                                self?.postRetryNote("Connection hiccup — retrying in \(Int(delay))s", to: conversation, assistantID: assistantID,
+                                                    finish: "Retried after a transient failure")
+                                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                             }
-                            if !batch.isEmpty {
-                                self?.apply(batch, to: conversation, assistantID: assistantID)
-                            }
-                            break
-                        } catch is CancellationError {
-                            throw CancellationError()
-                        } catch where !deliveredEvents && attempt < 2 && Self.isTransientFailure(error) {
-                            attempt += 1
-                            let delay = Double(attempt * attempt) * 2 + Double.random(in: 0...0.5)
-                            self?.postRetryNote("Connection hiccup — retrying in \(Int(delay))s", to: conversation, assistantID: assistantID,
-                                                finish: "Retried after a transient failure")
-                            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                         }
+                        // Auto-continue: only on a provider-reported length
+                        // cut, only with real partial text, at most twice.
+                        guard let self,
+                              self.finishReasonByMessage[assistantID] == "length",
+                              continueCount < 2,
+                              !streamedText.isEmpty else { break }
+                        continueCount += 1
+                        self.finishReasonByMessage[assistantID] = nil
+                        self.postRetryNote("Reply hit the length cap — continuing", to: conversation, assistantID: assistantID,
+                                           finish: "Continued automatically")
+                        finalMessages.append(ChatMessage(role: "assistant", content: streamedText))
+                        finalMessages.append(ChatMessage(role: "user", content: "Continue exactly where you left off — no repetition, no preamble."))
                     }
                 }
                 self?.finishGeneration(for: conversation, assistantID: assistantID)
@@ -1865,6 +1904,12 @@ final class AppModel {
                 promptTokens = prompt ?? promptTokens
                 completionTokens = completion ?? completionTokens
                 cachedTokens = cached ?? cachedTokens
+            case .finished(let reason):
+                if let reason {
+                    // Normalize the providers' truncation vocabulary.
+                    let normalized = ["length", "max_tokens", "max_output_tokens"].contains(reason.lowercased()) ? "length" : reason
+                    finishReasonByMessage[assistantID] = normalized
+                }
             case .activityStarted(let id, let name, let argument):
                 var record = ActivityRecord(id: id, kind: .from(toolName: name), toolName: name, argument: argument)
                 record.isRunning = true
@@ -1925,6 +1970,7 @@ final class AppModel {
     private func completeGeneration(for conversation: Conversation, assistantID: UUID) {
         flushReveal(for: assistantID, conversation: conversation)
         recordUsage(for: conversation, assistantID: assistantID)
+        finishReasonByMessage[assistantID] = nil
         // The end-of-reply state changes (streaming indicator out, action
         // row and usage label in) fade rather than popping in one frame.
         withAnimation(.easeOut(duration: 0.3)) {

@@ -860,22 +860,67 @@ struct AskUserQuestionPayload: Decodable, Equatable {
         var id: String { label }
         let label: String
         let description: String?
+        /// At most one per question — rendered with a "(Recommended)" tag.
+        var recommended: Bool = false
+
+        private enum CodingKeys: String, CodingKey { case label, description, recommended }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            label = try container.decode(String.self, forKey: .label)
+            description = try container.decodeIfPresent(String.self, forKey: .description)
+            recommended = try container.decodeIfPresent(Bool.self, forKey: .recommended) ?? false
+        }
     }
-    let question: String
-    let options: [Option]
-    var multiSelect: Bool = false
+
+    struct Question: Decodable, Equatable, Identifiable {
+        var id: String { question }
+        /// Short chip label ("Approach", "Scope") shown above the question
+        /// in multi-question cards.
+        let header: String?
+        let question: String
+        let options: [Option]
+        var multiSelect: Bool = false
+
+        private enum CodingKeys: String, CodingKey { case header, question, options, multiSelect }
+
+        init(header: String?, question: String, options: [Option], multiSelect: Bool) {
+            self.header = header
+            self.question = question
+            self.options = options
+            self.multiSelect = multiSelect
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            header = try container.decodeIfPresent(String.self, forKey: .header)
+            question = try container.decode(String.self, forKey: .question)
+            options = try container.decodeIfPresent([Option].self, forKey: .options) ?? []
+            multiSelect = try container.decodeIfPresent(Bool.self, forKey: .multiSelect) ?? false
+        }
+    }
+
+    /// 1–4 questions per card. The legacy single-question JSON shape
+    /// (top-level question/options/multiSelect) still decodes, as one
+    /// entry here — older transcripts keep rendering.
+    let questions: [Question]
     var allowNotes: Bool = true
 
     private enum CodingKeys: String, CodingKey {
-        case question, options, multiSelect, allowNotes
+        case question, options, multiSelect, allowNotes, questions
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        question = try container.decode(String.self, forKey: .question)
-        options = try container.decodeIfPresent([Option].self, forKey: .options) ?? []
-        multiSelect = try container.decodeIfPresent(Bool.self, forKey: .multiSelect) ?? false
         allowNotes = try container.decodeIfPresent(Bool.self, forKey: .allowNotes) ?? true
+        if let multi = try container.decodeIfPresent([Question].self, forKey: .questions) {
+            questions = Array(multi.prefix(4))
+        } else {
+            let question = try container.decode(String.self, forKey: .question)
+            let options = try container.decodeIfPresent([Option].self, forKey: .options) ?? []
+            let multiSelect = try container.decodeIfPresent(Bool.self, forKey: .multiSelect) ?? false
+            questions = [Question(header: nil, question: question, options: options, multiSelect: multiSelect)]
+        }
     }
 
     /// Fences must sit at the start of a line — prose that merely *mentions*
@@ -891,7 +936,8 @@ struct AskUserQuestionPayload: Decodable, Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let data = jsonText.data(using: .utf8),
               let payload = try? JSONDecoder().decode(AskUserQuestionPayload.self, from: data),
-              !payload.question.isEmpty, !payload.options.isEmpty else {
+              !payload.questions.isEmpty,
+              payload.questions.allSatisfy({ !$0.question.isEmpty && $0.options.count >= 2 }) else {
             return nil
         }
         let prefix = String(content[content.startIndex..<openMatch.lowerBound])
@@ -1165,6 +1211,9 @@ enum ChatStreamEvent: Sendable {
     /// `nil` when the provider doesn't report it at all (not the same as
     /// zero — zero means "reported, no hit this time").
     case usage(prompt: Int?, completion: Int?, cachedTokens: Int?)
+    /// The reply's terminal state, when the provider reports one —
+    /// "length" (normalized from length/max_tokens) drives auto-continue.
+    case finished(reason: String?)
     /// A tool call began executing — the transcript shows a running
     /// activity line at the exact point in the reply where the model
     /// paused. The multi-round request/response exchange happens inside

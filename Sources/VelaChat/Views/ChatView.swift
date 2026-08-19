@@ -1707,23 +1707,39 @@ private struct AskUserQuestionCard: View {
     let payload: AskUserQuestionPayload
     let interactive: Bool
 
-    @State private var selected: Set<String> = []
+    /// Selections keyed by question text — each question answers
+    /// independently; Send unlocks once every one has an answer.
+    @State private var selected: [String: Set<String>] = [:]
     @State private var notes = ""
     @State private var submitted = false
 
-    private var canSubmit: Bool { !selected.isEmpty }
+    private var canSubmit: Bool {
+        payload.questions.allSatisfy { !(selected[$0.id] ?? []).isEmpty }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "questionmark.circle.fill")
-                    .foregroundStyle(Theme.accent)
-                Text(payload.question)
-                    .font(.body.weight(.semibold))
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(payload.options) { option in
-                    optionRow(option)
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(payload.questions) { question in
+                VStack(alignment: .leading, spacing: 8) {
+                    if let header = question.header, !header.isEmpty {
+                        Text(header.uppercased())
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Theme.accent)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Theme.accentSoft.opacity(0.5), in: Capsule())
+                    }
+                    HStack(spacing: 8) {
+                        Image(systemName: "questionmark.circle.fill")
+                            .foregroundStyle(Theme.accent)
+                        Text(question.question)
+                            .font(.body.weight(.semibold))
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(question.options) { option in
+                            optionRow(option, in: question)
+                        }
+                    }
                 }
             }
             if payload.allowNotes, interactive, !submitted {
@@ -1752,23 +1768,33 @@ private struct AskUserQuestionCard: View {
         .animation(.easeOut(duration: 0.2), value: submitted)
     }
 
-    private func optionRow(_ option: AskUserQuestionPayload.Option) -> some View {
-        Button {
+    private func optionRow(_ option: AskUserQuestionPayload.Option, in question: AskUserQuestionPayload.Question) -> some View {
+        let isOn = (selected[question.id] ?? []).contains(option.label)
+        return Button {
             guard interactive, !submitted else { return }
-            if payload.multiSelect {
-                if selected.contains(option.label) { selected.remove(option.label) } else { selected.insert(option.label) }
+            var current = selected[question.id] ?? []
+            if question.multiSelect {
+                if current.contains(option.label) { current.remove(option.label) } else { current.insert(option.label) }
             } else {
-                selected = [option.label]
+                current = [option.label]
             }
+            selected[question.id] = current
         } label: {
             HStack(alignment: .top, spacing: 9) {
-                Image(systemName: symbol(for: option))
-                    .foregroundStyle(selected.contains(option.label) ? Theme.accent : Theme.tertiaryText)
+                Image(systemName: symbol(isOn: isOn, multiSelect: question.multiSelect))
+                    .foregroundStyle(isOn ? Theme.accent : Theme.tertiaryText)
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(option.label)
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(Theme.text)
+                    HStack(spacing: 6) {
+                        Text(option.label)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(Theme.text)
+                        if option.recommended {
+                            Text("Recommended")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
                     if let description = option.description, !description.isEmpty {
                         Text(description)
                             .font(.caption)
@@ -1780,13 +1806,13 @@ private struct AskUserQuestionCard: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(
-                selected.contains(option.label) ? Theme.accentSoft.opacity(0.7) : Color.clear,
+                isOn ? Theme.accentSoft.opacity(0.7) : Color.clear,
                 in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
                     .stroke(
-                        selected.contains(option.label) ? Theme.accent.opacity(0.35) : Theme.controlStroke.opacity(0.4),
+                        isOn ? Theme.accent.opacity(0.35) : Theme.controlStroke.opacity(0.4),
                         lineWidth: 1
                     )
             }
@@ -1796,17 +1822,25 @@ private struct AskUserQuestionCard: View {
         .disabled(!interactive || submitted)
     }
 
-    private func symbol(for option: AskUserQuestionPayload.Option) -> String {
-        let isOn = selected.contains(option.label)
-        if payload.multiSelect { return isOn ? "checkmark.square.fill" : "square" }
+    private func symbol(isOn: Bool, multiSelect: Bool) -> String {
+        if multiSelect { return isOn ? "checkmark.square.fill" : "square" }
         return isOn ? "largecircle.fill.circle" : "circle"
     }
 
     private func submit() {
         guard canSubmit else { return }
         submitted = true
-        let chosen = payload.options.filter { selected.contains($0.label) }.map(\.label)
-        var summary = chosen.count == 1 ? "I choose: \(chosen[0])" : "I choose: \(chosen.joined(separator: ", "))"
+        var lines: [String] = []
+        for question in payload.questions {
+            let chosen = question.options
+                .filter { (selected[question.id] ?? []).contains($0.label) }
+                .map(\.label)
+            let name = question.header ?? question.question
+            lines.append(payload.questions.count == 1
+                ? "I choose: \(chosen.joined(separator: ", "))"
+                : "\(name): \(chosen.joined(separator: ", "))")
+        }
+        var summary = lines.joined(separator: "\n")
         let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedNotes.isEmpty {
             summary += "\n\nNote: \(trimmedNotes)"

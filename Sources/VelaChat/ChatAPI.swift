@@ -290,8 +290,14 @@ final class CompatibleChatClient: @unchecked Sendable {
         // which get executed locally and fed back for another round. The
         // caller only ever sees normal delta/usage events plus `.toolUse`
         // for transparency — never the raw multi-round exchange.
-        let maxRounds = 5
+        // Adaptive budget: up to 10 rounds, but a round of tool calls
+        // identical to earlier ones short-circuits — repetition is the
+        // loop-detection signal, not just a hard cap.
+        let maxRounds = 10
         var usageTotals = ToolLoopUsage()
+        var toolsDisabled = false
+        var seenCallSignatures = Set<String>()
+        var lastFinishReason: String?
         for round in 0..<maxRounds {
             let url = try endpointURL(profile: profile, path: "chat/completions")
             var request = URLRequest(url: url)
@@ -312,7 +318,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 think: settings.think,
                 keepAlive: profile.kind == .ollama ? "10m" : nil
             )
-            request.httpBody = try Self.encodeWithTools(body, tools: round < maxRounds - 1 ? tools : [])
+            request.httpBody = try Self.encodeWithTools(body, tools: (round < maxRounds - 1 && !toolsDisabled) ? tools : [])
 
             let (bytes, response) = try await session.bytes(for: request)
             try await Self.checkStream(response: response, bytes: bytes)
@@ -350,6 +356,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                     }
                     continue
                 }
+                if let reason = choice.finishReason, !reason.isEmpty { lastFinishReason = reason }
                 let content = choice.delta.contentText
                 let reasoning = choice.delta.reasoningText
                 if !content.isEmpty { textForThisRound += content }
@@ -372,7 +379,10 @@ final class CompatibleChatClient: @unchecked Sendable {
                 }
             }
 
-            guard sawToolCalls, !pendingToolCalls.isEmpty, let toolContext, round < maxRounds - 1 else { return }
+            guard sawToolCalls, !pendingToolCalls.isEmpty, let toolContext, round < maxRounds - 1, !toolsDisabled else {
+                onEvent(.finished(reason: lastFinishReason))
+                return
+            }
             usageTotals.finishRound()
 
             let calls = pendingToolCalls.sorted { $0.key < $1.key }.map(\.value)
@@ -385,6 +395,23 @@ final class CompatibleChatClient: @unchecked Sendable {
                 imageDataURLs: [],
                 toolCalls: calls.map { .init(id: $0.id, function: .init(name: $0.name, arguments: $0.arguments)) }
             ))
+            // Loop detection: a round consisting entirely of calls already
+            // made (same tool, same arguments) is a stuck model — answer
+            // the calls synthetically, tell it to stop, and pull the tools.
+            let signatures = calls.map { "\($0.name)|\($0.arguments)" }
+            let allRepeated = signatures.allSatisfy(seenCallSignatures.contains)
+            seenCallSignatures.formUnion(signatures)
+            if allRepeated {
+                for call in calls {
+                    wireMessages.append(APIMessage(role: "tool", text: "Duplicate of an identical earlier call — its result has not changed. Answer with what you already have.", imageDataURLs: [], toolCallID: call.id))
+                }
+                wireMessages.append(APIMessage(role: "system", text: "You repeated identical tool calls. Stop calling tools and answer now.", imageDataURLs: []))
+                let noteID = UUID()
+                onEvent(.activityStarted(id: noteID, name: "note", argument: "Stopped a repeating tool loop"))
+                onEvent(.activityFinished(id: noteID, result: "Identical tool calls were repeated; the model was asked to answer directly.", isError: false))
+                toolsDisabled = true
+                continue
+            }
             for call in calls {
                 let activityID = UUID()
                 onEvent(.activityStarted(id: activityID, name: call.name, argument: ToolCatalog.displayArgument(from: call.arguments)))
@@ -399,7 +426,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 wireMessages.append(APIMessage(role: "system", text: "Tool budget for this reply is exhausted — answer now with what you have.", imageDataURLs: []))
                 let noteID = UUID()
                 onEvent(.activityStarted(id: noteID, name: "note", argument: "Paused tool use — answering with what it has"))
-                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (5 rounds) was reached.", isError: false))
+                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (10 rounds) was reached.", isError: false))
             }
         }
     }
@@ -654,8 +681,10 @@ final class CompatibleChatClient: @unchecked Sendable {
         // `response.output_item.added` + `response.function_call_arguments.
         // delta`, and replayed as typed `function_call` /
         // `function_call_output` input items keyed by `call_id`.
-        let maxRounds = 5
+        let maxRounds = 10
         var usageTotals = ToolLoopUsage()
+        var toolsDisabled = false
+        var seenCallSignatures = Set<String>()
         for round in 0..<maxRounds {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -665,7 +694,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             addHeaders(to: &request, profile: ProviderProfile(kind: .codex, name: "Codex", endpoint: "", model: model), credential: credential)
             request.httpBody = try Self.encodeCodexBody(
                 CodexResponsesBody(model: model, thinking: thinking, input: inputItems),
-                tools: round < maxRounds - 1 ? tools : []
+                tools: (round < maxRounds - 1 && !toolsDisabled) ? tools : []
             )
 
             let (bytes, response) = try await session.bytes(for: request)
@@ -729,10 +758,27 @@ final class CompatibleChatClient: @unchecked Sendable {
                 }
             }
 
-            guard !pendingCalls.isEmpty, let toolContext, round < maxRounds - 1 else { return }
+            guard !pendingCalls.isEmpty, let toolContext, round < maxRounds - 1, !toolsDisabled else {
+                onEvent(.finished(reason: nil))
+                return
+            }
             usageTotals.finishRound()
             for call in pendingCalls {
                 inputItems.append(.functionCall(callID: call.callID, name: call.name, arguments: call.arguments))
+            }
+            let signatures = pendingCalls.map { "\($0.name)|\($0.arguments)" }
+            let allRepeated = signatures.allSatisfy(seenCallSignatures.contains)
+            seenCallSignatures.formUnion(signatures)
+            if allRepeated {
+                for call in pendingCalls {
+                    inputItems.append(.functionCallOutput(callID: call.callID, output: "Duplicate of an identical earlier call — its result has not changed. Answer with what you already have."))
+                }
+                inputItems.append(.message(role: "developer", content: [.text("You repeated identical tool calls. Stop calling tools and answer now.", isOutput: false)]))
+                let noteID = UUID()
+                onEvent(.activityStarted(id: noteID, name: "note", argument: "Stopped a repeating tool loop"))
+                onEvent(.activityFinished(id: noteID, result: "Identical tool calls were repeated; the model was asked to answer directly.", isError: false))
+                toolsDisabled = true
+                continue
             }
             for call in pendingCalls {
                 let activityID = UUID()
@@ -745,7 +791,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 inputItems.append(.message(role: "developer", content: [.text("Tool budget for this reply is exhausted — answer now with what you have.", isOutput: false)]))
                 let noteID = UUID()
                 onEvent(.activityStarted(id: noteID, name: "note", argument: "Paused tool use — answering with what it has"))
-                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (5 rounds) was reached.", isError: false))
+                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (10 rounds) was reached.", isError: false))
             }
         }
     }
@@ -830,8 +876,10 @@ final class CompatibleChatClient: @unchecked Sendable {
             throw APIError.message("Could not build the Anthropic request.")
         }
 
-        let maxRounds = 5
+        let maxRounds = 10
         var usageTotals = ToolLoopUsage()
+        var toolsDisabled = false
+        var seenCallSignatures = Set<String>()
         for round in 0..<maxRounds {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -923,7 +971,10 @@ final class CompatibleChatClient: @unchecked Sendable {
                 }
             }
 
-            guard !toolBlocks.isEmpty, let toolContext, round < maxRounds - 1 else { return }
+            guard !toolBlocks.isEmpty, let toolContext, round < maxRounds - 1, !toolsDisabled else {
+                onEvent(.finished(reason: nil))
+                return
+            }
             usageTotals.finishRound()
 
             let calls = toolBlocks.sorted { $0.key < $1.key }.map(\.value)
@@ -936,6 +987,23 @@ final class CompatibleChatClient: @unchecked Sendable {
                 assistantContent.append(["type": "tool_use", "id": call.id, "name": call.name, "input": input])
             }
             turnsJSON.append(["role": "assistant", "content": assistantContent])
+
+            let signatures = calls.map { "\($0.name)|\($0.json)" }
+            let allRepeated = signatures.allSatisfy(seenCallSignatures.contains)
+            seenCallSignatures.formUnion(signatures)
+            if allRepeated {
+                var duplicateResults: [[String: Any]] = []
+                for call in calls {
+                    duplicateResults.append(["type": "tool_result", "tool_use_id": call.id, "content": "Duplicate of an identical earlier call — its result has not changed. Answer with what you already have."])
+                }
+                duplicateResults.append(["type": "text", "text": "(You repeated identical tool calls. Stop calling tools and answer now.)"])
+                turnsJSON.append(["role": "user", "content": duplicateResults])
+                let noteID = UUID()
+                onEvent(.activityStarted(id: noteID, name: "note", argument: "Stopped a repeating tool loop"))
+                onEvent(.activityFinished(id: noteID, result: "Identical tool calls were repeated; the model was asked to answer directly.", isError: false))
+                toolsDisabled = true
+                continue
+            }
 
             var toolResultContent: [[String: Any]] = []
             for call in calls {
@@ -950,7 +1018,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 turnsJSON.append(["role": "user", "content": [["type": "text", "text": "(Tool budget for this reply is exhausted — answer now with what you have.)"]]])
                 let noteID = UUID()
                 onEvent(.activityStarted(id: noteID, name: "note", argument: "Paused tool use — answering with what it has"))
-                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (5 rounds) was reached.", isError: false))
+                onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (10 rounds) was reached.", isError: false))
             }
         }
     }

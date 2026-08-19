@@ -49,13 +49,10 @@ enum ToolCatalog {
         guidance: "Search results only give snippets — fetch the page when you need the substance. Quote or summarize what you actually read, citing the URL."
     )
 
-    static let currentDatetime = Definition(
-        name: "current_datetime",
-        description: "Get the user's current local date, time, and timezone. Use whenever \"today\", \"now\", or any relative date matters — do not guess the date.",
-        parametersJSON: #"{"type":"object","properties":{}}"#,
-        summary: "get the current local date and time",
-        guidance: "Your training data does not tell you today's date. Call this before reasoning about anything time-relative."
-    )
+    // current_datetime was retired: the system prompt's Environment
+    // section stamps the live date/time on every request, which is both
+    // cheaper and always present. (ActivityKind.datetime remains so old
+    // transcripts still render their activity lines.)
 
     static let calculator = Definition(
         name: "calculator",
@@ -201,8 +198,64 @@ enum ToolCatalog {
             ?? ""
     }
 
+    /// Outer wrapper: repairs malformed argument JSON where possible and
+    /// bounds every tool at 120s — one hung tool must not wedge the whole
+    /// reply. ("Error" prefix remains load-bearing for activity tinting.)
     static func execute(name: String, argumentsJSON: String, context: ExecutionContext) async -> String {
-        let arguments = (try? JSONSerialization.jsonObject(with: Data(argumentsJSON.utf8))) as? [String: Any]
+        await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                await executeInner(name: name, argumentsJSON: argumentsJSON, context: context)
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 120_000_000_000)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? "Error: the \(name) tool timed out after 120 seconds."
+        }
+    }
+
+    /// Models sometimes emit almost-JSON arguments (trailing commas,
+    /// smart quotes, prose around the object). Salvage the object rather
+    /// than failing the call outright.
+    static func parseArguments(_ argumentsJSON: String) -> [String: Any]? {
+        if let parsed = (try? JSONSerialization.jsonObject(with: Data(argumentsJSON.utf8))) as? [String: Any] {
+            return parsed
+        }
+        var repaired = argumentsJSON
+            .replacingOccurrences(of: "\u{201C}", with: "\"")
+            .replacingOccurrences(of: "\u{201D}", with: "\"")
+        // Trailing commas before a closing brace/bracket.
+        repaired = repaired.replacingOccurrences(of: #",\s*([}\]])"#, with: "$1", options: .regularExpression)
+        if let parsed = (try? JSONSerialization.jsonObject(with: Data(repaired.utf8))) as? [String: Any] {
+            return parsed
+        }
+        // Extract the first balanced {...} span from surrounding prose.
+        guard let start = repaired.firstIndex(of: "{") else { return nil }
+        var depth = 0
+        var inString = false
+        var previous: Character = " "
+        for index in repaired[start...].indices {
+            let character = repaired[index]
+            if character == "\"" && previous != "\\" { inString.toggle() }
+            if !inString {
+                if character == "{" { depth += 1 }
+                if character == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        let candidate = String(repaired[start...index])
+                        return (try? JSONSerialization.jsonObject(with: Data(candidate.utf8))) as? [String: Any]
+                    }
+                }
+            }
+            previous = character
+        }
+        return nil
+    }
+
+    private static func executeInner(name: String, argumentsJSON: String, context: ExecutionContext) async -> String {
+        let arguments = parseArguments(argumentsJSON)
 
         switch name {
         case searchConversations.name:
@@ -224,8 +277,6 @@ enum ToolCatalog {
         case fetchURL.name:
             guard let urlString = arguments?["url"] as? String, !urlString.isEmpty else { return "Error: \"url\" is required." }
             return await fetchURLResult(urlString: urlString)
-        case currentDatetime.name:
-            return currentDatetimeResult()
         case calculator.name:
             guard let expression = arguments?["expression"] as? String, !expression.isEmpty else { return "Error: \"expression\" is required." }
             return calculatorResult(expression: expression)
@@ -288,13 +339,6 @@ enum ToolCatalog {
         return matches
             .map { "[\($0.id.uuidString)] (\($0.topic ?? "General")) \($0.content)" }
             .joined(separator: "\n")
-    }
-
-    private static func currentDatetimeResult() -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .full
-        formatter.timeStyle = .long
-        return formatter.string(from: Date())
     }
 
     private static func readAttachmentResult(filename: String, context: ExecutionContext) -> String {
