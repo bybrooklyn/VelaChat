@@ -525,6 +525,8 @@ final class CompatibleChatClient: @unchecked Sendable {
             return RequestSettings(reasoningEffort: nil, reasoning: nil, thinking: nil, think: nil)
         }
         switch kind {
+        case .appleIntelligence:
+            return RequestSettings(reasoningEffort: nil, reasoning: nil, thinking: nil, think: nil)
         case .deepSeek:
             let deepSeekEffort: String?
             switch level {

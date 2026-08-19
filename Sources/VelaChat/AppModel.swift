@@ -770,15 +770,22 @@ final class AppModel {
             guard let self, let conversation else { return }
             var titleText = ""
             do {
-                let events = CompatibleChatClient.shared.streamChatEvents(
-                    profile: profile,
-                    credential: credential,
-                    model: model,
-                    thinking: .auto,
-                    messages: [ChatMessage(role: "user", content: prompt)]
-                )
-                for try await event in events {
-                    if case .delta(let content, _) = event { titleText += content }
+                if AppleIntelligence.isAvailable {
+                    // On-device: instant, free, and never burns provider quota.
+                    titleText = try await AppleIntelligence.complete(prompt: prompt)
+                } else if profile.kind != .appleIntelligence {
+                    let events = CompatibleChatClient.shared.streamChatEvents(
+                        profile: profile,
+                        credential: credential,
+                        model: model,
+                        thinking: .auto,
+                        messages: [ChatMessage(role: "user", content: prompt)]
+                    )
+                    for try await event in events {
+                        if case .delta(let content, _) = event { titleText += content }
+                    }
+                } else {
+                    return
                 }
             } catch {
                 print("[VelaChat] Instant title failed: \(error)")
@@ -820,15 +827,21 @@ final class AppModel {
             guard let self, let conversation else { return }
             var titleText = ""
             do {
-                let events = CompatibleChatClient.shared.streamChatEvents(
-                    profile: profile,
-                    credential: credential,
-                    model: model,
-                    thinking: .auto,
-                    messages: [ChatMessage(role: "user", content: prompt)]
-                )
-                for try await event in events {
-                    if case .delta(let content, _) = event { titleText += content }
+                if AppleIntelligence.isAvailable {
+                    titleText = try await AppleIntelligence.complete(prompt: prompt)
+                } else if profile.kind == .appleIntelligence {
+                    return
+                } else {
+                    let events = CompatibleChatClient.shared.streamChatEvents(
+                        profile: profile,
+                        credential: credential,
+                        model: model,
+                        thinking: .auto,
+                        messages: [ChatMessage(role: "user", content: prompt)]
+                    )
+                    for try await event in events {
+                        if case .delta(let content, _) = event { titleText += content }
+                    }
                 }
             } catch {
                 print("[VelaChat] Title generation failed for \"\(conversation.title)\": \(error)")
@@ -1226,6 +1239,7 @@ final class AppModel {
         // an uncataloged compatible endpoint or a manual model override used
         // to silently lose all tools because `modelInfo` came back nil.
         let modelSupportsTools = (modelInfo ?? RemoteModel(id: model)).supportsTools
+            && profile.kind != .appleIntelligence  // on-device path has no tool loop
         var tools: [ToolCatalog.Definition] = []
         if modelSupportsTools {
             if isConversationSearchEnabled {
@@ -1345,6 +1359,13 @@ final class AppModel {
                     try await PreviewResponder.stream(for: text, model: model) { [weak self, weak conversation] token in
                         guard let self, let conversation else { return }
                         self.enqueue(.text(token), for: assistantID, conversation: conversation)
+                    }
+                } else if profile.kind == .appleIntelligence {
+                    try await AppleIntelligence.streamChat(messages: finalMessages) { [weak self, weak conversation] delta in
+                        Task { @MainActor [weak self, weak conversation] in
+                            guard let self, let conversation else { return }
+                            self.enqueue(.text(delta), for: assistantID, conversation: conversation)
+                        }
                     }
                 } else {
                     let events = CompatibleChatClient.shared.streamChatEvents(
@@ -1750,15 +1771,24 @@ final class AppModel {
             defer { self.compactingConversationIDs.remove(conversation.id) }
             var summaryText = ""
             do {
-                let events = CompatibleChatClient.shared.streamChatEvents(
-                    profile: profile,
-                    credential: credential,
-                    model: model,
-                    thinking: .auto,
-                    messages: [ChatMessage(role: "user", content: prompt)]
-                )
-                for try await event in events {
-                    if case .delta(let content, _) = event { summaryText += content }
+                let promptWordCount = prompt.split(separator: " ").count
+                if AppleIntelligence.isAvailable, promptWordCount < AppleIntelligence.contextBudgetWords {
+                    // On-device: free, instant-ish, and the transcript
+                    // never leaves the Mac just to be summarized.
+                    summaryText = try await AppleIntelligence.complete(prompt: prompt)
+                } else if profile.kind == .appleIntelligence {
+                    throw AppleIntelligence.Unavailable(reason: AppleIntelligence.unavailabilityReason ?? "The conversation is too long for the on-device model.")
+                } else {
+                    let events = CompatibleChatClient.shared.streamChatEvents(
+                        profile: profile,
+                        credential: credential,
+                        model: model,
+                        thinking: .auto,
+                        messages: [ChatMessage(role: "user", content: prompt)]
+                    )
+                    for try await event in events {
+                        if case .delta(let content, _) = event { summaryText += content }
+                    }
                 }
             } catch {
                 if conversation.id == self.activeConversationID { self.statusMessage = nil }
@@ -1831,15 +1861,22 @@ final class AppModel {
             guard let self else { return }
             var text = ""
             do {
-                let events = CompatibleChatClient.shared.streamChatEvents(
-                    profile: profile,
-                    credential: credential,
-                    model: model,
-                    thinking: .auto,
-                    messages: [ChatMessage(role: "user", content: prompt)]
-                )
-                for try await event in events {
-                    if case .delta(let content, _) = event { text += content }
+                let promptWordCount = prompt.split(separator: " ").count
+                if AppleIntelligence.isAvailable, promptWordCount < AppleIntelligence.contextBudgetWords {
+                    text = try await AppleIntelligence.complete(prompt: prompt)
+                } else if profile.kind == .appleIntelligence {
+                    throw AppleIntelligence.Unavailable(reason: AppleIntelligence.unavailabilityReason ?? "The conversation is too long for the on-device model.")
+                } else {
+                    let events = CompatibleChatClient.shared.streamChatEvents(
+                        profile: profile,
+                        credential: credential,
+                        model: model,
+                        thinking: .auto,
+                        messages: [ChatMessage(role: "user", content: prompt)]
+                    )
+                    for try await event in events {
+                        if case .delta(let content, _) = event { text += content }
+                    }
                 }
             } catch {
                 if conversation.id == self.activeConversationID { self.statusMessage = nil }

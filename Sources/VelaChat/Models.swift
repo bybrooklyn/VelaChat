@@ -110,6 +110,7 @@ enum NativeWebSearch {
 
 enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case preview = "Preview"
+    case appleIntelligence = "Apple Intelligence"
     case openAI = "OpenAI"
     case anthropic = "Anthropic"
     case google = "Google Gemini"
@@ -131,6 +132,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     var tint: Color {
         switch self {
         case .preview: Theme.accent
+        case .appleIntelligence: Color(hex: 0xE8E4F0)
         case .openAI, .codex: Color(hex: 0x10A37F)
         case .anthropic: Color(hex: 0xD97757)
         case .google: Color(hex: 0x4285F4)
@@ -150,6 +152,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     var shortDescription: String {
         switch self {
         case .preview: "Offline sample replies"
+        case .appleIntelligence: "On-device Apple Intelligence — private, free, works offline"
         case .openAI: "OpenAI’s own API — the OpenAI-compatible standard"
         case .anthropic: "Claude, via Anthropic’s native Messages API"
         case .google: "Gemini, via Google’s OpenAI-compatible endpoint"
@@ -170,9 +173,9 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// Every hosted provider here speaks the same `/chat/completions` shape
     /// that OpenAI defined — surfaced in the UI so the relationship between
     /// "OpenAI" and "OpenAI Compatible" reads as one family, not two ideas.
-    var speaksOpenAIProtocol: Bool { self != .preview && self != .codex }
+    var speaksOpenAIProtocol: Bool { self != .preview && self != .codex && self != .appleIntelligence }
 
-    var isLocal: Bool { self == .ollama || self == .lmStudio }
+    var isLocal: Bool { self == .ollama || self == .lmStudio || self == .appleIntelligence }
 
     /// Where the provider's real logo lives — fetched at runtime by
     /// `RemoteLogoLoader` (own site first, Google favicons fallback).
@@ -191,7 +194,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .ollama: "ollama.com"
         case .lmStudio: "lmstudio.ai"
         case .blockrun: "blockrun.ai"
-        case .preview, .compatible: nil
+        case .preview, .compatible, .appleIntelligence: nil
         }
     }
 
@@ -207,7 +210,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var requiresKey: Bool {
         switch self {
-        case .preview, .ollama, .lmStudio, .blockrun: false
+        case .preview, .ollama, .lmStudio, .blockrun, .appleIntelligence: false
         default: true
         }
     }
@@ -227,7 +230,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .ollama: URL(string: "https://ollama.com")
         case .lmStudio: URL(string: "https://lmstudio.ai")
         case .blockrun: URL(string: "https://blockrun.ai")
-        case .preview, .compatible: nil
+        case .preview, .compatible, .appleIntelligence: nil
         }
     }
 
@@ -236,6 +239,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     var automaticFallbackModel: String {
         switch self {
         case .preview: "preview"
+        case .appleIntelligence: "on-device"
         case .openAI: "gpt-5.6-terra"
         case .anthropic: "claude-sonnet-5"
         case .google: "gemini-3-pro"
@@ -282,6 +286,7 @@ struct ProviderProfile: Identifiable, Codable, Equatable, Sendable {
     static func defaults() -> [ProviderProfile] {
         [
             ProviderProfile(kind: .preview, name: "Preview", endpoint: "preview://local", model: "preview"),
+            ProviderProfile(kind: .appleIntelligence, name: "Apple Intelligence", endpoint: "appleintelligence://local", model: "on-device"),
             ProviderProfile(kind: .openAI, name: "OpenAI", endpoint: "https://api.openai.com/v1"),
             ProviderProfile(kind: .anthropic, name: "Anthropic", endpoint: "https://api.anthropic.com/v1"),
             ProviderProfile(kind: .google, name: "Google Gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta/openai"),
@@ -446,6 +451,8 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
         let lowerID = id.lowercased()
         let hasProviderSignal: Bool
         switch provider {
+        case .appleIntelligence:
+            hasProviderSignal = false
         case .deepSeek:
             // DeepSeek’s /models response intentionally exposes only IDs and
             // ownership. Its current V4 models have a documented thinking
@@ -477,6 +484,8 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
         // Do not present one universal ladder. These are the documented
         // provider defaults when a catalog does not describe the enum.
         switch provider {
+        case .appleIntelligence:
+            return [.auto]
         case .deepSeek:
             return [.auto, .off, .low, .high, .max]
         case .ollama, .lmStudio:
@@ -605,6 +614,8 @@ enum ModelCatalog {
         if model.supportsReasoning { score += 12 }
         if model.contextLength ?? 0 >= 100_000 { score += 4 }
         switch kind {
+        case .appleIntelligence:
+            score += 10
         case .codex:
             if lower.contains("gpt-5.6-sol") { score += 100 }
             else if lower.contains("gpt-5.6-terra") { score += 90 }

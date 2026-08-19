@@ -137,6 +137,7 @@ final class ProviderStore {
     /// as "configured" with nothing behind it.
     func isConfigured(_ profile: ProviderProfile) -> Bool {
         guard profile.kind != .preview else { return false }
+        if profile.kind == .appleIntelligence { return AppleIntelligence.isAvailable }
         if profile.kind.requiresKey {
             if profile.kind == .codex, codexCredential != nil { return true }
             return hasStoredKey(for: profile.id)
@@ -427,6 +428,10 @@ final class ProviderStore {
             statusByID[id] = .connected("Offline preview ready")
             return
         }
+        if profile.kind == .appleIntelligence {
+            await refreshModels(id: id, autoSelect: true)
+            return
+        }
         await refreshModels(id: id, autoSelect: true)
     }
 
@@ -475,11 +480,30 @@ final class ProviderStore {
     }
 
     func refreshModels(id: UUID, autoSelect: Bool = true) async {
-        guard let profile = profile(id: id), profile.kind != .preview else {
+        guard let profile = profile(id: id), profile.kind != .preview, profile.kind != .appleIntelligence else {
             if profile(id: id)?.kind == .preview {
                 modelsByID[id] = [RemoteModel(id: "preview", name: "Preview")]
                 refreshedAtByID[id] = Date()
                 statusByID[id] = .connected("Offline preview ready")
+            }
+            if profile(id: id)?.kind == .appleIntelligence {
+                if let reason = AppleIntelligence.unavailabilityReason {
+                    modelsByID[id] = []
+                    statusByID[id] = .failed(reason)
+                } else {
+                    modelsByID[id] = [RemoteModel(
+                        id: "on-device",
+                        name: "Apple Intelligence",
+                        description: "Apple's on-device model — private, free, offline.",
+                        contextLength: 4_096,
+                        supportsReasoning: false,
+                        supportsVision: false,
+                        supportsTools: false,
+                        isLocal: true
+                    )]
+                    statusByID[id] = .connected("On-device model ready")
+                }
+                refreshedAtByID[id] = Date()
             }
             return
         }

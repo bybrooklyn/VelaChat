@@ -330,6 +330,11 @@ struct ProviderEditorView: View {
     @ViewBuilder
     private func providerDetails(_ profile: ProviderProfile) -> some View {
         switch profile.kind {
+        case .appleIntelligence:
+            Section("On-device") {
+                Text(AppleIntelligence.unavailabilityReason ?? "Runs entirely on this Mac — no key, no network, no cost. Conversations never leave the device.")
+                    .foregroundStyle(Theme.secondaryText)
+            }
         case .codex:
             Section("Codex login") {
                 Text(appModel.providers.codexMessage ?? "Use the official Codex CLI login, or enter an API key above.")
