@@ -61,11 +61,11 @@ actor ChatGPTWebClient {
 
     init() {
         cookie = SecureStore.value(for: Self.cookieAccount)
-        if let existing = UserDefaults.standard.string(forKey: "velachat.chatgpt-device-id") {
+        if let existing = UserDefaults.standard.string(forKey: DefaultsKey.chatGPTDeviceID) {
             deviceID = existing
         } else {
             let fresh = UUID().uuidString.lowercased()
-            UserDefaults.standard.set(fresh, forKey: "velachat.chatgpt-device-id")
+            UserDefaults.standard.set(fresh, forKey: DefaultsKey.chatGPTDeviceID)
             deviceID = fresh
         }
     }
@@ -179,8 +179,8 @@ actor ChatGPTWebClient {
     /// Which browser the session was imported from, so a rotated cookie
     /// can be picked up again without asking.
     private var importedBrowserName: String? {
-        get { UserDefaults.standard.string(forKey: "velachat.chatgpt-import-browser") }
-        set { UserDefaults.standard.set(newValue, forKey: "velachat.chatgpt-import-browser") }
+        get { UserDefaults.standard.string(forKey: DefaultsKey.chatGPTImportBrowser) }
+        set { UserDefaults.standard.set(newValue, forKey: DefaultsKey.chatGPTImportBrowser) }
     }
 
     func rememberImportSource(_ name: String) {

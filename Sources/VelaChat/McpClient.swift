@@ -241,7 +241,7 @@ final class McpManager {
     private(set) var servers: [McpServerConfig] = [] {
         didSet {
             if let data = try? JSONEncoder().encode(servers) {
-                UserDefaults.standard.set(data, forKey: "velachat.mcp-servers")
+                UserDefaults.standard.set(data, forKey: DefaultsKey.mcpServers)
             }
         }
     }
@@ -251,7 +251,7 @@ final class McpManager {
     private var toolCache: [UUID: [McpToolInfo]] = [:]
 
     init() {
-        if let data = UserDefaults.standard.data(forKey: "velachat.mcp-servers"),
+        if let data = UserDefaults.standard.data(forKey: DefaultsKey.mcpServers),
            let saved = try? JSONDecoder().decode([McpServerConfig].self, from: data) {
             servers = saved
         }

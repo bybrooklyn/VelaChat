@@ -7,7 +7,7 @@ struct RootView: View {
     /// build (or any future accident) can never make the expanded
     /// sidebar narrower than its own content needs.
     private static var rememberedSidebarWidth: CGFloat {
-        let saved = UserDefaults.standard.double(forKey: "velachat.sidebar-width")
+        let saved = UserDefaults.standard.double(forKey: DefaultsKey.sidebarWidth)
         guard saved > 0 else { return 274 }
         return min(max(saved, 220), 420)
     }

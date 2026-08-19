@@ -60,7 +60,7 @@ final class AppModel {
     var promptSnippets: [PromptSnippet] = [] {
         didSet {
             if let data = try? JSONEncoder().encode(promptSnippets) {
-                UserDefaults.standard.set(data, forKey: "velachat.prompt-snippets")
+                UserDefaults.standard.set(data, forKey: DefaultsKey.promptSnippets)
             }
         }
     }
@@ -68,15 +68,15 @@ final class AppModel {
     var memories: [MemoryItem] = [] {
         didSet {
             if let data = try? JSONEncoder().encode(memories) {
-                UserDefaults.standard.set(data, forKey: "velachat.memories")
+                UserDefaults.standard.set(data, forKey: DefaultsKey.memories)
             }
         }
     }
     var messageWidth: MessageWidthPreset = .comfortable {
-        didSet { UserDefaults.standard.set(messageWidth.rawValue, forKey: "velachat.message-width") }
+        didSet { UserDefaults.standard.set(messageWidth.rawValue, forKey: DefaultsKey.messageWidth) }
     }
     var density: DensityPreset = .comfortable {
-        didSet { UserDefaults.standard.set(density.rawValue, forKey: "velachat.density") }
+        didSet { UserDefaults.standard.set(density.rawValue, forKey: DefaultsKey.density) }
     }
     var section: Section = .chat
     /// Drives NavigationSplitView's column state so the app's own toggle
@@ -85,7 +85,7 @@ final class AppModel {
     var sidebarVisibility: NavigationSplitViewVisibility = .all
     /// Narrow icon-rail mode instead of a full collapse. Persisted.
     var isSidebarRail = false {
-        didSet { UserDefaults.standard.set(isSidebarRail, forKey: "velachat.sidebar-rail") }
+        didSet { UserDefaults.standard.set(isSidebarRail, forKey: DefaultsKey.sidebarRail) }
     }
     /// Fixed rail width — also the column width while railed.
     static let sidebarRailWidth: CGFloat = 60
@@ -98,7 +98,7 @@ final class AppModel {
     /// First-launch flow gate. Existing installs are migrated to true
     /// silently in init so only genuinely new users see onboarding.
     var hasOnboarded = false {
-        didSet { UserDefaults.standard.set(hasOnboarded, forKey: "velachat.has-onboarded") }
+        didSet { UserDefaults.standard.set(hasOnboarded, forKey: DefaultsKey.hasOnboarded) }
     }
     var conversations: [Conversation] = []
     var activeConversationID: UUID?
@@ -114,11 +114,11 @@ final class AppModel {
     /// persisted.
     var pendingConversation: Conversation?
     var thinkingLevel: ThinkingLevel = .auto {
-        didSet { UserDefaults.standard.set(thinkingLevel.rawValue, forKey: "velachat.thinking-level") }
+        didSet { UserDefaults.standard.set(thinkingLevel.rawValue, forKey: DefaultsKey.thinkingLevel) }
     }
     var usageByMessage: [UUID: UsageSummary] = [:]
     var customInstructions: String = "" {
-        didSet { UserDefaults.standard.set(customInstructions, forKey: "velachat.custom-instructions") }
+        didSet { UserDefaults.standard.set(customInstructions, forKey: DefaultsKey.customInstructions) }
     }
     var isCommandPaletteShown = false
     /// The transcript find bar (⌘F). Sidebar search moved to ⇧⌘F.
@@ -127,13 +127,13 @@ final class AppModel {
     var chatFindHighlightID: UUID?
     var speakingMessageID: UUID?
     var searchEndpoint: String = "" {
-        didSet { UserDefaults.standard.set(searchEndpoint, forKey: "velachat.search-endpoint") }
+        didSet { UserDefaults.standard.set(searchEndpoint, forKey: DefaultsKey.searchEndpoint) }
     }
     /// Sticky like ChatGPT's search toggle — stays on across sends until the
     /// user turns it off, not a one-shot-per-message flag. Persisted, so
     /// "sticky" survives a relaunch too.
     var isWebSearchEnabled = false {
-        didSet { UserDefaults.standard.set(isWebSearchEnabled, forKey: "velachat.web-search-enabled") }
+        didSet { UserDefaults.standard.set(isWebSearchEnabled, forKey: DefaultsKey.webSearchEnabled) }
     }
     /// Gates the `write_file`/`read_file`/`list_workspace_files` tools —
     /// on by default since they're path-validated into a private,
@@ -142,58 +142,58 @@ final class AppModel {
     /// shell-execution tool would be a materially different risk and isn't
     /// offered at all (see `SandboxManager`).
     var isWorkspaceEnabled = true {
-        didSet { UserDefaults.standard.set(isWorkspaceEnabled, forKey: "velachat.workspace-enabled") }
+        didSet { UserDefaults.standard.set(isWorkspaceEnabled, forKey: DefaultsKey.workspaceEnabled) }
     }
     /// Gates `search_conversations` — the tool that lets the model read
     /// excerpts of other conversations. On by default; the off switch exists
     /// because it's a real privacy boundary, not because it's risky.
     var isConversationSearchEnabled = true {
-        didSet { UserDefaults.standard.set(isConversationSearchEnabled, forKey: "velachat.conversation-search-enabled") }
+        didSet { UserDefaults.standard.set(isConversationSearchEnabled, forKey: DefaultsKey.conversationSearchEnabled) }
     }
     /// Automatic model-generated chat titles after the first exchange.
     var isAutoTitleEnabled = true {
-        didSet { UserDefaults.standard.set(isAutoTitleEnabled, forKey: "velachat.auto-title-enabled") }
+        didSet { UserDefaults.standard.set(isAutoTitleEnabled, forKey: DefaultsKey.autoTitle) }
     }
     /// Hover timestamps on messages.
     var isHoverTimestampsEnabled = true {
-        didSet { UserDefaults.standard.set(isHoverTimestampsEnabled, forKey: "velachat.hover-timestamps-enabled") }
+        didSet { UserDefaults.standard.set(isHoverTimestampsEnabled, forKey: DefaultsKey.hoverTimestamps) }
     }
     /// Apple Intelligence is OPT-IN: off by default, nothing on-device runs
     /// and the provider stays hidden until the user flips this.
     var isAppleIntelligenceEnabled = false {
-        didSet { UserDefaults.standard.set(isAppleIntelligenceEnabled, forKey: "velachat.apple-intelligence-enabled") }
+        didSet { UserDefaults.standard.set(isAppleIntelligenceEnabled, forKey: DefaultsKey.appleIntelligenceEnabled) }
     }
     /// True only when opted in AND the on-device model is actually usable.
     var canUseAppleIntelligence: Bool { isAppleIntelligenceEnabled && AppleIntelligence.isAvailable }
     /// get_schedule tool (EventKit read) — the system permission prompt is
     /// the real gate; this just removes the tool entirely.
     var isScheduleToolEnabled = true {
-        didSet { UserDefaults.standard.set(isScheduleToolEnabled, forKey: "velachat.schedule-tool-enabled") }
+        didSet { UserDefaults.standard.set(isScheduleToolEnabled, forKey: DefaultsKey.scheduleToolEnabled) }
     }
     /// read_clipboard tool — clipboard content goes to the provider.
     var isClipboardToolEnabled = true {
-        didSet { UserDefaults.standard.set(isClipboardToolEnabled, forKey: "velachat.clipboard-tool-enabled") }
+        didSet { UserDefaults.standard.set(isClipboardToolEnabled, forKey: DefaultsKey.clipboardToolEnabled) }
     }
     /// Agent abilities: workspace editing/search plus the plan tool.
     var isAgentToolsEnabled = true {
-        didSet { UserDefaults.standard.set(isAgentToolsEnabled, forKey: "velachat.agent-tools-enabled") }
+        didSet { UserDefaults.standard.set(isAgentToolsEnabled, forKey: DefaultsKey.agentToolsEnabled) }
     }
     /// run_command — off by default: it executes real shell commands.
     var isCommandToolEnabled = false {
-        didSet { UserDefaults.standard.set(isCommandToolEnabled, forKey: "velachat.command-tool-enabled") }
+        didSet { UserDefaults.standard.set(isCommandToolEnabled, forKey: DefaultsKey.commandToolEnabled) }
     }
     /// spawn_agents — off by default: each subagent is a real billed
     /// request, and several run at once.
     var isSubagentsEnabled = false {
-        didSet { UserDefaults.standard.set(isSubagentsEnabled, forKey: "velachat.subagents-enabled") }
+        didSet { UserDefaults.standard.set(isSubagentsEnabled, forKey: DefaultsKey.subagentsEnabled) }
     }
     /// Ask before each fan-out (they cost several requests at once).
     var isSubagentApprovalRequired = true {
-        didSet { UserDefaults.standard.set(isSubagentApprovalRequired, forKey: "velachat.subagent-approval") }
+        didSet { UserDefaults.standard.set(isSubagentApprovalRequired, forKey: DefaultsKey.subagentApproval) }
     }
     /// Optional cheaper/faster model for subagents; empty = same model.
     var subagentModelOverride = "" {
-        didSet { UserDefaults.standard.set(subagentModelOverride, forKey: "velachat.subagent-model") }
+        didSet { UserDefaults.standard.set(subagentModelOverride, forKey: DefaultsKey.subagentModel) }
     }
 
     /// A pending run_command approval, shown as a card in the transcript.
@@ -278,7 +278,7 @@ final class AppModel {
     var quotaByProvider: [UUID: QuotaSnapshot] = [:] {
         didSet {
             if let data = try? JSONEncoder().encode(quotaByProvider) {
-                UserDefaults.standard.set(data, forKey: "velachat.quota-snapshots")
+                UserDefaults.standard.set(data, forKey: DefaultsKey.quotaSnapshots)
             }
         }
     }
@@ -325,7 +325,7 @@ final class AppModel {
     }
 
     private func restoreQuotaSnapshots() {
-        guard let data = UserDefaults.standard.data(forKey: "velachat.quota-snapshots"),
+        guard let data = UserDefaults.standard.data(forKey: DefaultsKey.quotaSnapshots),
               let saved = try? JSONDecoder().decode([UUID: QuotaSnapshot].self, from: data) else { return }
         let cutoff = Date().addingTimeInterval(-7 * 86_400)
         quotaByProvider = saved.filter { $0.value.capturedAt > cutoff }
@@ -359,8 +359,8 @@ final class AppModel {
 
     private let speechSynthesizer = AVSpeechSynthesizer()
     private let speechDelegate = SpeechSynthesizerDelegate()
-    private let historyKey = "velachat.conversations"
-    private let historyBackupKey = "velachat.conversations.backup"
+    private let historyKey = DefaultsKey.conversations
+    private let historyBackupKey = DefaultsKey.conversations + ".backup"
     private var didStart = false
     private var pendingDiscoverySends: Set<UUID> = []
     private var compactingConversationIDs: Set<UUID> = []
@@ -379,60 +379,44 @@ final class AppModel {
     private var historySaveTask: Task<Void, Never>?
 
     init() {
-        if let raw = UserDefaults.standard.string(forKey: "velachat.thinking-level"),
+        if let raw = UserDefaults.standard.string(forKey: DefaultsKey.thinkingLevel),
            let saved = ThinkingLevel(rawValue: raw) {
             thinkingLevel = saved
         }
-        customInstructions = UserDefaults.standard.string(forKey: "velachat.custom-instructions") ?? ""
-        searchEndpoint = UserDefaults.standard.string(forKey: "velachat.search-endpoint") ?? ""
-        if let data = UserDefaults.standard.data(forKey: "velachat.prompt-snippets"),
+        customInstructions = UserDefaults.standard.string(forKey: DefaultsKey.customInstructions) ?? ""
+        searchEndpoint = UserDefaults.standard.string(forKey: DefaultsKey.searchEndpoint) ?? ""
+        if let data = UserDefaults.standard.data(forKey: DefaultsKey.promptSnippets),
            let saved = try? JSONDecoder().decode([PromptSnippet].self, from: data) {
             promptSnippets = saved
         }
-        if let data = UserDefaults.standard.data(forKey: "velachat.memories"),
+        if let data = UserDefaults.standard.data(forKey: DefaultsKey.memories),
            let saved = try? JSONDecoder().decode([MemoryItem].self, from: data) {
             memories = saved
         }
-        if let raw = UserDefaults.standard.string(forKey: "velachat.message-width"),
+        if let raw = UserDefaults.standard.string(forKey: DefaultsKey.messageWidth),
            let saved = MessageWidthPreset(rawValue: raw) {
             messageWidth = saved
         }
-        if let raw = UserDefaults.standard.string(forKey: "velachat.density"),
+        if let raw = UserDefaults.standard.string(forKey: DefaultsKey.density),
            let saved = DensityPreset(rawValue: raw) {
             density = saved
         }
-        if UserDefaults.standard.object(forKey: "velachat.workspace-enabled") != nil {
-            isWorkspaceEnabled = UserDefaults.standard.bool(forKey: "velachat.workspace-enabled")
-        }
-        if UserDefaults.standard.object(forKey: "velachat.conversation-search-enabled") != nil {
-            isConversationSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.conversation-search-enabled")
-        }
-        if UserDefaults.standard.object(forKey: "velachat.auto-title-enabled") != nil {
-            isAutoTitleEnabled = UserDefaults.standard.bool(forKey: "velachat.auto-title-enabled")
-        }
-        if UserDefaults.standard.object(forKey: "velachat.hover-timestamps-enabled") != nil {
-            isHoverTimestampsEnabled = UserDefaults.standard.bool(forKey: "velachat.hover-timestamps-enabled")
-        }
-        isAppleIntelligenceEnabled = UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled")
-        isSidebarRail = UserDefaults.standard.bool(forKey: "velachat.sidebar-rail")
+        isWorkspaceEnabled = Defaults.bool(DefaultsKey.workspaceEnabled, default: isWorkspaceEnabled)
+        isConversationSearchEnabled = Defaults.bool(DefaultsKey.conversationSearchEnabled, default: isConversationSearchEnabled)
+        isAutoTitleEnabled = Defaults.bool(DefaultsKey.autoTitle, default: isAutoTitleEnabled)
+        isHoverTimestampsEnabled = Defaults.bool(DefaultsKey.hoverTimestamps, default: isHoverTimestampsEnabled)
+        isAppleIntelligenceEnabled = Defaults.bool(DefaultsKey.appleIntelligenceEnabled, default: false)
+        isSidebarRail = Defaults.bool(DefaultsKey.sidebarRail, default: false)
         restoreQuotaSnapshots()
-        if UserDefaults.standard.object(forKey: "velachat.agent-tools-enabled") != nil {
-            isAgentToolsEnabled = UserDefaults.standard.bool(forKey: "velachat.agent-tools-enabled")
-        }
-        isCommandToolEnabled = UserDefaults.standard.bool(forKey: "velachat.command-tool-enabled")
-        isSubagentsEnabled = UserDefaults.standard.bool(forKey: "velachat.subagents-enabled")
-        if UserDefaults.standard.object(forKey: "velachat.subagent-approval") != nil {
-            isSubagentApprovalRequired = UserDefaults.standard.bool(forKey: "velachat.subagent-approval")
-        }
-        subagentModelOverride = UserDefaults.standard.string(forKey: "velachat.subagent-model") ?? ""
-        if UserDefaults.standard.object(forKey: "velachat.schedule-tool-enabled") != nil {
-            isScheduleToolEnabled = UserDefaults.standard.bool(forKey: "velachat.schedule-tool-enabled")
-        }
-        if UserDefaults.standard.object(forKey: "velachat.clipboard-tool-enabled") != nil {
-            isClipboardToolEnabled = UserDefaults.standard.bool(forKey: "velachat.clipboard-tool-enabled")
-        }
-        isWebSearchEnabled = UserDefaults.standard.bool(forKey: "velachat.web-search-enabled")
-        hasOnboarded = UserDefaults.standard.bool(forKey: "velachat.has-onboarded")
+        isAgentToolsEnabled = Defaults.bool(DefaultsKey.agentToolsEnabled, default: isAgentToolsEnabled)
+        isCommandToolEnabled = Defaults.bool(DefaultsKey.commandToolEnabled, default: false)
+        isSubagentsEnabled = Defaults.bool(DefaultsKey.subagentsEnabled, default: false)
+        isSubagentApprovalRequired = Defaults.bool(DefaultsKey.subagentApproval, default: isSubagentApprovalRequired)
+        subagentModelOverride = UserDefaults.standard.string(forKey: DefaultsKey.subagentModel) ?? ""
+        isScheduleToolEnabled = Defaults.bool(DefaultsKey.scheduleToolEnabled, default: isScheduleToolEnabled)
+        isClipboardToolEnabled = Defaults.bool(DefaultsKey.clipboardToolEnabled, default: isClipboardToolEnabled)
+        isWebSearchEnabled = UserDefaults.standard.bool(forKey: DefaultsKey.webSearchEnabled)
+        hasOnboarded = UserDefaults.standard.bool(forKey: DefaultsKey.hasOnboarded)
         let corruptionNotice = restoreHistory()
         if conversations.isEmpty {
             _ = newConversation()
@@ -448,8 +432,8 @@ final class AppModel {
         // is gone — skills from there that are ACTIVE in some conversation
         // keep working by becoming explicit custom folders; everything else
         // from those directories stops appearing (intended).
-        if !UserDefaults.standard.bool(forKey: "velachat.skills-migration-v1") {
-            UserDefaults.standard.set(true, forKey: "velachat.skills-migration-v1")
+        if !UserDefaults.standard.bool(forKey: DefaultsKey.skillsMigrationV1) {
+            UserDefaults.standard.set(true, forKey: DefaultsKey.skillsMigrationV1)
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             let autoRoots = [home + "/.claude/skills/", home + "/.codex/skills/"]
             let activePaths = Set(conversations.flatMap(\.activeSkillPaths))
@@ -878,7 +862,7 @@ final class AppModel {
         // Purge every app default LAST — the resets above just re-wrote
         // some keys via didSet; this sweep removes them all for real.
         let defaults = UserDefaults.standard
-        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("velachat.") {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(DefaultsKey.prefix) {
             defaults.removeObject(forKey: key)
         }
         section = .chat

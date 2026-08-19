@@ -41,7 +41,7 @@ struct Skill: Identifiable, Equatable, Sendable {
 @MainActor
 @Observable
 final class SkillsStore {
-    private let customPathsKey = "velachat.custom-skill-paths"
+    private let customPathsKey = DefaultsKey.customSkillPaths
     private let defaults = UserDefaults.standard
 
     var skills: [Skill] = []

@@ -50,10 +50,10 @@ enum AccentPreset: String, CaseIterable, Identifiable, Codable {
 
     static var current: AccentPreset {
         get {
-            UserDefaults.standard.string(forKey: "velachat.accent-preset").flatMap(AccentPreset.init(rawValue:)) ?? .teal
+            UserDefaults.standard.string(forKey: DefaultsKey.accentPreset).flatMap(AccentPreset.init(rawValue:)) ?? .teal
         }
         set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: "velachat.accent-preset")
+            UserDefaults.standard.set(newValue.rawValue, forKey: DefaultsKey.accentPreset)
         }
     }
 }

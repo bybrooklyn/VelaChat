@@ -43,7 +43,7 @@ struct SidebarView: View {
                         // sidebar come back too narrow to fit its own
                         // "New Chat" label.
                         guard !appModel.isSidebarRail, newValue >= 220, newValue <= 420 else { return }
-                        UserDefaults.standard.set(newValue, forKey: "velachat.sidebar-width")
+                        UserDefaults.standard.set(newValue, forKey: DefaultsKey.sidebarWidth)
                     }
             }
         }

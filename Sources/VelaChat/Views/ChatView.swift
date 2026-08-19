@@ -1394,7 +1394,7 @@ private struct ArtifactPanel: View {
     @State private var isEditing = false
     @State private var editText = ""
     @State private var width: CGFloat = {
-        let saved = UserDefaults.standard.double(forKey: "velachat.inspector-width")
+        let saved = UserDefaults.standard.double(forKey: DefaultsKey.inspectorWidth)
         return saved > 0 ? min(max(saved, 320), 720) : 420
     }()
     @State private var dragStartWidth: CGFloat?
@@ -1429,7 +1429,7 @@ private struct ArtifactPanel: View {
                         }
                         .onEnded { _ in
                             dragStartWidth = nil
-                            UserDefaults.standard.set(width, forKey: "velachat.inspector-width")
+                            UserDefaults.standard.set(width, forKey: DefaultsKey.inspectorWidth)
                         }
                 )
         }

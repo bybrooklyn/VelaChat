@@ -18,11 +18,11 @@ final class ProviderStore {
     }
 
     private let defaults = UserDefaults.standard
-    private let profilesKey = "velachat.provider-profiles"
-    private let selectedKey = "velachat.selected-provider"
-    private let explicitSelectionKey = "velachat.explicit-provider-selection"
-    private let catalogsKey = "velachat.model-catalogs"
-    private let contextOverridesKey = "velachat.context-window-overrides"
+    private let profilesKey = DefaultsKey.providerProfiles
+    private let selectedKey = DefaultsKey.selectedProvider
+    private let explicitSelectionKey = DefaultsKey.explicitProviderSelection
+    private let catalogsKey = DefaultsKey.modelCatalogs
+    private let contextOverridesKey = DefaultsKey.contextWindowOverrides
 
     var profiles: [ProviderProfile] = []
     /// Manual context-window corrections, keyed by `"<providerID>|<modelID>"`
@@ -36,11 +36,11 @@ final class ProviderStore {
     }
     /// Starred models ("providerID|modelID") pinned atop the picker.
     private(set) var favoriteModelKeys: Set<String> = [] {
-        didSet { defaults.set(Array(favoriteModelKeys), forKey: "velachat.model-favorites") }
+        didSet { defaults.set(Array(favoriteModelKeys), forKey: DefaultsKey.modelFavorites) }
     }
     /// Most-recently-selected models, newest first, capped at 5.
     private(set) var recentModelKeys: [String] = [] {
-        didSet { defaults.set(recentModelKeys, forKey: "velachat.model-recents") }
+        didSet { defaults.set(recentModelKeys, forKey: DefaultsKey.modelRecents) }
     }
 
     static func modelKey(_ providerID: UUID, _ modelID: String) -> String {
@@ -93,8 +93,8 @@ final class ProviderStore {
     private let refreshInterval: TimeInterval = 15 * 60
 
     init() {
-        favoriteModelKeys = Set(defaults.stringArray(forKey: "velachat.model-favorites") ?? [])
-        recentModelKeys = defaults.stringArray(forKey: "velachat.model-recents") ?? []
+        favoriteModelKeys = Set(defaults.stringArray(forKey: DefaultsKey.modelFavorites) ?? [])
+        recentModelKeys = defaults.stringArray(forKey: DefaultsKey.modelRecents) ?? []
         let loadedProfiles: [ProviderProfile]
         if let data = defaults.data(forKey: profilesKey),
            let saved = Self.decodeProfiles(data),
@@ -185,7 +185,7 @@ final class ProviderStore {
     /// as "configured" with nothing behind it.
     func isConfigured(_ profile: ProviderProfile) -> Bool {
         if profile.kind == .appleIntelligence {
-            return UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled") && AppleIntelligence.isAvailable
+            return UserDefaults.standard.bool(forKey: DefaultsKey.appleIntelligenceEnabled) && AppleIntelligence.isAvailable
         }
         if profile.kind == .chatGPT {
             return chatGPTSessionPresent
@@ -525,7 +525,7 @@ final class ProviderStore {
     func refreshModels(id: UUID, autoSelect: Bool = true) async {
         guard let profile = profile(id: id), profile.kind != .appleIntelligence else {
             if profile(id: id)?.kind == .appleIntelligence {
-                if !UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled") {
+                if !UserDefaults.standard.bool(forKey: DefaultsKey.appleIntelligenceEnabled) {
                     modelsByID[id] = []
                     statusByID[id] = .failed("Turned off — enable Apple Intelligence in Settings → General.")
                 } else if let reason = AppleIntelligence.unavailabilityReason {

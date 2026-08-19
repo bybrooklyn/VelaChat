@@ -49,7 +49,7 @@ struct UsageWindow {
 final class UsageStore {
     /// Keyed "providerID|hourIndex" (hourIndex = unix epoch / 3600).
     private(set) var buckets: [String: UsageBucket] = [:]
-    private let key = "velachat.usage-ledger"
+    private let key = DefaultsKey.usageLedger
 
     init() {
         if let data = UserDefaults.standard.data(forKey: key),
