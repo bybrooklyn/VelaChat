@@ -271,6 +271,78 @@ final class AppModel {
     /// provider cut the reply at its output cap and drives auto-continue.
     var finishReasonByMessage: [UUID: String] = [:]
 
+    /// When each in-flight reply was sent, so time-to-first-token can be
+    /// measured rather than guessed at.
+    private var sendStartedAt: [UUID: Date] = [:]
+    /// Measured TTFT samples, keyed "providerID|modelID". Session-scoped:
+    /// what matters is how the app feels now, not a lifetime average that
+    /// hides a provider having a bad day.
+    private(set) var ttftSamples: [String: [TimeInterval]] = [:]
+
+    /// Work that would otherwise happen inside the first send, moved to
+    /// launch where nobody is waiting on it.
+    ///
+    /// Deliberately does NOT send a model request: warming a provider's
+    /// routing with a throwaway completion would spend real tokens and
+    /// count against subscription windows for an uncertain gain. Opening
+    /// the connection costs nothing and reliably saves the TLS handshake.
+    func prewarmForFasterFirstToken() {
+        Task { [weak self] in
+            guard let self else { return }
+            // Cold MCP servers used to spawn inside the generation task,
+            // in front of the request — pure added TTFT on the first
+            // message. Starting them now makes the tool list cache-warm.
+            if !self.mcp.servers.filter({ $0.enabled && !$0.command.isEmpty }).isEmpty {
+                _ = await self.mcp.definitionsForSend()
+            }
+        }
+        warmConnection()
+    }
+
+    /// Opens (and leaves pooled) a connection to the selected provider so
+    /// the first real request skips DNS + TLS. A HEAD to the models path
+    /// is the cheapest request that exists on every provider.
+    func warmConnection() {
+        guard isOnline, let profile = providers.selected, !profile.kind.isLocal else { return }
+        let endpoint = profile.endpoint
+        Task.detached(priority: .utility) {
+            guard let url = URL(string: endpoint) else { return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "HEAD"
+            request.timeoutInterval = 10
+            // The response is irrelevant — even a 404 has done the work of
+            // establishing the connection this is here to establish.
+            _ = try? await URLSession.shared.data(for: request)
+        }
+    }
+
+    func noteSendStarted(_ assistantID: UUID) {
+        sendStartedAt[assistantID] = Date()
+    }
+
+    /// Records the interval between sending and the first visible token.
+    /// Called from the reveal path, not the network path, so the number
+    /// reflects what the user actually waited for.
+    func noteFirstToken(for assistantID: UUID, conversation: Conversation) {
+        guard let started = sendStartedAt.removeValue(forKey: assistantID) else { return }
+        guard let providerID = conversation.providerID else { return }
+        let model = conversation.messages.first { $0.id == assistantID }?.modelID ?? conversation.model
+        let key = ProviderStore.modelKey(providerID, model)
+        ttftSamples[key, default: []].append(Date().timeIntervalSince(started))
+        if ttftSamples[key]!.count > 50 { ttftSamples[key]!.removeFirst() }
+    }
+
+    /// Median and p90 for a provider+model, or nil without enough samples
+    /// to say anything honest.
+    func ttftStats(providerID: UUID, model: String) -> (median: TimeInterval, p90: TimeInterval, count: Int)? {
+        let samples = ttftSamples[ProviderStore.modelKey(providerID, model)] ?? []
+        guard samples.count >= 3 else { return nil }
+        let sorted = samples.sorted()
+        let median = sorted[sorted.count / 2]
+        let p90 = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.9))]
+        return (median, p90, sorted.count)
+    }
+
     var searchByMessage: [UUID: WebSearchRecord] = [:]
     /// Latest live quota data seen per provider — persisted so plan
     /// windows survive a relaunch, shown with an honest "as of" age
@@ -640,6 +712,9 @@ final class AppModel {
         if !availableThinkingLevels.contains(thinkingLevel) {
             thinkingLevel = .auto
         }
+        // Switching providers is a strong signal the next message goes to
+        // this one — open its connection while the picker is still closing.
+        warmConnection()
     }
 
     func start() {
@@ -649,6 +724,7 @@ final class AppModel {
         if providers.chatGPTSessionPresent {
             Task { await ChatGPTWebClient.shared.startKeepAlive() }
         }
+        prewarmForFasterFirstToken()
         if let active = activeConversation, let providerID = active.providerID {
             providers.select(providerID, markExplicit: false)
         }
@@ -1509,6 +1585,7 @@ final class AppModel {
         conversation.updatedAt = Date()
         conversation.isGenerating = true
         conversation.currentGenerationID = assistantID
+        noteSendStarted(assistantID)
         if clearDraftText {
             conversation.draftText = ""
         }
@@ -2089,6 +2166,11 @@ final class AppModel {
 
     private func ensureRevealTask(for assistantID: UUID, conversation: Conversation) {
         guard revealTasks[assistantID] == nil else { return }
+        // The very first words go on screen immediately rather than after a
+        // reveal tick. Time-to-first-token is the one moment where the
+        // typewriter pacing is pure added latency: there is nothing on
+        // screen yet for it to pace against.
+        flushFirstReveal(for: assistantID, conversation: conversation)
         revealTasks[assistantID] = Task { [weak self, weak conversation] in
             while !Task.isCancelled {
                 guard let self, let conversation else { return }
@@ -2138,6 +2220,7 @@ final class AppModel {
                     if pending.isEmpty { queue.removeFirst() } else { queue[0] = .text(pending) }
                     self.revealQueues[assistantID] = queue
                     conversation.messages[index].appendTimelineText(chunk)
+                    self.noteFirstToken(for: assistantID, conversation: conversation)
                     try? await Task.sleep(nanoseconds: 33_000_000)
                 case .reasoning(var pending):
                     // Faster than the answer text — reasoning chains run
@@ -2161,6 +2244,32 @@ final class AppModel {
                     conversation.messages[index].updateActivity(id: id, result: result, isError: isError)
                 }
             }
+        }
+    }
+
+    /// Puts the first chunk of a reply on screen synchronously, before the
+    /// paced drain starts. Only ever runs when the message is still empty,
+    /// so it can't skip ahead of text already being revealed.
+    private func flushFirstReveal(for assistantID: UUID, conversation: Conversation) {
+        guard var queue = revealQueues[assistantID], !queue.isEmpty,
+              let index = conversation.messages.firstIndex(where: { $0.id == assistantID }),
+              conversation.messages[index].content.isEmpty,
+              conversation.messages[index].reasoning?.isEmpty ?? true else { return }
+        switch queue[0] {
+        case .text(var pending):
+            let chunk = Self.popNextWord(from: &pending)
+            if pending.isEmpty { queue.removeFirst() } else { queue[0] = .text(pending) }
+            revealQueues[assistantID] = queue
+            conversation.messages[index].appendTimelineText(chunk)
+            noteFirstToken(for: assistantID, conversation: conversation)
+        case .reasoning(var pending):
+            let chunk = Self.popNextWord(from: &pending)
+            if pending.isEmpty { queue.removeFirst() } else { queue[0] = .reasoning(pending) }
+            revealQueues[assistantID] = queue
+            conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + chunk
+            noteFirstToken(for: assistantID, conversation: conversation)
+        case .activity, .activityUpdate:
+            break  // the paced drain handles these; they aren't "first token"
         }
     }
 

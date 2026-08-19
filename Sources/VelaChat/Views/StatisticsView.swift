@@ -135,6 +135,31 @@ struct StatisticsView: View {
             }
 
             Section {
+                let measured = appModel.providers.profiles.compactMap { profile -> (String, TimeInterval, TimeInterval, Int)? in
+                    let model = profile.model.isEmpty ? appModel.providers.effectiveModel(for: profile) : profile.model
+                    guard let stats = appModel.ttftStats(providerID: profile.id, model: model) else { return nil }
+                    return ("\(profile.name) · \(model)", stats.median, stats.p90, stats.count)
+                }
+                if measured.isEmpty {
+                    Text("Not enough replies yet this session to report a meaningful figure.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.tertiaryText)
+                } else {
+                    ForEach(measured, id: \.0) { label, median, p90, count in
+                        LabeledContent(label) {
+                            Text(String(format: "%.1fs median · %.1fs p90 · %d replies", median, p90, count))
+                                .font(.caption)
+                                .foregroundStyle(Theme.secondaryText)
+                        }
+                    }
+                }
+            } header: {
+                Text("Time to First Token")
+            } footer: {
+                Text("Measured from pressing send to the first word appearing — what you actually waited for, not just network time. Session-scoped, and only shown once there are at least three replies to average.")
+            }
+
+            Section {
                 let profiles = appModel.providers.profiles.filter { $0.kind.usageStyle != .local }
                 if profiles.allSatisfy({ appModel.usage.thisMonth(providerID: $0.id).requests == 0 }) {
                     Text("No counted requests yet this month.")
