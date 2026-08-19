@@ -2,24 +2,6 @@ import SwiftUI
 import AppKit
 
 extension View {
-    /// The real "gradient but for blurring": a material overlay masked by
-    /// an alpha ramp — frosted right at the scroll edge, easing to clear.
-    /// (The native .scrollEdgeEffectStyle rendered as a hard dim band on
-    /// this window chrome, not a progressive blur.) Hit-testing disabled;
-    /// purely visual.
-    func velaEdgeFade(_ enabled: Bool, top: CGFloat = 36, bottom: CGFloat = 36) -> some View {
-        overlay(alignment: .top) {
-            if enabled, top > 0 {
-                EdgeFadeStrip(height: top, edge: .top)
-            }
-        }
-        .overlay(alignment: .bottom) {
-            if enabled, bottom > 0 {
-                EdgeFadeStrip(height: bottom, edge: .bottom)
-            }
-        }
-    }
-
     /// Liquid Glass is reserved for functional layers: the composer, compact
     /// controls, and the sidebar's utility header.
     func nativeMaterial(cornerRadius: CGFloat = 10) -> some View {
@@ -108,29 +90,5 @@ struct VelaGlassContainer<Content: View>: View {
         GlassEffectContainer(spacing: 8) {
             content
         }
-    }
-}
-
-private struct EdgeFadeStrip: View {
-    let height: CGFloat
-    let edge: VerticalEdge
-
-    var body: some View {
-        Rectangle()
-            .fill(.ultraThinMaterial)
-            .mask {
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0),
-                        .init(color: .black.opacity(0.55), location: 0.45),
-                        .init(color: .clear, location: 1)
-                    ],
-                    startPoint: edge == .top ? .top : .bottom,
-                    endPoint: edge == .top ? .bottom : .top
-                )
-            }
-            .frame(height: height)
-            .frame(maxWidth: .infinity)
-            .allowsHitTesting(false)
     }
 }

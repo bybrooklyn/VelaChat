@@ -192,9 +192,6 @@ struct SettingsView: View {
                 Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
                 Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
                 KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
-                Toggle("Use Apple Intelligence", isOn: $appModel.isAppleIntelligenceEnabled)
-                Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
-                Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
                 Picker("Message width", selection: $appModel.messageWidth) {
                     ForEach(MessageWidthPreset.allCases) { preset in
                         Text(preset.displayName).tag(preset)

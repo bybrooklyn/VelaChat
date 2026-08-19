@@ -600,7 +600,6 @@ private struct ModelPaletteView: View {
                     .animation(.easeOut(duration: 0.18), value: visibleGroups.map(\.id))
                 }
                 .scrollIndicators(.hidden)
-                .velaEdgeFade(true, top: 0, bottom: 32)
                 .frame(maxHeight: 560)
             }
 

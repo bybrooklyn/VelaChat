@@ -149,10 +149,6 @@ final class AppModel {
     var isHoverTimestampsEnabled = true {
         didSet { UserDefaults.standard.set(isHoverTimestampsEnabled, forKey: "velachat.hover-timestamps-enabled") }
     }
-    /// Soft blur-fades at scroll edges (sidebar + transcript).
-    var isEdgeBlurEnabled = true {
-        didSet { UserDefaults.standard.set(isEdgeBlurEnabled, forKey: "velachat.edge-blur-enabled") }
-    }
     /// Apple Intelligence is OPT-IN: off by default, nothing on-device runs
     /// and the provider stays hidden until the user flips this.
     var isAppleIntelligenceEnabled = false {
@@ -254,9 +250,6 @@ final class AppModel {
         }
         if UserDefaults.standard.object(forKey: "velachat.hover-timestamps-enabled") != nil {
             isHoverTimestampsEnabled = UserDefaults.standard.bool(forKey: "velachat.hover-timestamps-enabled")
-        }
-        if UserDefaults.standard.object(forKey: "velachat.edge-blur-enabled") != nil {
-            isEdgeBlurEnabled = UserDefaults.standard.bool(forKey: "velachat.edge-blur-enabled")
         }
         isAppleIntelligenceEnabled = UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled")
         if UserDefaults.standard.object(forKey: "velachat.schedule-tool-enabled") != nil {

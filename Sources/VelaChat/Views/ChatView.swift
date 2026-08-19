@@ -106,7 +106,6 @@ struct ChatView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 composer
             }
-            .velaEdgeFade(appModel.isEdgeBlurEnabled, top: chrome.isFullScreen ? 44 : 30, bottom: 0)
             .onChange(of: appModel.activeConversation?.messages.count ?? 0) { _, _ in
                 scrollToLast(proxy)
             }
