@@ -615,7 +615,6 @@ private struct MessageRow: View {
     let isLastMessage: Bool
     @State private var showingReasoning = false
     @State private var showingSearchResults = false
-    @State private var expandedToolUseIDs: Set<UUID> = []
     @State private var isHovering = false
     @State private var isEditing = false
     @State private var editedText = ""
@@ -753,20 +752,6 @@ private struct MessageRow: View {
                         SearchResultsDisclosure(record: record, isExpanded: $showingSearchResults)
                     }
 
-                    if alternateIndex == 0, let uses = appModel.toolUsesByMessage[message.id] {
-                        ForEach(uses) { use in
-                            ToolUseDisclosure(
-                                use: use,
-                                isExpanded: Binding(
-                                    get: { expandedToolUseIDs.contains(use.id) },
-                                    set: { isOn in
-                                        if isOn { expandedToolUseIDs.insert(use.id) } else { expandedToolUseIDs.remove(use.id) }
-                                    }
-                                )
-                            )
-                        }
-                    }
-
                     if let reasoning = displayedMessage.reasoning, !reasoning.isEmpty {
                         ReasoningDisclosure(
                             reasoning: reasoning,
@@ -811,7 +796,7 @@ private struct MessageRow: View {
                             }
                         }
                     } else {
-                        RichMessageText(text: displayedMessage.content, isUser: false)
+                        AssistantTimeline(message: displayedMessage)
                             .contextMenu {
                                 if !displayedMessage.content.isEmpty {
                                     Button {
@@ -1418,32 +1403,194 @@ private struct ShareButton: NSViewRepresentable {
 
 /// "Searched the web · N results", expanding to the real sources as
 /// clickable cards — the pattern ChatGPT and Claude both use for tool output.
-/// A real tool call the model made — same collapsed-card pattern as
-/// `SearchResultsDisclosure`, generic to whichever tool actually ran
-/// (`search_conversations` or `web_search` today) rather than search-only.
-private struct ToolUseDisclosure: View {
-    let use: ToolUseRecord
-    @Binding var isExpanded: Bool
 
-    private var title: String {
-        switch use.name {
-        case "search_conversations": "Searched past conversations · \"\(use.query)\""
-        case "web_search": "Searched the web · \"\(use.query)\""
-        default: "Used \(use.name) · \"\(use.query)\""
+/// An assistant reply rendered as its real timeline: text runs with dim
+/// activity lines woven between them exactly where the model paused to act
+/// — the Claude-web pattern. Messages from before segments existed fall
+/// back to one plain text run.
+struct AssistantTimeline: View {
+    let message: ChatMessage
+
+    private enum Item: Identifiable {
+        case text(id: UUID, content: String)
+        case activities([ActivityRecord])
+
+        var id: UUID {
+            switch self {
+            case .text(let id, _): id
+            case .activities(let records): records.first?.id ?? UUID()
+            }
         }
     }
 
+    private var items: [Item] {
+        guard !message.segments.isEmpty else {
+            return message.content.isEmpty ? [] : [.text(id: message.id, content: message.content)]
+        }
+        var items: [Item] = []
+        for segment in message.segments {
+            switch segment {
+            case .text(let id, let content):
+                // Whitespace-only runs (blank lines between tool rounds)
+                // are invisible — they must not break line aggregation.
+                guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                items.append(.text(id: id, content: content))
+            case .activity(let record):
+                // Consecutive completed, successful calls aggregate into one
+                // line; a running or failed call always stands alone.
+                if case .activities(let group) = items.last,
+                   !record.isRunning, !record.isError,
+                   group.allSatisfy({ !$0.isRunning && !$0.isError }) {
+                    items[items.count - 1] = .activities(group + [record])
+                } else {
+                    items.append(.activities([record]))
+                }
+            }
+        }
+        return items
+    }
+
     var body: some View {
-        ActivityRow(
-            symbol: use.name == "web_search" ? "globe" : "magnifyingglass",
-            title: title,
-            tint: Theme.accent,
-            isExpanded: $isExpanded
-        ) {
-            Text(use.result)
-                .font(.caption)
-                .foregroundStyle(Theme.secondaryText)
-                .textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(items) { item in
+                switch item {
+                case .text(_, let content):
+                    RichMessageText(text: content, isUser: false)
+                case .activities(let records):
+                    ActivityLine(records: records)
+                }
+            }
+        }
+    }
+}
+
+/// One dim, icon-led line — "Searching the web for 'X'" while running
+/// (shimmering, never a spinner), a past-tense summary once done, counts
+/// emphasized when several calls collapse into one line. Click to unfold
+/// the real arguments and results in place.
+struct ActivityLine: View {
+    let records: [ActivityRecord]
+    @State private var isExpanded = false
+    @State private var isHovering = false
+
+    private var isRunning: Bool { records.contains { $0.isRunning } }
+    private var isError: Bool { records.contains { $0.isError } }
+
+    private var label: String {
+        guard records.count > 1 else {
+            guard let record = records.first else { return "" }
+            if record.isRunning { return record.kind.runningLabel(argument: record.argument) }
+            if record.isError { return record.kind.finishedLabel(argument: record.argument) + " — failed" }
+            return record.kind.finishedLabel(argument: record.argument)
+        }
+        // Aggregate: counts per kind, in order of first appearance —
+        // "Ran 3 web searches, read 2 pages".
+        var orderedKinds: [ActivityKind] = []
+        var counts: [ActivityKind: Int] = [:]
+        for record in records {
+            if counts[record.kind] == nil { orderedKinds.append(record.kind) }
+            counts[record.kind, default: 0] += 1
+        }
+        var parts: [String] = []
+        for (index, kind) in orderedKinds.enumerated() {
+            var unit = kind.aggregateUnit(count: counts[kind] ?? 0)
+            if index == 0, kind == .webSearch || kind == .conversationSearch || kind == .calculation || kind == .memory {
+                unit = "Ran " + unit
+            }
+            parts.append(unit)
+        }
+        var sentence = parts.joined(separator: ", ")
+        if let first = sentence.first {
+            sentence = first.uppercased() + sentence.dropFirst()
+        }
+        return sentence
+    }
+
+    /// Digit runs render slightly brighter and semibold — the Claude Code
+    /// aggregated-line look.
+    private var emphasizedLabel: Text {
+        var result = Text("")
+        var run = ""
+        var runIsDigit = false
+        func flush() {
+            guard !run.isEmpty else { return }
+            if runIsDigit {
+                result = result + Text(run).fontWeight(.semibold).foregroundStyle(Theme.secondaryText)
+            } else {
+                result = result + Text(run)
+            }
+            run = ""
+        }
+        for character in label {
+            let isDigit = character.isNumber
+            if isDigit != runIsDigit { flush(); runIsDigit = isDigit }
+            run.append(character)
+        }
+        flush()
+        return result
+    }
+
+    private var symbol: String {
+        records.first?.kind.symbol ?? "circle"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: isError ? "exclamationmark.triangle" : symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(isError ? Theme.danger.opacity(0.85) : Theme.tertiaryText)
+                    .frame(width: 16)
+                if isRunning {
+                    ShimmerText(text: label, font: .callout)
+                } else {
+                    emphasizedLabel
+                        .font(.callout)
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+                if !isRunning {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(Theme.tertiaryText.opacity(isHovering ? 0.9 : 0))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard !isRunning else { return }
+                withAnimation(.easeOut(duration: 0.16)) { isExpanded.toggle() }
+            }
+            .onHover { isHovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: isHovering)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(records) { record in
+                        VStack(alignment: .leading, spacing: 3) {
+                            if !record.argument.isEmpty {
+                                Text(record.kind.finishedLabel(argument: record.argument))
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
+                            if !record.result.isEmpty {
+                                Text(record.result)
+                                    .font(.caption)
+                                    .foregroundStyle(record.isError ? Theme.danger.opacity(0.85) : Theme.tertiaryText)
+                                    .textSelection(.enabled)
+                                    .lineLimit(14)
+                            }
+                        }
+                    }
+                }
+                .padding(.leading, 24)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(Theme.separator.opacity(0.5))
+                        .frame(width: 1)
+                        .padding(.leading, 7)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
     }
 }

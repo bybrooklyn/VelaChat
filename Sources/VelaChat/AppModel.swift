@@ -130,7 +130,6 @@ final class AppModel {
         didSet { UserDefaults.standard.set(isConversationSearchEnabled, forKey: "velachat.conversation-search-enabled") }
     }
     var searchByMessage: [UUID: WebSearchRecord] = [:]
-    var toolUsesByMessage: [UUID: [ToolUseRecord]] = [:]
 
     /// True when search is reachable at all: either the provider searches
     /// natively, or a SearXNG endpoint is configured and the model takes tools.
@@ -681,7 +680,6 @@ final class AppModel {
         }
         usageByMessage = usageByMessage.filter { key, _ in !conversation.messages.contains { $0.id == key } }
         searchByMessage = searchByMessage.filter { key, _ in !conversation.messages.contains { $0.id == key } }
-        toolUsesByMessage = toolUsesByMessage.filter { key, _ in !conversation.messages.contains { $0.id == key } }
         withAnimation(.easeOut(duration: 0.18)) {
             conversations.removeAll { $0.id == conversation.id }
         }
@@ -698,7 +696,6 @@ final class AppModel {
         conversations.removeAll()
         usageByMessage.removeAll()
         searchByMessage.removeAll()
-        toolUsesByMessage.removeAll()
         _ = newConversation()
         flushHistoryNow()
     }

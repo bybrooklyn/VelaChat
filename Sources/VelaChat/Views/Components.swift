@@ -249,6 +249,35 @@ struct WebSearchToggleButton: View {
     }
 }
 
+/// A quiet left-to-right sheen sweeping dim text — the app's "something is
+/// happening" treatment. Deliberately not a ProgressView: no spinners.
+struct ShimmerText: View {
+    let text: String
+    var font: Font = .callout
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let cycle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8
+            let phase = CGFloat(cycle) * 1.5 - 0.25  // sweep past both edges
+            Text(text)
+                .font(font)
+                .foregroundStyle(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Theme.tertiaryText, location: 0),
+                            .init(color: Theme.tertiaryText, location: max(0, min(1, phase - 0.22))),
+                            .init(color: Theme.secondaryText, location: max(0, min(1, phase))),
+                            .init(color: Theme.tertiaryText, location: max(0, min(1, phase + 0.22))),
+                            .init(color: Theme.tertiaryText, location: 1)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+        }
+    }
+}
+
 struct VelaControlButtonStyle: ButtonStyle {
     let tint: Color
 

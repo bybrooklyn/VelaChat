@@ -967,12 +967,3 @@ struct WebSearchRecord {
     let results: [WebSearchResult]
 }
 
-/// A real tool call the model made and VelaChat actually executed, kept for
-/// the `ToolUseDisclosure` UI card — in-memory only, same as
-/// `AppModel.searchByMessage`, not persisted across a relaunch.
-struct ToolUseRecord: Identifiable {
-    let id = UUID()
-    let name: String
-    let query: String
-    let result: String
-}
