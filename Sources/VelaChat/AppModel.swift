@@ -73,6 +73,12 @@ final class AppModel {
         didSet { UserDefaults.standard.set(density.rawValue, forKey: "velachat.density") }
     }
     var section: Section = .chat
+    /// The accent hue, observable so picking a swatch actually repaints the
+    /// app (Theme reads UserDefaults statically and can't notify anyone) —
+    /// RootView re-renders on change via .id.
+    var accentPreset: AccentPreset = AccentPreset.current {
+        didSet { AccentPreset.current = accentPreset }
+    }
     var conversations: [Conversation] = []
     var activeConversationID: UUID?
     /// A transient, non-error status shown near the composer while it's
@@ -502,10 +508,11 @@ final class AppModel {
     /// excluded from anything that asks "has this conversation actually
     /// been used" (`Conversation.realMessages`).
     @discardableResult
-    func postNotice(_ message: String, to conversation: Conversation? = nil) -> ChatMessage {
+    func postNotice(_ message: String, kind: String = "warning", to conversation: Conversation? = nil) -> ChatMessage {
         let target = conversation ?? activeConversation ?? newConversation()
         ensureListed(target)
-        let notice = ChatMessage(role: "notice", content: message)
+        var notice = ChatMessage(role: "notice", content: message)
+        notice.noticeKind = kind
         target.messages.append(notice)
         target.updatedAt = Date()
         saveHistory()
@@ -1624,7 +1631,7 @@ final class AppModel {
             guard !cleaned.isEmpty else { return }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cleaned, forType: .string)
-            self.postNotice("Handoff document copied to clipboard.", to: conversation)
+            self.postNotice("Handoff document copied to clipboard.", kind: "success", to: conversation)
         }
     }
 

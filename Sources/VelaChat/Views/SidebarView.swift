@@ -562,12 +562,12 @@ private struct ConversationRow: View {
             while !displayedTitle.isEmpty {
                 if Task.isCancelled { return }
                 displayedTitle.removeLast()
-                try? await Task.sleep(nanoseconds: 14_000_000)
+                try? await Task.sleep(nanoseconds: 7_000_000)
             }
             for character in newValue {
                 if Task.isCancelled { return }
                 displayedTitle.append(character)
-                try? await Task.sleep(nanoseconds: 18_000_000)
+                try? await Task.sleep(nanoseconds: 9_000_000)
             }
         }
     }
@@ -638,5 +638,6 @@ private struct ConversationRow: View {
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
+        .onDisappear { typewriterTask?.cancel() }
     }
 }

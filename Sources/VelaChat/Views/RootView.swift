@@ -30,6 +30,11 @@ struct RootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .background(Theme.background)
+        // Accent swatches used to visibly do nothing — Theme's statics
+        // re-read UserDefaults but nothing forced a re-render. A full
+        // rebuild on this rare, explicit action is the honest fix (known
+        // cost: scroll position resets).
+        .id(appModel.accentPreset)
         .task { appModel.start() }
         .sheet(isPresented: $appModel.isCommandPaletteShown) {
             CommandPaletteView(isPresented: $appModel.isCommandPaletteShown)

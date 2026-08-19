@@ -11,7 +11,6 @@ struct SettingsView: View {
     @State private var isAddingSnippet = false
     @State private var isAddingProvider = false
     @State private var newMemoryText = ""
-    @State private var accentPreset = AccentPreset.current
 
     private var topBarHeight: CGFloat { chrome.isFullScreen ? 44 : 52 }
 
@@ -318,19 +317,18 @@ struct SettingsView: View {
                     HStack(spacing: 7) {
                         ForEach(AccentPreset.allCases) { preset in
                             Button {
-                                accentPreset = preset
-                                AccentPreset.current = preset
+                                appModel.accentPreset = preset
                             } label: {
                                 Circle()
                                     .fill(Color(hex: preset.baseHex))
                                     .frame(width: 20, height: 20)
                                     .overlay {
-                                        Circle().stroke(Theme.text, lineWidth: preset == accentPreset ? 2 : 0)
+                                        Circle().stroke(Theme.text, lineWidth: preset == appModel.accentPreset ? 2 : 0)
                                     }
                             }
                             .buttonStyle(.plain)
                             .help(preset.displayName)
-                            .animation(.easeOut(duration: 0.15), value: accentPreset)
+                            .animation(.easeOut(duration: 0.15), value: appModel.accentPreset)
                         }
                     }
                 }

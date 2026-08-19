@@ -324,8 +324,10 @@ struct WebSearchToggleButton: View {
                 if appModel.isWebSearchEnabled {
                     Text("Search")
                         .font(.caption.weight(.semibold))
+                        .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .leading)))
                 }
             }
+            .animation(.easeOut(duration: 0.16), value: appModel.isWebSearchEnabled)
         }
         .buttonStyle(VelaControlButtonStyle(tint: appModel.isWebSearchEnabled ? Theme.accentStrong : Theme.tertiaryText))
         .help(appModel.webSearchDescription)
@@ -508,6 +510,7 @@ private struct ModelPaletteView: View {
                         }
                     }
                     .padding(.top, 10)
+                    .animation(.easeOut(duration: 0.18), value: visibleGroups.map(\.id))
                 }
                 .scrollIndicators(.hidden)
                 .frame(maxHeight: 560)

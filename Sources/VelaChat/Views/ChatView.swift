@@ -34,7 +34,6 @@ struct ChatView: View {
         "Write a clean first draft"
     ]
 
-    private var topContentInset: CGFloat { chrome.isFullScreen ? 44 : 52 }
 
     @Environment(ArtifactPresenter.self) private var artifactPresenter
 
@@ -75,11 +74,6 @@ struct ChatView: View {
                 // a quiet crossfade instead of an instant swap.
                 .id(appModel.activeConversationID)
                 .animation(.easeOut(duration: 0.16), value: appModel.activeConversationID)
-            }
-            // Reserves room under the floating glass header so the first
-            // message never starts underneath it.
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Color.clear.frame(height: topContentInset)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 composer
@@ -345,6 +339,7 @@ private struct PinnedMessagesButton: View {
             VStack(alignment: .leading, spacing: 10) {
                 if !draftAttachments.wrappedValue.isEmpty {
                     AttachmentChipRow(attachments: draftAttachments)
+                        .animation(.easeOut(duration: 0.16), value: draftAttachments.wrappedValue.count)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
@@ -389,9 +384,11 @@ private struct PinnedMessagesButton: View {
                         ModelPickerButton()
                         if appModel.availableThinkingLevels.count > 1 {
                             ThinkingPickerButton()
+                                .transition(.scale(scale: 0.85).combined(with: .opacity))
                         }
                         if appModel.canUseWebSearch {
                             WebSearchToggleButton()
+                                .transition(.scale(scale: 0.85).combined(with: .opacity))
                         }
                         Spacer(minLength: 8)
                         // Sits immediately left of Send, Claude-Code-style —
@@ -439,7 +436,9 @@ private struct PinnedMessagesButton: View {
                 handleDrop(providers)
             }
         }
-        .padding(.horizontal, 24)
+        // 18 + the pill's 16 inner inset = 34, the transcript's own inset —
+        // the paperclip and message text share a left edge now.
+        .padding(.horizontal, 18)
         .padding(.top, 10)
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity)
@@ -447,6 +446,9 @@ private struct PinnedMessagesButton: View {
         .animation(.easeOut(duration: 0.16), value: appModel.statusMessage != nil)
         .animation(.easeOut(duration: 0.16), value: appModel.activeConversation?.activeSkillPaths.isEmpty ?? true)
         .animation(.easeOut(duration: 0.16), value: slashQuery != nil)
+        .animation(.easeOut(duration: 0.16), value: appModel.availableThinkingLevels.count)
+        .animation(.easeOut(duration: 0.16), value: appModel.canUseWebSearch)
+        .animation(.easeOut(duration: 0.16), value: appModel.isWebSearchEnabled)
     }
 
     private var canSend: Bool {
@@ -572,14 +574,22 @@ private struct SendButtonBackground: ViewModifier {
     let fill: Color
     let isFilled: Bool
 
+    // One stable view tree — the old if/else swapped the whole view's
+    // identity, so the fill state POPPED instead of animating; now the
+    // stroke fades against a transitioning glass fill.
     func body(content: Content) -> some View {
-        if isFilled {
-            content.glassCircle(tint: fill, interactive: true)
-        } else {
-            content
-                .background { Circle().fill(Color.clear) }
-                .overlay { Circle().stroke(Theme.controlStroke.opacity(0.7), lineWidth: 1.2) }
-        }
+        content
+            .background {
+                ZStack {
+                    Circle()
+                        .stroke(Theme.controlStroke.opacity(0.7), lineWidth: 1.2)
+                        .opacity(isFilled ? 0 : 1)
+                    if isFilled {
+                        Color.clear.glassCircle(tint: fill, interactive: true)
+                            .transition(.opacity)
+                    }
+                }
+            }
     }
 }
 
@@ -588,12 +598,15 @@ private struct SendButtonStyle: ButtonStyle {
     var isStopping = false
 
     private var fill: Color {
-        if isStopping { return Theme.text.opacity(0.92) }
+        // Stop used to be a near-white disc — the brightest thing on
+        // screen through every reply. The softened danger tint reads
+        // "stop" without glowing.
+        if isStopping { return Theme.danger }
         return isReady ? Theme.accentStrong : .clear
     }
 
     private var foreground: Color {
-        if isStopping { return Theme.background }
+        if isStopping { return Theme.accentForeground }
         return isReady ? Theme.accentForeground : Theme.tertiaryText
     }
 
@@ -845,7 +858,7 @@ private struct MessageRow: View {
                                     Label("Delete", systemImage: "trash")
                                 }
                             }
-                        if let usage = appModel.usageByMessage[displayedMessage.id]?.label {
+                        if let usage = (appModel.usageByMessage[displayedMessage.id] ?? displayedMessage.usage)?.label {
                             Text(usage)
                                 .font(.caption2)
                                 .foregroundStyle(Theme.tertiaryText)
@@ -1121,11 +1134,27 @@ private struct SlashCommandList: View {
 private struct NoticeCard: View {
     let message: ChatMessage
 
+    private var symbol: String {
+        switch message.noticeKind {
+        case "success": "checkmark.circle"
+        case "info": "info.circle"
+        default: "exclamationmark.triangle"
+        }
+    }
+
+    private var tint: Color {
+        switch message.noticeKind {
+        case "success": Theme.success
+        case "info": Theme.secondaryText
+        default: Theme.warning
+        }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
+            Image(systemName: symbol)
                 .font(.caption)
-                .foregroundStyle(Theme.warning)
+                .foregroundStyle(tint)
             Text(message.content)
                 .font(.callout)
                 .foregroundStyle(Theme.secondaryText)
@@ -1136,7 +1165,7 @@ private struct NoticeCard: View {
         .background(Theme.controlBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
-                .stroke(Theme.warning.opacity(0.25), lineWidth: 1)
+                .stroke(tint.opacity(0.25), lineWidth: 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

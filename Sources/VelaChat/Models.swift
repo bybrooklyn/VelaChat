@@ -689,6 +689,9 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// `MessageSegment`. Empty on user messages and on assistant messages
     /// saved before this field existed; `content` remains canonical.
     var segments: [MessageSegment] = []
+    /// For `role: "notice"` cards only: "info", "success", or "warning"
+    /// (the default) — a success toast should not wear a warning triangle.
+    var noticeKind: String?
 
     init(role: String, content: String, reasoning: String? = nil, error: String? = nil, isStreaming: Bool = false, providerName: String? = nil, modelID: String? = nil, isPinned: Bool = false, attachments: [Attachment] = [], alternates: [ChatMessage] = []) {
         self.id = UUID()
@@ -721,6 +724,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         usage = try container.decodeIfPresent(UsageSummary.self, forKey: .usage)
         alternates = try container.decodeIfPresent([ChatMessage].self, forKey: .alternates) ?? []
         segments = try container.decodeIfPresent([MessageSegment].self, forKey: .segments) ?? []
+        noticeKind = try container.decodeIfPresent(String.self, forKey: .noticeKind)
     }
 
     /// If this message's content contains a well-formed ```ask-user fenced
