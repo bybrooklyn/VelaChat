@@ -1,12 +1,15 @@
 import SwiftUI
 
-/// The per-provider editor, pushed from the Providers section of Settings.
-/// There is no separate "Connections" screen any more — provider management
-/// is part of Settings, and this is only its detail page.
+/// The per-provider editor, shown in place of the Settings list when a
+/// provider is opened. Not a `NavigationStack` destination: see the note on
+/// `SettingsRoute` — pushing one inside `NavigationSplitView`'s detail column
+/// both pinned the pane open and shifted the whole window's safe area.
+/// `onBack` is Settings' own route change, so this screen never needs (or
+/// draws) navigation chrome of its own.
 struct ProviderEditorView: View {
     @Environment(AppModel.self) private var appModel
-    @Environment(\.dismiss) private var dismiss
     let profileID: UUID
+    var onBack: () -> Void = {}
 
     @State private var name = ""
     @State private var endpoint = ""
@@ -26,25 +29,10 @@ struct ProviderEditorView: View {
     var body: some View {
         Group {
             if let profile {
-                Form {
-                    // The window toolbar is deliberately removed app-wide
-                    // (titlebar treatment), so the NavigationStack's own
-                    // back chevron never renders — without this row there
-                    // is no visible way back out of the editor.
-                    Section {
-                        Button {
-                            dismiss()
-                        } label: {
-                            Label("All Providers", systemImage: "chevron.left")
-                                .font(.callout.weight(.medium))
-                                .foregroundStyle(Theme.secondaryText)
-                        }
-                        .buttonStyle(.plain)
-                        .keyboardShortcut(.cancelAction)
-                        .help("Back to the provider list (Esc)")
-                        .accessibilityLabel("Back to the provider list (Esc)")
-                    }
-                    Section {
+                SettingsPage {
+                    // No in-form back row: Settings' own header carries the
+                    // one back button, in the same place on every route.
+                    SettingsPanel {
                         HStack(spacing: 12) {
                             ProviderLogoView(kind: profile.kind, endpoint: profile.endpoint, size: 38)
                             VStack(alignment: .leading, spacing: 3) {
@@ -75,12 +63,14 @@ struct ProviderEditorView: View {
                         }
                     }
 
-                    Section("Connection") {
+                    SettingsPanel(title: "Connection", symbol: "link") {
                         if profile.kind == .compatible {
                             TextField("Name", text: $name)
+                                .flatFieldStyle()
                         }
                         TextField("Base endpoint", text: $endpoint)
                             .textContentType(.URL)
+                            .flatFieldStyle()
                         if profile.kind == .codex {
                             Text("Codex login requests go to ChatGPT's fixed backend — this endpoint only applies when a manual API key is used.")
                                 .font(.caption)
@@ -89,6 +79,8 @@ struct ProviderEditorView: View {
 
                         if profile.kind.requiresKey {
                             SecureField(profile.kind == .codex ? "Manual API key (optional)" : "API key", text: $apiKey)
+                                .textFieldStyle(.plain)
+                                .flatFieldStyle()
                                 .onChange(of: apiKey) { _, _ in apiKeyEdited = true }
                             if let console = profile.kind.consoleURL {
                                 Link(destination: console) {
@@ -107,8 +99,7 @@ struct ProviderEditorView: View {
 
                         HStack {
                             Button("Save") { save(profile) }
-                                .buttonStyle(.glassProminent)
-                                .tint(Theme.accent)
+                                .buttonStyle(SettingsPrimaryButtonStyle())
                             Button {
                                 Task { await test(profile) }
                             } label: {
@@ -120,7 +111,7 @@ struct ProviderEditorView: View {
                                     }
                                 }
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(SettingsAddButtonStyle())
                             if let message {
                                 Text(message)
                                     .font(.caption)
@@ -130,7 +121,7 @@ struct ProviderEditorView: View {
                         }
                     }
 
-                    Section("Memory") {
+                    SettingsPanel(title: "Memory", symbol: "brain") {
                         Toggle("Send memories to this provider", isOn: Binding(
                             get: { appModel.isMemoryAllowed(for: profile) },
                             set: { appModel.setMemoryAllowed($0, for: profile) }
@@ -149,18 +140,15 @@ struct ProviderEditorView: View {
                     // In the form, not the toolbar — the removed window
                     // toolbar would swallow a toolbar-placed button.
                     if profile.kind == .compatible {
-                        Section {
-                            Button("Remove This Endpoint", role: .destructive) {
+                        SettingsPanel(title: "Danger Zone", symbol: "exclamationmark.triangle") {
+                            Button("Remove This Endpoint") {
                                 appModel.providers.remove(id: profile.id)
-                                dismiss()
+                                onBack()
                             }
+                            .buttonStyle(SettingsDestructiveButtonStyle())
                         }
                     }
                 }
-                .formStyle(.grouped)
-                .frame(maxWidth: Theme.Layout.settingsWidth)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .navigationTitle(profile.name)
                 .onAppear {
                     syncFields()
                     appModel.providers.discoverIfNeeded(id: profileID)
@@ -176,7 +164,7 @@ struct ProviderEditorView: View {
 
     private func modelControl(_ profile: ProviderProfile) -> some View {
         let models = appModel.providers.models(for: profile.id)
-        return Section("Model") {
+        return SettingsPanel(title: "Model", symbol: "cpu") {
             if models.isEmpty {
                 HStack {
                     Label(
@@ -196,6 +184,7 @@ struct ProviderEditorView: View {
                 if profile.kind == .compatible {
                     TextField("Optional model override", text: $model)
                         .font(.system(.body, design: .monospaced))
+                        .flatFieldStyle()
                 }
             } else {
                 Picker("Model", selection: $model) {
@@ -222,7 +211,7 @@ struct ProviderEditorView: View {
     @ViewBuilder
     private func ollamaModelManager(_ profile: ProviderProfile) -> some View {
         if profile.kind == .ollama {
-            Section("Installed models") {
+            SettingsPanel(title: "Installed Models", symbol: "internaldrive") {
                 let models = appModel.providers.models(for: profile.id)
                 if models.isEmpty {
                     Text("No models pulled yet.")
@@ -259,7 +248,7 @@ struct ProviderEditorView: View {
                         .font(.system(.body, design: .monospaced))
                         .onSubmit { startPull(profile) }
                     Button("Pull") { startPull(profile) }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(SettingsPrimaryButtonStyle())
                         .disabled(isPullDisabled)
                 }
 
@@ -329,7 +318,7 @@ struct ProviderEditorView: View {
     /// support aren't things you only discover by trying them.
     @ViewBuilder
     private func capabilities(_ profile: ProviderProfile) -> some View {
-        Section("Capabilities") {
+        SettingsPanel(title: "Capabilities", symbol: "checklist") {
             LabeledContent("Protocol") {
                 Text(profile.kind.speaksOpenAIProtocol ? "OpenAI chat completions" : "Provider-specific")
                     .foregroundStyle(Theme.secondaryText)
@@ -358,22 +347,21 @@ struct ProviderEditorView: View {
     private func providerDetails(_ profile: ProviderProfile) -> some View {
         switch profile.kind {
         case .appleIntelligence:
-            Section("On-device") {
+            SettingsPanel(title: "On-device", symbol: "info.circle") {
                 Text(AppleIntelligence.unavailabilityReason ?? "Runs entirely on this Mac — no key, no network, no cost. Conversations never leave the device.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .chatGPT:
             ChatGPTLoginSection()
         case .codex:
-            Section("Codex login") {
+            SettingsPanel(title: "Codex login", symbol: "info.circle") {
                 Text(appModel.providers.codexMessage ?? "Use the official Codex CLI login, or enter an API key above.")
                     .foregroundStyle(Theme.secondaryText)
                 HStack {
                     Button("Run codex login") { appModel.providers.launchCodexLogin() }
-                        .buttonStyle(.glassProminent)
-                        .tint(Theme.accent)
+                        .buttonStyle(SettingsPrimaryButtonStyle())
                     Button("Refresh auth") { appModel.providers.refreshCodex() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(SettingsAddButtonStyle())
                     if appModel.providers.codexCredential != nil {
                         Label("Credentials found", systemImage: "checkmark.seal.fill")
                             .foregroundStyle(Theme.success)
@@ -381,67 +369,67 @@ struct ProviderEditorView: View {
                 }
             }
         case .openAI:
-            Section("OpenAI") {
+            SettingsPanel(title: "OpenAI", symbol: "info.circle") {
                 Text("OpenAI defined the chat-completions format every other provider in this list implements. A key here talks to OpenAI’s own servers; the same request shape pointed at a different base URL is exactly what “OpenAI Compatible” means.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .anthropic:
-            Section("Anthropic") {
+            SettingsPanel(title: "Anthropic", symbol: "info.circle") {
                 Text("Claude models through Anthropic’s OpenAI-compatible endpoint, so the same request shape works unchanged. Some Anthropic-only features are not exposed over this compatibility layer.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .google:
-            Section("Google Gemini") {
+            SettingsPanel(title: "Google Gemini", symbol: "info.circle") {
                 Text("Gemini through Google’s OpenAI-compatible endpoint on Generative Language API. Create a key in Google AI Studio — the free tier is generous for personal use.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .deepSeek:
-            Section("DeepSeek") {
+            SettingsPanel(title: "DeepSeek", symbol: "info.circle") {
                 Text("The preset uses DeepSeek’s current API base at api.deepseek.com. Thinking is provider-accurate: Auto, Off, Low, High, and Max — DeepSeek’s API does not expose a separate Medium or Extra High setting.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .openRouter:
-            Section("OpenRouter") {
+            SettingsPanel(title: "OpenRouter", symbol: "info.circle") {
                 Text("One key for hundreds of models, with a live catalog including context, modality, tools, and reasoning metadata. Turning search on in the composer appends OpenRouter’s :online suffix, so the model searches the web itself.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .perplexity:
-            Section("Perplexity") {
+            SettingsPanel(title: "Perplexity", symbol: "info.circle") {
                 Text("Sonar models search the live web on every request and answer with citations — there is nothing to configure and no SearXNG instance needed.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .groq:
-            Section("Groq") {
+            SettingsPanel(title: "Groq", symbol: "info.circle") {
                 Text("Open models served on Groq’s LPU hardware, usually at far higher tokens per second than GPU inference.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .mistral:
-            Section("Mistral") {
+            SettingsPanel(title: "Mistral", symbol: "info.circle") {
                 Text("Mistral’s hosted API, including the Large and Codestral families, over the standard chat-completions shape.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .xai:
-            Section("xAI") {
+            SettingsPanel(title: "xAI", symbol: "info.circle") {
                 Text("Grok models from xAI through their OpenAI-compatible API.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .ollama:
-            Section("Ollama") {
+            SettingsPanel(title: "Ollama", symbol: "info.circle") {
                 Text("Start Ollama and pull any chat model, such as `ollama pull gpt-oss:20b`. VelaChat discovers local models through Ollama’s native /api/tags endpoint. Nothing leaves this Mac.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .lmStudio:
-            Section("LM Studio") {
+            SettingsPanel(title: "LM Studio", symbol: "info.circle") {
                 Text("Start LM Studio’s local server (default port 1234) and load a model. It exposes an OpenAI-compatible API, so no key is needed and nothing leaves this Mac.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .blockrun:
-            Section("blockrun.ai") {
+            SettingsPanel(title: "blockrun.ai", symbol: "info.circle") {
                 Text("A free, anonymous OpenAI-compatible endpoint — no key, no sign-up. Only its free-tier models are shown here; the rest of its catalog is priced per request through the x402 crypto-micropayment protocol rather than a traditional login, which VelaChat doesn't support. It rate-limits by IP address instead of by API key, so it can get slower or briefly unavailable under load. Good for trying VelaChat out before connecting a provider of your own.")
                     .foregroundStyle(Theme.secondaryText)
             }
         case .compatible:
-            Section("Compatible endpoint") {
+            SettingsPanel(title: "Compatible endpoint", symbol: "info.circle") {
                 Text("Works with vLLM, llama.cpp server, LiteLLM, Jan, TGI, and anything else implementing POST /chat/completions — the same format the hosted providers above use.")
                     .foregroundStyle(Theme.secondaryText)
             }

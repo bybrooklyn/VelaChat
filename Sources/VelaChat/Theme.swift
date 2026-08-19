@@ -176,7 +176,14 @@ enum Theme {
     /// magic numbers that drift (Settings was 760, Providers 720,
     /// Changelog/Statistics 640, all in one navigation stack).
     enum Layout {
-        static let settingsWidth: CGFloat = 1000
+        /// The readable column every Settings screen's content sits in.
+        static let settingsColumn: CGFloat = 760
+        /// The jump rail beside it. Reserved on every route, not just the
+        /// root, so the content column never shifts sideways when you open
+        /// a provider or Statistics.
+        static let settingsRail: CGFloat = 164
+        /// Rail + column: the whole Settings area, centred in the pane.
+        static let settingsWidth: CGFloat = settingsRail + settingsColumn
     }
 
     /// A single shared corner-radius scale so rounding reads as one system

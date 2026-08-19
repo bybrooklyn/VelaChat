@@ -19,7 +19,7 @@ struct ChatGPTLoginSection: View {
     private var browsers: [BrowserCookieImport.Browser] { BrowserCookieImport.availableBrowsers() }
 
     var body: some View {
-        Section("ChatGPT account") {
+        SettingsPanel(title: "ChatGPT Account", symbol: "person.crop.circle") {
             if appModel.providers.chatGPTSessionPresent {
                 Label(statusText ?? "Signed in", systemImage: "checkmark.circle")
                     .foregroundStyle(Theme.secondaryText)
@@ -31,17 +31,16 @@ struct ChatGPTLoginSection: View {
                 Button(appModel.providers.chatGPTSessionPresent ? "Sign In Again…" : "Sign In to ChatGPT…") {
                     isLoginShown = true
                 }
-                .buttonStyle(.glassProminent)
-                .tint(Theme.accent)
+                .buttonStyle(SettingsPrimaryButtonStyle())
                 if appModel.providers.chatGPTSessionPresent {
-                    Button("Sign Out", role: .destructive) {
+                    Button("Sign Out") {
                         Task {
                             await ChatGPTWebClient.shared.signOut()
                             appModel.providers.chatGPTSessionPresent = false
                             statusText = nil
                         }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SettingsDestructiveButtonStyle())
                 }
                 if isWorking {
                     ShimmerText(text: "Checking session…", font: .callout)
@@ -57,7 +56,7 @@ struct ChatGPTLoginSection: View {
                     HStack(spacing: 8) {
                         ForEach(browsers) { browser in
                             Button(browser.name) { importSession(from: browser) }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(SettingsAddButtonStyle())
                         }
                     }
                 }
