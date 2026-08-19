@@ -56,6 +56,11 @@ private struct SettingsCard<Content: View>: View {
                 .foregroundStyle(Theme.text)
             content()
                 .toggleStyle(.switch)
+                // Note: macOS 26 ignores .tint() on switch tracks — the ON
+                // state is conveyed by knob position, not colour. Verified
+                // by pixel-sampling a tinted and an untinted switch: both
+                // render the same rgb(76,84,85) track. Left as-is rather
+                // than churning values that have no effect.
                 .tint(Theme.accentStrong)
                 .controlSize(.small)
             if let footer {
@@ -332,6 +337,8 @@ struct SettingsView: View {
                     .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
                     .disabled(newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+                Divider()
+                ConversationIndexRow()
                     }
 
 
@@ -836,6 +843,51 @@ private struct UpdatesRow: View {
                     .font(.caption)
                     .foregroundStyle(Theme.tertiaryText)
             }
+        }
+    }
+}
+
+/// The state of the conversation index, and control over it.
+///
+/// Memory that quietly reads everything you've ever written should be
+/// visible and switchable off, not a background process you have to
+/// infer from CPU usage.
+private struct ConversationIndexRow: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "text.magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+                if appModel.memoryIndexer.isBackfilling {
+                    ShimmerText(
+                        text: "Indexing past conversations — \(appModel.memoryIndexer.backfilled) of \(appModel.memoryIndexer.backfillTotal)",
+                        font: .caption
+                    )
+                    Spacer(minLength: 0)
+                    Button("Stop") { appModel.memoryIndexer.cancelBackfill() }
+                        .buttonStyle(VelaIconButtonStyle())
+                        .foregroundStyle(Theme.secondaryText)
+                } else {
+                    Text("\(appModel.memoryIndexer.indexedMessages) messages searchable")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                    Spacer(minLength: 0)
+                    Button("Index Now") {
+                        appModel.memoryIndexer.startBackfill(conversations: appModel.conversations)
+                    }
+                    .buttonStyle(VelaIconButtonStyle())
+                    .foregroundStyle(Theme.accent)
+                }
+            }
+            Text(MemoryEmbedder.shared.isSemanticAvailable
+                 ? "Replies can draw on relevant excerpts from your earlier conversations. Matching is keyword-driven, with on-device embeddings refining the order — nothing is sent anywhere to build this index."
+                 : "On-device language assets aren't available, so matching is keyword-only.")
+                .font(.caption)
+                .foregroundStyle(Theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
