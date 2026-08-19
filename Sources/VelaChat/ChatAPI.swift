@@ -309,6 +309,9 @@ final class CompatibleChatClient: @unchecked Sendable {
 
             let (bytes, response) = try await session.bytes(for: request)
             try await Self.checkStream(response: response, bytes: bytes)
+            if let http = response as? HTTPURLResponse, let quota = QuotaSnapshot(headers: http.allHeaderFields) {
+                onEvent(.quota(quota))
+            }
 
             var consecutiveParseFailures = 0
             var pendingToolCalls: [Int: (id: String, name: String, arguments: String)] = [:]
@@ -652,6 +655,9 @@ final class CompatibleChatClient: @unchecked Sendable {
 
             let (bytes, response) = try await session.bytes(for: request)
             try await Self.checkStream(response: response, bytes: bytes)
+            if let http = response as? HTTPURLResponse, let quota = QuotaSnapshot(headers: http.allHeaderFields) {
+                onEvent(.quota(quota))
+            }
             var consecutiveParseFailures = 0
             // Calls accumulate keyed by the stream's item id; order of
             // arrival is preserved for execution/replay.
@@ -843,6 +849,9 @@ final class CompatibleChatClient: @unchecked Sendable {
 
             let (bytes, response) = try await session.bytes(for: request)
             try await Self.checkStream(response: response, bytes: bytes)
+            if let http = response as? HTTPURLResponse, let quota = QuotaSnapshot(headers: http.allHeaderFields) {
+                onEvent(.quota(quota))
+            }
 
             var textForThisRound = ""
             var toolBlocks: [Int: (id: String, name: String, json: String)] = [:]

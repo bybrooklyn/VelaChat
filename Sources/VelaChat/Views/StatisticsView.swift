@@ -1,5 +1,25 @@
 import SwiftUI
 
+private struct ProviderUsageRow: View {
+    @Environment(AppModel.self) private var appModel
+    let profile: ProviderProfile
+
+    var body: some View {
+        let today = appModel.usage.today(providerID: profile.id)
+        let month = appModel.usage.thisMonth(providerID: profile.id)
+        if month.requests > 0 {
+            LabeledContent(profile.name) {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("today \(today.requests) req · \(today.totalTokens) tok\(today.costLabel.map { " · \($0)" } ?? "")")
+                    Text("month \(month.requests) req · \(month.totalTokens) tok\(month.costLabel.map { " · \($0)" } ?? "")")
+                }
+                .font(.caption)
+                .foregroundStyle(Theme.secondaryText)
+            }
+        }
+    }
+}
+
 /// Every number here is aggregated from data VelaChat already stores —
 /// nothing estimated or fabricated. Token counts are real provider-reported
 /// usage (`ChatMessage.usage`, persisted since this feature shipped — older

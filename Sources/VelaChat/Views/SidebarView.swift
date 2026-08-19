@@ -108,6 +108,9 @@ struct SidebarView: View {
     private var topActionsRow: some View {
         HStack(spacing: 8) {
             newChatButton
+            if !isSearchExpanded {
+                UsageGaugeButton()
+            }
             if isSearchExpanded {
                 searchField
                     .transition(.asymmetric(

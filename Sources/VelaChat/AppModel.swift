@@ -145,6 +145,8 @@ final class AppModel {
         didSet { UserDefaults.standard.set(isHoverTimestampsEnabled, forKey: "velachat.hover-timestamps-enabled") }
     }
     var searchByMessage: [UUID: WebSearchRecord] = [:]
+    /// Latest live quota headers seen per provider this session.
+    var quotaByProvider: [UUID: QuotaSnapshot] = [:]
 
     /// True when search is reachable at all: either the provider searches
     /// natively, or a SearXNG endpoint is configured and the model takes tools.
@@ -1619,6 +1621,10 @@ final class AppModel {
                 var record = ActivityRecord(id: id, kind: .from(toolName: name), toolName: name, argument: argument)
                 record.isRunning = true
                 enqueue(.activity(record), for: assistantID, conversation: conversation)
+            case .quota(let snapshot):
+                if let providerID = conversation.providerID {
+                    quotaByProvider[providerID] = snapshot
+                }
             case .activityFinished(let id, let result, let isError):
                 // Persisted per-message forever — cap so one huge page fetch
                 // doesn't bloat history (the model already saw the full text).

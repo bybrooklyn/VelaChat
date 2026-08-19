@@ -976,6 +976,79 @@ struct SavedConversation: Codable {
     }
 }
 
+/// A provider's live rate-limit/quota state, parsed from response headers
+/// when the provider sends them (Anthropic's anthropic-ratelimit-*,
+/// OpenAI-style x-ratelimit-*). Session-only — never persisted.
+struct QuotaSnapshot: Sendable, Equatable {
+    var requestsRemaining: Int?
+    var requestsLimit: Int?
+    var tokensRemaining: Int?
+    var tokensLimit: Int?
+    var resetAt: Date?
+    var capturedAt = Date()
+
+    init?(headers rawHeaders: [AnyHashable: Any]) {
+        var headers: [String: String] = [:]
+        for (headerKey, headerValue) in rawHeaders {
+            headers[String(describing: headerKey).lowercased()] = String(describing: headerValue)
+        }
+        func int(_ names: [String]) -> Int? {
+            for name in names { if let value = headers[name].flatMap(Int.init) { return value } }
+            return nil
+        }
+        requestsRemaining = int(["anthropic-ratelimit-requests-remaining", "x-ratelimit-remaining-requests"])
+        requestsLimit = int(["anthropic-ratelimit-requests-limit", "x-ratelimit-limit-requests"])
+        tokensRemaining = int(["anthropic-ratelimit-tokens-remaining", "anthropic-ratelimit-input-tokens-remaining", "x-ratelimit-remaining-tokens"])
+        tokensLimit = int(["anthropic-ratelimit-tokens-limit", "anthropic-ratelimit-input-tokens-limit", "x-ratelimit-limit-tokens"])
+        for name in ["anthropic-ratelimit-requests-reset", "anthropic-ratelimit-tokens-reset", "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"] {
+            guard let raw = headers[name] else { continue }
+            if let date = ISO8601DateFormatter().date(from: raw) {
+                resetAt = date
+                break
+            }
+            if let seconds = Self.durationSeconds(raw) {
+                resetAt = Date().addingTimeInterval(seconds)
+                break
+            }
+        }
+        if requestsRemaining == nil, tokensRemaining == nil, resetAt == nil { return nil }
+    }
+
+    /// OpenAI reset strings look like "1s", "6m0s", "7.66s".
+    private static func durationSeconds(_ raw: String) -> TimeInterval? {
+        var total: TimeInterval = 0
+        var number = ""
+        var matched = false
+        for character in raw {
+            if character.isNumber || character == "." {
+                number.append(character)
+            } else {
+                guard let value = TimeInterval(number) else { return nil }
+                switch character {
+                case "h": total += value * 3600
+                case "m": total += value * 60
+                case "s": total += value
+                default: return nil
+                }
+                number = ""
+                matched = true
+            }
+        }
+        return matched ? total : nil
+    }
+
+    /// 0…1 used fraction, from whichever limit pair is known.
+    var usedFraction: Double? {
+        if let remaining = requestsRemaining, let limit = requestsLimit, limit > 0 {
+            return 1 - Double(remaining) / Double(limit)
+        }
+        if let remaining = tokensRemaining, let limit = tokensLimit, limit > 0 {
+            return 1 - Double(remaining) / Double(limit)
+        }
+        return nil
+    }
+}
+
 enum ChatStreamEvent: Sendable {
     case delta(content: String, reasoning: String)
     /// `cachedTokens`: real provider-reported cache-hit tokens — OpenAI's
@@ -992,6 +1065,8 @@ enum ChatStreamEvent: Sendable {
     /// The matching call finished (or failed — the error text still goes
     /// back to the model as the tool result so it can retry).
     case activityFinished(id: UUID, result: String, isError: Bool)
+    /// Live rate-limit headers seen on a response.
+    case quota(QuotaSnapshot)
 }
 
 struct UsageSummary: Codable, Equatable {
