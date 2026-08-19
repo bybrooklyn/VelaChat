@@ -1746,49 +1746,60 @@ struct CommandApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack(spacing: 8) {
-                Image(systemName: "terminal")
+                Image(systemName: approval.isSubagentRequest ? "person.2" : "terminal")
                     .foregroundStyle(Theme.warning)
-                Text("Run this command?")
+                Text(approval.isSubagentRequest ? "Run subagents?" : "Run this command?")
                     .font(.body.weight(.semibold))
                 Spacer(minLength: 0)
             }
             Text(approval.reason)
                 .font(.caption)
                 .foregroundStyle(Theme.secondaryText)
-            TextField("Command", text: $editedCommand, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(.callout, design: .monospaced))
-                .flatFieldStyle()
-                .lineLimit(1...6)
-            HStack(spacing: 5) {
-                Image(systemName: "folder")
-                    .font(.caption2)
-                Text(approval.directory.path)
-                    .font(.caption2)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            if approval.isSubagentRequest {
+                Text(approval.command)
+                    .font(.callout)
+                    .foregroundStyle(Theme.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                TextField("Command", text: $editedCommand, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(.callout, design: .monospaced))
+                    .flatFieldStyle()
+                    .lineLimit(1...6)
+                HStack(spacing: 5) {
+                    Image(systemName: "folder")
+                        .font(.caption2)
+                    Text(approval.directory.path)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(Theme.tertiaryText)
             }
-            .foregroundStyle(Theme.tertiaryText)
             HStack(spacing: 8) {
-                Button("Run") { approval.decide(.approveOnce(trimmed)) }
+                Button(approval.isSubagentRequest ? "Run" : "Run") { approval.decide(.approveOnce(trimmed)) }
                     .buttonStyle(.glassProminent)
                     .tint(Theme.accent)
                     .keyboardShortcut(.defaultAction)
-                Button("Always Allow This") { approval.decide(.approveAlways(trimmed)) }
-                    .buttonStyle(.bordered)
+                if !approval.isSubagentRequest {
+                    Button("Always Allow This") { approval.decide(.approveAlways(trimmed)) }
+                        .buttonStyle(.bordered)
+                }
                 Spacer(minLength: 0)
-                Button("Deny") { approval.decide(.deny) }
+                Button(approval.isSubagentRequest ? "Skip" : "Deny") { approval.decide(.deny) }
                     .buttonStyle(.bordered)
                     .keyboardShortcut(.cancelAction)
             }
-            Button {
-                approval.decide(.approveAll(trimmed))
-            } label: {
-                Label("Allow every command in this chat (until you quit)", systemImage: "lock.open")
-                    .font(.caption)
+            if !approval.isSubagentRequest {
+                Button {
+                    approval.decide(.approveAll(trimmed))
+                } label: {
+                    Label("Allow every command in this chat (until you quit)", systemImage: "lock.open")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.tertiaryText)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.tertiaryText)
         }
         .padding(16)
         .frame(width: 460)

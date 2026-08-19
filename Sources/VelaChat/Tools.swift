@@ -190,6 +190,8 @@ enum ToolCatalog {
         var runCommand: (@Sendable (String) async -> String)? = nil
         /// update_plan sink — hands the parsed steps to the UI layer.
         var updatePlan: (@Sendable ([PlanStep]) async -> String)? = nil
+        /// spawn_agents runner (name, prompt) pairs → combined result.
+        var spawnAgents: (@Sendable ([(name: String, prompt: String)]) async -> String)? = nil
     }
 
     struct PlanStep: Sendable, Equatable, Codable {
@@ -322,6 +324,17 @@ enum ToolCatalog {
             guard let command = arguments?["command"] as? String, !command.isEmpty else { return "Error: \"command\" is required." }
             guard let runner = context.runCommand else { return "Error: running commands is disabled. The user can enable it in Settings → Agent abilities." }
             return await runner(command)
+        case "spawn_agents":
+            guard let rawTasks = arguments?["tasks"] as? [[String: Any]], !rawTasks.isEmpty else {
+                return "Error: \"tasks\" is required and must contain at least one task."
+            }
+            let tasks = rawTasks.compactMap { entry -> (name: String, prompt: String)? in
+                guard let prompt = entry["prompt"] as? String, !prompt.isEmpty else { return nil }
+                return (name: (entry["name"] as? String) ?? "", prompt: prompt)
+            }
+            guard !tasks.isEmpty else { return "Error: every task needs a non-empty \"prompt\"." }
+            guard let runner = context.spawnAgents else { return "Error: subagents are disabled. The user can enable them in Settings → Agent abilities." }
+            return await runner(tasks)
         case updatePlan.name:
             guard let rawSteps = arguments?["steps"] as? [[String: Any]] else { return "Error: \"steps\" is required." }
             let steps = rawSteps.compactMap { entry -> PlanStep? in

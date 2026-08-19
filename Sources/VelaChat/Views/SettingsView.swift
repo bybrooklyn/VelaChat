@@ -457,6 +457,16 @@ struct SettingsView: View {
                     SettingsCard(section: .tools, footer: Text("Agent abilities let the model plan visible multi-step work and edit/search files in the workspace. Running commands is separate and off by default: read-only commands (ls, cat, rg, git status…) run immediately, and anything else pauses for your approval in the chat, showing the exact command and folder first.")) {
                 Toggle("Planning, file editing & search", isOn: $appModel.isAgentToolsEnabled)
                 Toggle("Run shell commands (with approval)", isOn: $appModel.isCommandToolEnabled)
+                Toggle("Parallel subagents", isOn: $appModel.isSubagentsEnabled)
+                if appModel.isSubagentsEnabled {
+                    Toggle("Ask before each fan-out", isOn: $appModel.isSubagentApprovalRequired)
+                    LabeledContent("Subagent model") {
+                        TextField("Same as the chat's model", text: $appModel.subagentModelOverride)
+                            .textFieldStyle(.plain)
+                            .flatFieldStyle()
+                            .frame(maxWidth: 240)
+                    }
+                }
                 if let conversation = appModel.activeConversation, conversation.allowAllCommands {
                     Button("Revoke \u{201C}allow all commands\u{201D} for this chat") {
                         conversation.allowAllCommands = false

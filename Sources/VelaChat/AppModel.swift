@@ -176,6 +176,19 @@ final class AppModel {
     var isCommandToolEnabled = false {
         didSet { UserDefaults.standard.set(isCommandToolEnabled, forKey: "velachat.command-tool-enabled") }
     }
+    /// spawn_agents — off by default: each subagent is a real billed
+    /// request, and several run at once.
+    var isSubagentsEnabled = false {
+        didSet { UserDefaults.standard.set(isSubagentsEnabled, forKey: "velachat.subagents-enabled") }
+    }
+    /// Ask before each fan-out (they cost several requests at once).
+    var isSubagentApprovalRequired = true {
+        didSet { UserDefaults.standard.set(isSubagentApprovalRequired, forKey: "velachat.subagent-approval") }
+    }
+    /// Optional cheaper/faster model for subagents; empty = same model.
+    var subagentModelOverride = "" {
+        didSet { UserDefaults.standard.set(subagentModelOverride, forKey: "velachat.subagent-model") }
+    }
 
     /// A pending run_command approval, shown as a card in the transcript.
     /// The generation waits on `decide` until the user answers.
@@ -185,6 +198,9 @@ final class AppModel {
         let command: String
         let directory: URL
         let reason: String
+        /// Subagent fan-out reuses this card, but must not offer command
+        /// editing or the always-allow paths.
+        var isSubagentRequest = false
         let decide: @Sendable (Decision) -> Void
 
         enum Decision: Sendable {
@@ -364,6 +380,11 @@ final class AppModel {
             isAgentToolsEnabled = UserDefaults.standard.bool(forKey: "velachat.agent-tools-enabled")
         }
         isCommandToolEnabled = UserDefaults.standard.bool(forKey: "velachat.command-tool-enabled")
+        isSubagentsEnabled = UserDefaults.standard.bool(forKey: "velachat.subagents-enabled")
+        if UserDefaults.standard.object(forKey: "velachat.subagent-approval") != nil {
+            isSubagentApprovalRequired = UserDefaults.standard.bool(forKey: "velachat.subagent-approval")
+        }
+        subagentModelOverride = UserDefaults.standard.string(forKey: "velachat.subagent-model") ?? ""
         if UserDefaults.standard.object(forKey: "velachat.schedule-tool-enabled") != nil {
             isScheduleToolEnabled = UserDefaults.standard.bool(forKey: "velachat.schedule-tool-enabled")
         }
@@ -1467,6 +1488,9 @@ final class AppModel {
             if isCommandToolEnabled {
                 tools.append(ToolCatalog.runCommand)
             }
+            if isSubagentsEnabled {
+                tools.append(Subagents.definition)
+            }
         }
         var attachmentTexts: [String: String] = [:]
         for message in conversation.realMessages {
@@ -1560,6 +1584,31 @@ final class AppModel {
             toolContext.runCommand = { [weak self] command in
                 await self?.executeCommand(command, in: workspaceRoot, conversationID: conversationID)
                     ?? "Error: the app is shutting down."
+            }
+        }
+        if isSubagentsEnabled {
+            let subagentModel = subagentModelOverride.isEmpty ? model : subagentModelOverride
+            let subagentTools = Subagents.allowedTools(from: tools)
+            let baseContext = toolContext
+            let conversationID = conversation.id
+            toolContext.spawnAgents = { [weak self] rawTasks in
+                guard let self else { return "Error: the app is shutting down." }
+                let tasks = rawTasks.prefix(3).map { Subagents.Task(name: $0.name, prompt: $0.prompt) }
+                if await self.isSubagentApprovalRequired {
+                    let summary = tasks.map { $0.name.isEmpty ? "a task" : $0.name }.joined(separator: ", ")
+                    let approved = await self.confirmSubagents(count: tasks.count, summary: summary, conversationID: conversationID)
+                    guard approved else {
+                        return "The user declined to run subagents. Do the work yourself, or ask them how to proceed."
+                    }
+                }
+                return await Subagents.run(
+                    tasks: tasks,
+                    profile: profile,
+                    credential: credential,
+                    model: subagentModel,
+                    tools: subagentTools,
+                    toolContext: baseContext
+                )
             }
         }
         toolContext.mcpCall = { [weak self] name, argumentsJSON in
@@ -1736,6 +1785,28 @@ final class AppModel {
                 self?.failGeneration(error.localizedDescription, for: conversation, assistantID: assistantID)
             }
         }
+    }
+
+    /// Subagent fan-out confirmation — same pause-and-decide shape as a
+    /// command approval, since it also spends real requests.
+    func confirmSubagents(count: Int, summary: String, conversationID: UUID) async -> Bool {
+        let decision: CommandApproval.Decision = await withCheckedContinuation { continuation in
+            let box = DecisionGuard()
+            pendingApproval = CommandApproval(
+                conversationID: conversationID,
+                command: "Run \(count) subagent\(count == 1 ? "" : "s") in parallel: \(summary)",
+                directory: activeConversation?.workspaceRoot ?? SandboxManager.directory(for: conversationID),
+                reason: "Each subagent is a separate request to your provider, and they run at the same time.",
+                isSubagentRequest: true
+            ) { decision in
+                guard !box.answered else { return }
+                box.answered = true
+                continuation.resume(returning: decision)
+            }
+        }
+        pendingApproval = nil
+        if case .deny = decision { return false }
+        return true
     }
 
     /// Attaches a real folder to the active conversation as its workspace
