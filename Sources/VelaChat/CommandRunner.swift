@@ -18,18 +18,35 @@ enum CommandRunner {
 
     /// Commands that only read. Anything not on this list needs approval,
     /// so adding to it is the only way to widen auto-approval.
+    ///
+    /// Two names that look like they belong here deliberately don't:
+    /// `env` runs whatever you put after it (`env rm -rf ~` is an `rm`, not
+    /// an `env`), and `man` will execute an arbitrary pager via `-P` or
+    /// `$MANPAGER`. Anything that can be turned into a launcher for another
+    /// program is not a read-only command however it is named.
     private static let readOnlyBinaries: Set<String> = [
         "ls", "cat", "head", "tail", "wc", "stat", "file", "du", "df",
         "pwd", "echo", "date", "whoami", "uname", "which", "type",
         "rg", "grep", "egrep", "fgrep", "find", "fd", "tree", "basename", "dirname",
         "sort", "uniq", "cut", "column", "diff", "cmp", "jq", "yq",
-        "man", "help", "env", "printenv", "ps", "top",
+        "help", "printenv", "ps", "top",
     ]
 
-    /// git subcommands that only read.
+    /// Flags that turn one of the read-only binaries above into a write.
+    /// `sort -o out in` and `yq -i` rewrite files with no shell redirection
+    /// anywhere in the command, so the operator scan never sees them.
+    private static let writeFlagsByBinary: [String: Set<String>] = [
+        "sort": ["-o", "--output"],
+        "tree": ["-o"],
+        "yq": ["-i", "--inplace"],
+        "find": ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"],
+    ]
+
+    /// git subcommands that only read. `stash` is not among them — it
+    /// rewrites the working tree.
     private static let readOnlyGitSubcommands: Set<String> = [
         "status", "log", "diff", "show", "branch", "remote", "config",
-        "blame", "describe", "ls-files", "rev-parse", "shortlog", "tag", "stash",
+        "blame", "describe", "ls-files", "rev-parse", "shortlog", "tag",
     ]
 
     /// Shell metacharacters that make static analysis unreliable — with
@@ -47,6 +64,14 @@ enum CommandRunner {
             // gets this wrong — ask instead.
             return .needsApproval(reason: "uses shell operators (\(token))")
         }
+        // A newline separates commands in `zsh -lc` exactly like `;` does,
+        // and splitting on " " alone did not see it: "cat notes.txt\nrm -rf
+        // ~" classified on the binary `cat` and auto-ran the `rm`. Any
+        // whitespace other than a plain space is treated as a separator we
+        // cannot reason about.
+        if trimmed.contains(where: { $0.isWhitespace && $0 != " " }) {
+            return .needsApproval(reason: "spans more than one line")
+        }
         let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         guard let binary = parts.first else { return .needsApproval(reason: "empty command") }
         if binary.contains("/") {
@@ -55,16 +80,26 @@ enum CommandRunner {
         if binary == "sudo" || binary == "su" || binary == "doas" {
             return .needsApproval(reason: "runs with elevated privileges")
         }
+        // `FOO=bar cmd` is an assignment prefix: the real binary is the next
+        // token, so classifying on the first one reads the wrong command.
+        if binary.contains("=") {
+            return .needsApproval(reason: "sets environment variables inline")
+        }
         if binary == "git" {
             let subcommand = parts.dropFirst().first { !$0.hasPrefix("-") } ?? ""
-            if readOnlyGitSubcommands.contains(subcommand), subcommand != "stash" {
+            if readOnlyGitSubcommands.contains(subcommand) {
                 return .readOnly
             }
             return .needsApproval(reason: "git \(subcommand.isEmpty ? "command" : subcommand) can modify the repository")
         }
-        // `find -delete`/`-exec` are writes wearing a read-only name.
-        if binary == "find", parts.contains(where: { $0 == "-delete" || $0 == "-exec" || $0 == "-execdir" || $0 == "-ok" }) {
-            return .needsApproval(reason: "find would execute or delete")
+        let arguments = parts.dropFirst()
+        if let writeFlags = writeFlagsByBinary[binary],
+           let flag = arguments.first(where: { writeFlags.contains($0) }) {
+            return .needsApproval(reason: "\(binary) \(flag) writes a file")
+        }
+        // `uniq in out` writes its second operand — no flag, no redirection.
+        if binary == "uniq", arguments.filter({ !$0.hasPrefix("-") }).count >= 2 {
+            return .needsApproval(reason: "uniq with two files writes the second one")
         }
         if readOnlyBinaries.contains(binary) {
             return .readOnly
@@ -76,6 +111,26 @@ enum CommandRunner {
         var text: String
         var exitCode: Int32
         var timedOut: Bool
+    }
+
+    /// One bool, written by the timeout watchdog and read by the waiter —
+    /// on two different queues, so it needs a lock rather than being a
+    /// captured `var`.
+    private final class TimeoutFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var flag = false
+
+        func set() {
+            lock.lock()
+            flag = true
+            lock.unlock()
+        }
+
+        var value: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return flag
+        }
     }
 
     /// Runs the command via `/bin/zsh -lc` in `directory`, capturing
@@ -105,10 +160,14 @@ enum CommandRunner {
                 }
 
                 let deadline = DispatchTime.now() + timeout
-                var timedOut = false
+                // The watchdog runs on another queue and this one reads the
+                // flag after `waitUntilExit()`, so a plain `var` was a real
+                // cross-thread read/write. `cancel()` doesn't close the
+                // window either — it can't stop a work item already running.
+                let didTimeOut = TimeoutFlag()
                 let watchdog = DispatchWorkItem {
                     if process.isRunning {
-                        timedOut = true
+                        didTimeOut.set()
                         process.terminate()
                     }
                 }
@@ -122,7 +181,7 @@ enum CommandRunner {
                 if text.count > Limits.commandOutputBytes {
                     text = String(text.prefix(Limits.commandOutputBytes)) + "\n[Truncated — first 20 KB of output.]"
                 }
-                continuation.resume(returning: Output(text: text, exitCode: process.terminationStatus, timedOut: timedOut))
+                continuation.resume(returning: Output(text: text, exitCode: process.terminationStatus, timedOut: didTimeOut.value))
             }
         }
     }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SidebarView: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(WindowChrome.self) private var chrome
     @State private var searchQuery = ""
     @State private var isSearchExpanded = false
     @State private var renamingConversationID: UUID?
@@ -60,11 +61,19 @@ struct SidebarView: View {
         }
     }
 
+    /// How far the brand row has to start in from the leading edge to clear
+    /// the traffic lights, which the sidebar now sits directly underneath.
+    /// Measured, not guessed: the buttons occupy 9–68.5pt, so 80 leaves a
+    /// comfortable gap. Fullscreen has no lights, so it gets the normal
+    /// gutter back.
+    private var trafficLightInset: CGFloat { chrome.isFullScreen ? 14 : 80 }
+
     private var expandedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             sidebarHeader
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
+                .padding(.leading, trafficLightInset)
+                .padding(.trailing, 14)
+                .padding(.top, 9)
                 .padding(.bottom, 12)
 
             topActionsRow
@@ -78,6 +87,12 @@ struct SidebarView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 12)
         }
+        // The sidebar's material already extends up behind the transparent
+        // titlebar; before this, its *content* stopped at the safe area, so
+        // the top ~59pt was an empty frosted band beside the traffic lights
+        // that read as a stray title bar. Content now starts at the very top
+        // and the brand row simply steps around the lights.
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     /// The narrow state: the same actions as icons with tooltips, plus the
@@ -87,7 +102,11 @@ struct SidebarView: View {
     private var railBody: some View {
         VStack(spacing: 8) {
             sidebarToggleButton
-                .padding(.top, 10)
+                // The rail is only 60pt wide — narrower than the traffic
+                // lights themselves — so it can't start at the very top the
+                // way the expanded sidebar does. It clears them vertically
+                // instead.
+                .padding(.top, chrome.isFullScreen ? 10 : 46)
 
             railButton(symbol: "square.and.pencil", help: "New Chat (⌘N)", tint: Theme.accentStrong) {
                 _ = appModel.newConversation()
@@ -198,7 +217,12 @@ struct SidebarView: View {
     /// read as two colliding buttons — it now has its own full-width row.
     private var sidebarHeader: some View {
         HStack(spacing: 11) {
-            VelaMark(size: 30)
+            // No `VelaMark` here any more. Now that this row sits beside the
+            // traffic lights rather than below them, the 30pt mark plus its
+            // spacing was enough to wrap "5 conversations" onto two lines at
+            // the default sidebar width — and the lights already anchor the
+            // corner, so the mark was decorating an area that had no room
+            // for decoration.
             VStack(alignment: .leading, spacing: 0) {
                 Text("VelaChat")
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -206,7 +230,9 @@ struct SidebarView: View {
                 Text(conversationCountLabel)
                     .font(.caption2)
                     .foregroundStyle(Theme.tertiaryText)
+                    .lineLimit(1)
             }
+            .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             // The app's own sidebar toggle, opposite the wordmark — the
             // system toolbar (and its long band) is hidden entirely. Same

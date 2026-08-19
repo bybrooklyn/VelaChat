@@ -232,6 +232,25 @@ struct MessageRow: View {
                                 ShimmerText(text: "Preparing a question…", font: .callout)
                             }
                         }
+                    } else if message.isStreaming, alternateIndex == 0,
+                              displayedMessage.content.isEmpty,
+                              (displayedMessage.reasoning ?? "").isEmpty,
+                              displayedMessage.segments.isEmpty,
+                              appModel.planByMessage[message.id]?.isEmpty ?? true {
+                        // Nothing has arrived yet — no text, no reasoning, no
+                        // tool activity, no plan. Without this the bubble is
+                        // just blank until the first token lands, which reads
+                        // as "is this even doing anything" on a slow or
+                        // failing provider. `statusMessage` wins when it's
+                        // set (it names the real pre-stream work — "Starting
+                        // MCP servers…"); a generic "Thinking…" still beats
+                        // silence when nothing more specific is known yet.
+                        HStack(spacing: 8) {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Theme.tertiaryText)
+                            ShimmerText(text: appModel.statusMessage ?? "Thinking…", font: .callout)
+                        }
                     } else {
                         AssistantTimeline(message: displayedMessage)
                             .contextMenu {
@@ -560,28 +579,32 @@ struct AssistantTimeline: View {
         }
     }
 
+    /// Only the text runs — activities are represented by the single
+    /// summary line above them, in both the streaming and finished states.
+    private var textItems: [Item] {
+        items.filter { if case .text = $0 { return true } else { return false } }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if !message.isStreaming, !allActivities.isEmpty {
-                // Finished: the whole streamed stack settles into one dim
-                // summary line on top — the response owns the screen, the
-                // full per-call record stays one click away.
+            if !allActivities.isEmpty {
+                // One dim line for the whole stack, running or finished, with
+                // the full per-call record one click away.
+                //
+                // This used to be the finished-state layout only: while
+                // streaming, every call got its own row, so a reply that
+                // fetched thirty pages pushed thirty lines of "Read <url> —
+                // failed" through the transcript and then collapsed them all
+                // in one frame at the end. That was both the noise and a
+                // visible layout jump on completion. Same structure in both
+                // states means neither happens.
                 ActivityLine(records: allActivities, style: .summary)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                ForEach(items) { item in
-                    if case .text(_, let content) = item {
-                        RichMessageText(text: content, isUser: false)
-                    }
-                }
-            } else {
-                let lastID = items.last?.id
-                ForEach(items) { item in
-                    switch item {
-                    case .text(_, let content):
-                        textRun(content, isTail: item.id == lastID)
-                    case .activities(let records):
-                        ActivityLine(records: records)
-                    }
+                    .transition(.opacity)
+            }
+            let lastID = textItems.last?.id
+            ForEach(textItems) { item in
+                if case .text(_, let content) = item {
+                    textRun(content, isTail: item.id == lastID)
                 }
             }
         }
@@ -645,6 +668,10 @@ struct ActivityLine: View {
         let failed = records.filter { $0.isError }
         guard records.count > 1 else {
             guard let record = records.first else { return "" }
+            // This style now also renders mid-stream, so a lone in-flight
+            // call has to read in the present tense instead of announcing
+            // itself as already finished.
+            if record.isRunning { return record.kind.runningLabel(argument: record.argument) }
             if record.isError { return record.kind.finishedLabel(argument: record.argument) + " — failed" }
             return record.kind.finishedLabel(argument: record.argument)
         }
@@ -659,6 +686,11 @@ struct ActivityLine: View {
             parts.append("\(failed.count) blocked")
         }
         let browsed = records.contains { $0.kind == .webSearch || $0.kind == .fetchURL }
+        // Nothing has come back yet — every call is still in flight. Naming
+        // the work beats an empty sentence (or a bare "Browsed the web · ").
+        if parts.isEmpty {
+            return browsed ? "Browsing the web…" : "Working…"
+        }
         var sentence = parts.joined(separator: ", ")
         if browsed {
             sentence = "Browsed the web · " + sentence

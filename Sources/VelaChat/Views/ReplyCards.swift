@@ -255,46 +255,47 @@ struct PlanCard: View {
 /// (plus an optional note) instead of a typed reply. Submitting composes a
 /// plain-text summary and sends it as the next message, so no new wire
 /// format is needed on the way back to the provider.
+///
+/// Multiple questions render as tabs (one per `header`) rather than stacked
+/// vertically — the same shape Claude Code's own picker uses. Navigation is
+/// free: any tab can be opened in any order, and a question can be left
+/// blank. Because of that, Send never blocks on completeness; it only warns
+/// before going out incomplete, via `showingIncompleteConfirm`.
 struct AskUserQuestionCard: View {
     @Environment(AppModel.self) private var appModel
     let payload: AskUserQuestionPayload
     let interactive: Bool
+    /// Where the composed answer goes. `nil` is the fenced ```ask-user
+    /// path, where the model's turn has already ended and the answer has
+    /// to travel as a brand-new user message. The real `ask_user` tool
+    /// sets this instead, so the answer resumes the suspended tool call
+    /// rather than starting another turn.
+    var onAnswer: ((String) -> Void)? = nil
 
     /// Selections keyed by question text — each question answers
-    /// independently; Send unlocks once every one has an answer.
+    /// independently, and any of them may stay empty.
     @State private var selected: [String: Set<String>] = [:]
     @State private var notes = ""
     @State private var submitted = false
+    @State private var activeIndex = 0
+    @State private var showingIncompleteConfirm = false
 
-    private var canSubmit: Bool {
-        payload.questions.allSatisfy { !(selected[$0.id] ?? []).isEmpty }
+    private var questions: [AskUserQuestionPayload.Question] { payload.questions }
+
+    private func isAnswered(_ question: AskUserQuestionPayload.Question) -> Bool {
+        !(selected[question.id] ?? []).isEmpty
+    }
+
+    private var unansweredCount: Int {
+        questions.filter { !isAnswered($0) }.count
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            ForEach(payload.questions) { question in
-                VStack(alignment: .leading, spacing: 8) {
-                    if let header = question.header, !header.isEmpty {
-                        Text(header.uppercased())
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Theme.accent)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(Theme.accentSoft.opacity(0.5), in: Capsule())
-                    }
-                    HStack(spacing: 8) {
-                        Image(systemName: "questionmark.circle.fill")
-                            .foregroundStyle(Theme.accent)
-                        Text(question.question)
-                            .font(.body.weight(.semibold))
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(question.options) { option in
-                            optionRow(option, in: question)
-                        }
-                    }
-                }
+            if questions.count > 1 {
+                tabStrip
             }
+            questionBody(questions[activeIndex])
             if payload.allowNotes, interactive, !submitted {
                 TextField("Add a note (optional)", text: $notes, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -302,10 +303,16 @@ struct AskUserQuestionCard: View {
                     .lineLimit(1...4)
             }
             if interactive, !submitted {
-                Button("Send") { submit() }
-                    .buttonStyle(.glassProminent)
-                    .tint(Theme.accentStrong)
-                    .disabled(!canSubmit)
+                HStack(spacing: 10) {
+                    Button("Send") { attemptSubmit() }
+                        .buttonStyle(.glassProminent)
+                        .tint(Theme.accentStrong)
+                    if questions.count > 1 {
+                        Text("\(questions.count - unansweredCount) of \(questions.count) answered")
+                            .font(.caption)
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
+                }
             }
         }
         .padding(16)
@@ -315,10 +322,89 @@ struct AskUserQuestionCard: View {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .stroke(Theme.accent.opacity(0.2), lineWidth: 1)
         }
-        // Selection and the post-submit state settle with a fade instead of
-        // controls vanishing in one frame.
+        // Selection, the active tab, and the post-submit state settle with a
+        // fade instead of controls jumping in one frame.
         .animation(.easeOut(duration: 0.15), value: selected)
         .animation(.easeOut(duration: 0.2), value: submitted)
+        .animation(.easeOut(duration: 0.15), value: activeIndex)
+        .alert("Send with \(unansweredCount) unanswered?", isPresented: $showingIncompleteConfirm) {
+            Button("Send Anyway") { submit() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You can jump back to any tab and answer first, or send as-is.")
+        }
+    }
+
+    private var tabStrip: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
+                tabButton(index: index, question: question)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func tabButton(index: Int, question: AskUserQuestionPayload.Question) -> some View {
+        let answered = isAnswered(question)
+        let isActive = activeIndex == index
+        let label = (question.header?.isEmpty == false) ? question.header! : "Q\(index + 1)"
+        return Button {
+            activeIndex = index
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: answered ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(answered ? Theme.success : Theme.tertiaryText)
+                Text(label)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                isActive ? Theme.accentSoft.opacity(0.9) : Theme.surfaceHigh.opacity(0.5),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+                    .stroke(isActive ? Theme.accent.opacity(0.4) : Theme.controlStroke.opacity(0.35), lineWidth: 1)
+            }
+            .foregroundStyle(isActive ? Theme.text : Theme.secondaryText)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(label)\(answered ? ", answered" : ", unanswered")")
+    }
+
+    private func questionBody(_ question: AskUserQuestionPayload.Question) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // The tab strip already carries the header for a multi-question
+            // card — repeating it here as a chip would be the same label
+            // twice in a row. Single-question cards have no tab strip, so
+            // they keep the chip as their only header treatment.
+            if questions.count == 1, let header = question.header, !header.isEmpty {
+                Text(header.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Theme.accentSoft.opacity(0.5), in: Capsule())
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.circle.fill")
+                    .foregroundStyle(Theme.accent)
+                Text(question.question)
+                    .font(.body.weight(.semibold))
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(question.options) { option in
+                    optionRow(option, in: question)
+                }
+            }
+        }
+        // Re-identify the whole block by question id so a tab switch swaps
+        // content instead of SwiftUI trying to diff option rows across two
+        // unrelated questions.
+        .id(question.id)
     }
 
     private func optionRow(_ option: AskUserQuestionPayload.Option, in question: AskUserQuestionPayload.Question) -> some View {
@@ -380,16 +466,32 @@ struct AskUserQuestionCard: View {
         return isOn ? "largecircle.fill.circle" : "circle"
     }
 
+    /// Free navigation means a question can legitimately be left blank —
+    /// Send is never disabled on that basis. It only warns first, once,
+    /// when something's missing; the actual send is `submit()`.
+    private func attemptSubmit() {
+        guard unansweredCount > 0 else {
+            submit()
+            return
+        }
+        showingIncompleteConfirm = true
+    }
+
     private func submit() {
-        guard canSubmit else { return }
         submitted = true
         var lines: [String] = []
-        for question in payload.questions {
+        for question in questions {
             let chosen = question.options
                 .filter { (selected[question.id] ?? []).contains($0.label) }
                 .map(\.label)
             let name = question.header ?? question.question
-            lines.append(payload.questions.count == 1
+            if chosen.isEmpty {
+                lines.append(questions.count == 1
+                    ? "I didn't answer this one."
+                    : "\(name): (left unanswered)")
+                continue
+            }
+            lines.append(questions.count == 1
                 ? "I choose: \(chosen.joined(separator: ", "))"
                 : "\(name): \(chosen.joined(separator: ", "))")
         }
@@ -398,7 +500,11 @@ struct AskUserQuestionCard: View {
         if !trimmedNotes.isEmpty {
             summary += "\n\nNote: \(trimmedNotes)"
         }
-        appModel.send(summary)
+        if let onAnswer {
+            onAnswer(summary)
+        } else {
+            appModel.send(summary)
+        }
     }
 }
 

@@ -55,7 +55,14 @@ enum SystemPrompt {
         if let workspace = workspaceGuidance(context) {
             sections.append(Section(priority: 3, body: workspace))
         }
-        sections.append(Section(priority: 4, body: AppModel.askUserQuestionInstruction))
+        // The fenced ```ask-user convention is the FALLBACK for providers
+        // without tool calling. When the real `ask_user` tool is attached,
+        // sending this too gives the model two different ways to ask the
+        // same question — which is how it ends up doing both, or emitting a
+        // fenced block the tool loop never sees.
+        if !context.hasTool(ToolCatalog.askUser) {
+            sections.append(Section(priority: 4, body: AppModel.askUserQuestionInstruction))
+        }
         if context.hasMemories {
             sections.append(Section(priority: 5, body: memoryDuties))
         }
@@ -123,11 +130,39 @@ enum SystemPrompt {
         return lines.joined(separator: "\n")
     }
 
+    /// The stance here is deliberately *directive*, not permissive.
+    ///
+    /// The previous wording ("Use them — never claim you lack a capability
+    /// one of them provides") only forbade denying a capability, which a
+    /// model satisfies perfectly well by never reaching for a tool at all
+    /// and answering from memory instead. In practice that is exactly what
+    /// happened: real research only occurred when the user explicitly asked
+    /// for it. Permission to use a tool is not the same instruction as
+    /// when to use one, so this now names the triggers.
     private static func toolInventory(_ context: Context) -> String? {
         guard !context.tools.isEmpty else { return nil }
         var lines = [
             "# Tools",
             "Real, callable tools are attached to this request. Use them — never claim you lack a capability one of them provides, and never fake a call in plain text.",
+            """
+            Reach for a tool on your own initiative rather than waiting to \
+            be asked. Anything you cannot answer correctly from training \
+            alone needs one: current events, prices, availability, hours, \
+            versions, release status, "best/latest X", anything dated after \
+            your training cutoff, and any specific claim about the user's \
+            own files, past conversations, or saved facts. Answering those \
+            from memory when a tool was attached is a factual error, not a \
+            stylistic choice.
+            """,
+            """
+            Do not ask permission to use a tool, and do not offer to do \
+            research as a follow-up — if the work is worth doing, do it in \
+            this reply and report what you found. Reserve questions for \
+            genuine ambiguity about what the user wants, never for whether \
+            you may look something up. Equally, do not perform research \
+            theatre: a question that training data answers well needs no \
+            tool call.
+            """,
         ]
         for tool in context.tools {
             lines.append("- \(tool.name): \(tool.summary). \(tool.guidance)")

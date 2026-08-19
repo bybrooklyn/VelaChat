@@ -104,98 +104,94 @@ struct StatisticsView: View {
         conversations.filter(\.isPinned).count
     }
 
+    /// Built from `SettingsPanel`, not `Form(.grouped)`: a grouped Form
+    /// paints its own background at its own width, which rendered as a
+    /// large lighter rectangle with a hard seam sitting off-centre in the
+    /// pane — visibly a different app from the Settings screen one back
+    /// button away. See SettingsChrome.swift.
     var body: some View {
-        Form {
-            Section("Lifetime") {
-                LabeledContent("Conversations") { Text("\(conversations.count)") }
-                LabeledContent("Messages") { Text("\(totalMessages)") }
-                LabeledContent("Attachments sent") { Text("\(totalAttachments)") }
-                LabeledContent("Pinned conversations") { Text("\(pinnedCount)") }
+        SettingsPage {
+            SettingsPanel(title: "Lifetime", symbol: "chart.bar.xaxis") {
+                SettingsValueRow("Conversations", "\(conversations.count)")
+                SettingsValueRow("Messages", "\(totalMessages)")
+                SettingsValueRow("Attachments sent", "\(totalAttachments)")
+                SettingsValueRow("Pinned conversations", "\(pinnedCount)")
                 if let oldestConversationDate {
-                    LabeledContent("First conversation") {
+                    SettingsValueRow(title: "First conversation") {
                         Text(oldestConversationDate, style: .date)
                     }
                 }
             }
 
-            Section {
-                LabeledContent("Input tokens") { Text(appModel.formattedTokenCount(totalInputTokens)) }
-                LabeledContent("Output tokens") { Text(appModel.formattedTokenCount(totalOutputTokens)) }
-                LabeledContent("Total") { Text(appModel.formattedTokenCount(totalInputTokens + totalOutputTokens)) }
+            SettingsPanel(
+                title: "Tokens",
+                symbol: "number",
+                footer: Text("Only counts replies where the provider actually reported usage — not every provider does on every request, so this can undercount. \"Served from cache\" is real provider-reported cache-hit tokens (OpenAI, DeepSeek, and Anthropic all report this; VelaChat also sets Anthropic's cache_control explicitly since, unlike the other two, it isn't automatic there).")
+            ) {
+                SettingsValueRow("Input tokens", appModel.formattedTokenCount(totalInputTokens))
+                SettingsValueRow("Output tokens", appModel.formattedTokenCount(totalOutputTokens))
+                SettingsValueRow("Total", appModel.formattedTokenCount(totalInputTokens + totalOutputTokens))
                 if totalCachedTokens > 0 {
-                    LabeledContent("Served from cache") {
-                        Text(appModel.formattedTokenCount(totalCachedTokens))
-                            .foregroundStyle(Theme.success)
-                    }
+                    SettingsValueRow(
+                        "Served from cache",
+                        appModel.formattedTokenCount(totalCachedTokens),
+                        tint: Theme.success
+                    )
                 }
-            } header: {
-                Text("Tokens")
-            } footer: {
-                Text("Only counts replies where the provider actually reported usage — not every provider does on every request, so this can undercount. \"Served from cache\" is real provider-reported cache-hit tokens (OpenAI, DeepSeek, and Anthropic all report this; VelaChat also sets Anthropic's cache_control explicitly since, unlike the other two, it isn't automatic there).")
             }
 
-            Section {
+            SettingsPanel(
+                title: "Time to First Token",
+                symbol: "timer",
+                footer: Text("Measured from pressing send to the first word appearing — what you actually waited for, not just network time. Session-scoped, and only shown once there are at least three replies to average.")
+            ) {
                 let measured = appModel.providers.profiles.compactMap { profile -> (String, TimeInterval, TimeInterval, Int)? in
                     let model = profile.model.isEmpty ? appModel.providers.effectiveModel(for: profile) : profile.model
                     guard let stats = appModel.ttftStats(providerID: profile.id, model: model) else { return nil }
                     return ("\(profile.name) · \(model)", stats.median, stats.p90, stats.count)
                 }
                 if measured.isEmpty {
-                    Text("Not enough replies yet this session to report a meaningful figure.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.tertiaryText)
+                    SettingsEmptyState(
+                        text: "Not enough replies yet this session to report a meaningful figure.",
+                        symbol: "timer"
+                    )
                 } else {
                     ForEach(measured, id: \.0) { label, median, p90, count in
-                        LabeledContent(label) {
+                        SettingsValueRow(title: label) {
                             Text(String(format: "%.1fs median · %.1fs p90 · %d replies", median, p90, count))
                                 .font(.caption)
-                                .foregroundStyle(Theme.secondaryText)
                         }
                     }
                 }
-            } header: {
-                Text("Time to First Token")
-            } footer: {
-                Text("Measured from pressing send to the first word appearing — what you actually waited for, not just network time. Session-scoped, and only shown once there are at least three replies to average.")
             }
 
-            Section {
+            SettingsPanel(
+                title: "Per-Provider Usage",
+                symbol: "server.rack",
+                footer: Text("Counted locally on this Mac from provider-reported token usage. Subscription plan windows (Codex) live in the sidebar gauge; these are the raw local counts.")
+            ) {
                 let profiles = appModel.providers.profiles.filter { $0.kind.usageStyle != .local }
                 if profiles.allSatisfy({ appModel.usage.thisMonth(providerID: $0.id).requests == 0 }) {
-                    Text("No counted requests yet this month.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.tertiaryText)
+                    SettingsEmptyState(text: "No counted requests yet this month.", symbol: "server.rack")
                 } else {
                     ForEach(profiles) { profile in
                         ProviderUsageRow(profile: profile)
                     }
                 }
-            } header: {
-                Text("Per-Provider Usage")
-            } footer: {
-                Text("Counted locally on this Mac from provider-reported token usage. Subscription plan windows (Codex) live in the sidebar gauge; these are the raw local counts.")
             }
 
-            Section {
+            SettingsPanel(title: "Model Usage", symbol: "cpu") {
                 if modelUsage.isEmpty {
-                    Text("No replies yet.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.tertiaryText)
+                    SettingsEmptyState(text: "No replies yet.", symbol: "cpu")
                 } else {
                     ForEach(modelUsage, id: \.label) { entry in
-                        LabeledContent(entry.label) {
-                            Text("\(entry.count) repl\(entry.count == 1 ? "y" : "ies")")
-                                .foregroundStyle(Theme.secondaryText)
-                        }
+                        SettingsValueRow(
+                            entry.label,
+                            "\(entry.count) repl\(entry.count == 1 ? "y" : "ies")"
+                        )
                     }
                 }
-            } header: {
-                Text("Model Usage")
             }
         }
-        .formStyle(.grouped)
-        .navigationTitle("Statistics")
-        .frame(maxWidth: Theme.Layout.settingsWidth)
-        .frame(maxWidth: .infinity, alignment: .center)
     }
 }

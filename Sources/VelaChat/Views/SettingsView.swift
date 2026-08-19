@@ -3,6 +3,13 @@ import AppKit
 import KeyboardShortcuts
 
 /// The jump-rail's section catalog — order matches the cards.
+///
+/// `agentAbilities` is its own case rather than a second card also tagged
+/// `.tools`: two cards sharing one `.id(section)` inside a single
+/// `ScrollView` gave `ScrollViewReader` an ambiguous target (jumping to
+/// "Tools" landed on whichever it resolved first) and made the scroll-spy
+/// preference key collapse both cards' offsets into one value, so the rail
+/// highlight flickered between them while scrolling past.
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case providers = "Providers"
@@ -12,6 +19,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case snippets = "Snippets"
     case webSearch = "Web Search"
     case tools = "Tools"
+    case agentAbilities = "Agent Abilities"
     case mcpServers = "MCP Servers"
     case statistics = "Statistics"
     case about = "About"
@@ -27,6 +35,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .snippets: "text.badge.plus"
         case .webSearch: "globe"
         case .tools: "wrench.and.screwdriver"
+        case .agentAbilities: "wand.and.stars"
         case .mcpServers: "puzzlepiece.extension"
         case .general: "gearshape"
         case .statistics: "chart.bar.xaxis"
@@ -42,48 +51,52 @@ private struct SettingsSectionPreference: PreferenceKey {
     }
 }
 
-/// One glass card per settings area — icon tile, title, content, footer —
-/// replacing the grouped Form's plain rows.
+/// One card per settings area, on the shared `SettingsPanel` chrome
+/// (SettingsChrome.swift) plus the two things only the scrolling root
+/// needs: a scroll-target id, and its live offset for the jump rail's
+/// highlight.
 private struct SettingsCard<Content: View>: View {
     let section: SettingsSection
     var footer: Text? = nil
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(section.rawValue)
-                .font(.headline)
-                .foregroundStyle(Theme.text)
-            content()
-                .toggleStyle(.switch)
-                // Note: macOS 26 ignores .tint() on switch tracks — the ON
-                // state is conveyed by knob position, not colour. Verified
-                // by pixel-sampling a tinted and an untinted switch: both
-                // render the same rgb(76,84,85) track. Left as-is rather
-                // than churning values that have no effect.
-                .tint(Theme.accentStrong)
-                .controlSize(.small)
-            if let footer {
-                footer
-                    .font(.caption)
-                    .foregroundStyle(Theme.tertiaryText)
+        SettingsPanel(title: section.rawValue, symbol: section.symbol, footer: footer, content: content)
+            .id(section)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: SettingsSectionPreference.self,
+                        value: [section: geometry.frame(in: .named("settings-scroll")).minY]
+                    )
+                }
             }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // Liquid glass under a faint tint — large surfaces, so the small-
-        // chip halo failure mode doesn't apply; theme colors unchanged.
-        .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .glassChip(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous), emphasis: 0.5)
-        .id(section)
-        .background {
-            GeometryReader { geometry in
-                Color.clear.preference(
-                    key: SettingsSectionPreference.self,
-                    value: [section: geometry.frame(in: .named("settings-scroll")).minY]
-                )
-            }
+    }
+}
+
+/// Where Settings currently is. Deliberately *not* a `NavigationStack`
+/// path: a `NavigationStack` nested in `NavigationSplitView`'s detail
+/// column caused two verified bugs. (1) While a destination was pushed it
+/// held the detail pane open, so switching `AppModel.section` away from
+/// `.settings` — clicking New Chat in the sidebar, say — changed the state
+/// but left Settings on screen until the push was popped. (2) Pushing
+/// installed the stack's own navigation bar into the window titlebar,
+/// which changed the safe-area inset and visibly shifted every pane
+/// (traffic lights, sidebar, header) the moment a provider was opened.
+/// Owning the route ourselves keeps one header in one place at all times
+/// and lets the section swap happen immediately.
+private enum SettingsRoute: Hashable {
+    case root
+    case provider(UUID)
+    case statistics
+    case changelog
+
+    var title: String {
+        switch self {
+        case .root: "Settings"
+        case .provider: "Provider"
+        case .statistics: "Statistics"
+        case .changelog: "What's New"
         }
     }
 }
@@ -94,7 +107,7 @@ struct SettingsView: View {
     @State private var confirmClear = false
     @State private var confirmReset = false
     @State private var confirmFullReset = false
-    @State private var editingProfileID: UUID?
+    @State private var route: SettingsRoute = .root
     @State private var isAddingSnippet = false
     @State private var isAddingProvider = false
     @State private var activeSection: SettingsSection = .general
@@ -111,13 +124,68 @@ struct SettingsView: View {
         // empty reserved strip above it.
         VStack(spacing: 0) {
             header
-            NavigationStack {
-                settingsForm
-                    .navigationDestination(item: $editingProfileID) { id in
-                        ProviderEditorView(profileID: id)
-                    }
+            routeContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// One title, one back button, one position — for every route. The back
+    /// button steps up a level and only leaves Settings from the root, so
+    /// Esc always means "up", never "somewhere unpredictable".
+    private var headerTitle: String {
+        if case .provider(let id) = route {
+            return appModel.providers.profile(id: id)?.name ?? "Provider"
+        }
+        return route.title
+    }
+
+    private var backHelp: String {
+        route == .root ? "Back to conversations (Esc)" : "Back to Settings (Esc)"
+    }
+
+    /// Every route is laid out inside the same centred container, and the
+    /// jump rail's width is reserved even on the routes that don't have a
+    /// rail — so the content column keeps the exact same x position whether
+    /// you're looking at the settings list, a provider, or Statistics. It
+    /// used to jump sideways on every transition.
+    private var routeContent: some View {
+        HStack(alignment: .top, spacing: 0) {
+            if case .root = route {
+                EmptyView()
+            } else {
+                Color.clear
+                    .frame(width: Theme.Layout.settingsRail)
+                    .accessibilityHidden(true)
             }
-            .clipped()
+            routeBody
+        }
+        .frame(maxWidth: Theme.Layout.settingsWidth)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    @ViewBuilder
+    private var routeBody: some View {
+        switch route {
+        case .root:
+            settingsForm
+                .transition(.opacity)
+        case .provider(let id):
+            ProviderEditorView(profileID: id, onBack: { goBack() })
+                .transition(.opacity)
+        case .statistics:
+            StatisticsView()
+                .transition(.opacity)
+        case .changelog:
+            ChangelogView()
+                .transition(.opacity)
+        }
+    }
+
+    private func goBack() {
+        if route == .root {
+            appModel.section = .chat
+        } else {
+            withAnimation(.easeOut(duration: 0.18)) { route = .root }
         }
     }
 
@@ -125,9 +193,7 @@ struct SettingsView: View {
     /// rather than two differently-chromed screens.
     private var header: some View {
         HStack(spacing: 10) {
-            Button {
-                appModel.section = .chat
-            } label: {
+            Button(action: goBack) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.accentForeground)
@@ -136,13 +202,18 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
-            .help("Back to conversations (Esc)")
-            .accessibilityLabel("Back to conversations (Esc)")
+            .help(backHelp)
+            .accessibilityLabel(backHelp)
 
-            Text("Settings")
+            Text(headerTitle)
                 .font(.headline)
                 .foregroundStyle(Theme.text)
                 .padding(.leading, 4)
+                // The title is the only thing in this bar that changes
+                // between routes, and it crossfades in place instead of the
+                // bar itself moving or resizing.
+                .contentTransition(.opacity)
+                .animation(.easeOut(duration: 0.18), value: headerTitle)
 
             Spacer(minLength: 0)
         }
@@ -211,9 +282,10 @@ struct SettingsView: View {
                     Text("Stored locally")
                         .foregroundStyle(Theme.secondaryText)
                 }
-                Button("Clear conversation history", role: .destructive) {
+                Button("Clear conversation history") {
                     confirmClear = true
                 }
+                .buttonStyle(SettingsDestructiveButtonStyle())
                 .confirmationDialog("Delete all conversations?", isPresented: $confirmClear) {
                     Button("Delete Everything", role: .destructive) {
                         appModel.clearHistory()
@@ -221,12 +293,14 @@ struct SettingsView: View {
                 } message: {
                     Text("This cannot be undone.")
                 }
-                Button("Reset built-in provider presets", role: .destructive) {
+                Button("Reset built-in provider presets") {
                     confirmReset = true
                 }
-                Button("Reset VelaChat completely…", role: .destructive) {
+                .buttonStyle(SettingsDestructiveButtonStyle())
+                Button("Reset VelaChat completely…") {
                     confirmFullReset = true
                 }
+                .buttonStyle(SettingsDestructiveButtonStyle())
                 .confirmationDialog("Reset VelaChat completely?", isPresented: $confirmFullReset) {
                     Button("Erase Everything", role: .destructive) {
                         appModel.performFullReset()
@@ -250,7 +324,7 @@ struct SettingsView: View {
                     // Viewing a provider must not switch to it — selection
                     // is an explicit action inside the editor now.
                     Button {
-                        editingProfileID = profile.id
+                        withAnimation(.easeOut(duration: 0.18)) { route = .provider(profile.id) }
                     } label: {
                         ProviderSettingsRow(
                             profile: profile,
@@ -259,7 +333,7 @@ struct SettingsView: View {
                             hasKey: appModel.providers.hasStoredKey(for: profile.id)
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(SettingsRowButtonStyle())
                     .contextMenu {
                         if profile.kind == .compatible {
                             Button(role: .destructive) {
@@ -276,8 +350,7 @@ struct SettingsView: View {
                 } label: {
                     Label("Add a custom OpenAI-compatible endpoint", systemImage: "plus.circle")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.accent)
+                .buttonStyle(SettingsAddButtonStyle())
                     }
 
 
@@ -294,9 +367,10 @@ struct SettingsView: View {
                     SettingsCard(section: .memory, footer: Text("Written by the model as you chat, kept on this Mac only \u{2014} yours to edit or remove, grouped by topic.")) {
 
                 if appModel.memories.isEmpty {
-                    Label("Nothing remembered yet — the model saves facts as you chat.", systemImage: "brain")
-                        .font(.caption)
-                        .foregroundStyle(Theme.tertiaryText)
+                    SettingsEmptyState(
+                        text: "Nothing remembered yet — the model saves facts as you chat.",
+                        symbol: "brain"
+                    )
                 } else {
                     ForEach(memoryTopics, id: \.self) { topic in
                         VStack(alignment: .leading, spacing: 6) {
@@ -345,9 +419,7 @@ struct SettingsView: View {
                     SettingsCard(section: .skills, footer: Text("Add any folder containing a SKILL.md \u{2014} the same format Claude Code and Codex use. Invoke one from the / menu.")) {
 
                 if appModel.skills.skills.isEmpty {
-                    Label("No skills added yet.", systemImage: "sparkles")
-                        .font(.caption)
-                        .foregroundStyle(Theme.tertiaryText)
+                    SettingsEmptyState(text: "No skills added yet.", symbol: "sparkles")
                 } else {
                     ForEach(appModel.skills.skills) { skill in
                         VStack(alignment: .leading, spacing: 3) {
@@ -384,17 +456,14 @@ struct SettingsView: View {
                 } label: {
                     Label("Add a Skill Folder…", systemImage: "plus.circle")
                 }
-                .buttonStyle(VelaIconButtonStyle())
-                .foregroundStyle(Theme.accent)
+                .buttonStyle(SettingsAddButtonStyle())
                     }
 
 
                     SettingsCard(section: .snippets, footer: Text("Save a prompt once, reuse it from the / menu.")) {
 
                 if appModel.promptSnippets.isEmpty {
-                    Label("No snippets saved yet.", systemImage: "text.badge.plus")
-                        .font(.caption)
-                        .foregroundStyle(Theme.tertiaryText)
+                    SettingsEmptyState(text: "No snippets saved yet.", symbol: "text.badge.plus")
                 } else {
                     ForEach(appModel.promptSnippets) { snippet in
                         VStack(alignment: .leading, spacing: 2) {
@@ -422,8 +491,7 @@ struct SettingsView: View {
                 } label: {
                     Label("Add a Snippet…", systemImage: "plus.circle")
                 }
-                .buttonStyle(VelaIconButtonStyle())
-                .foregroundStyle(Theme.accent)
+                .buttonStyle(SettingsAddButtonStyle())
                     }
 
 
@@ -461,7 +529,7 @@ struct SettingsView: View {
                 }
                     }
 
-                    SettingsCard(section: .tools, footer: Text("Agent abilities let the model plan visible multi-step work and edit/search files in the workspace. Running commands is separate and off by default: read-only commands (ls, cat, rg, git status…) run immediately, and anything else pauses for your approval in the chat, showing the exact command and folder first.")) {
+                    SettingsCard(section: .agentAbilities, footer: Text("Agent abilities let the model plan visible multi-step work and edit/search files in the workspace. Running commands is separate and off by default: read-only commands (ls, cat, rg, git status…) run immediately, and anything else pauses for your approval in the chat, showing the exact command and folder first.")) {
                 Toggle("Planning, file editing & search", isOn: $appModel.isAgentToolsEnabled)
                 Toggle("Run shell commands (with approval)", isOn: $appModel.isCommandToolEnabled)
                 Toggle("Parallel subagents", isOn: $appModel.isSubagentsEnabled)
@@ -491,10 +559,11 @@ struct SettingsView: View {
 
                     SettingsCard(section: .statistics, footer: Text("Lifetime messages, tokens, and per-model usage.")) {
 
-                NavigationLink {
-                    StatisticsView()
-                } label: {
-                    Label("Statistics", systemImage: "chart.bar.xaxis")
+                SettingsDisclosureRow(
+                    title: "Statistics",
+                    symbol: "chart.bar.xaxis"
+                ) {
+                    withAnimation(.easeOut(duration: 0.18)) { route = .statistics }
                 }
                     }
 
@@ -512,10 +581,11 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.vertical, 4)
-                NavigationLink {
-                    ChangelogView()
-                } label: {
-                    Label("What's New", systemImage: "sparkles")
+                SettingsDisclosureRow(
+                    title: "What's New",
+                    symbol: "sparkles"
+                ) {
+                    withAnimation(.easeOut(duration: 0.18)) { route = .changelog }
                 }
                 Link(destination: URL(string: "https://opensource.org/license/mit") ?? URL(fileURLWithPath: "/")) {
                     Label("MIT license \u{2014} free and open source", systemImage: "arrow.up.right.square")
@@ -525,7 +595,7 @@ struct SettingsView: View {
                         }
                         .padding(.horizontal, 24)
                         .padding(.vertical, 20)
-                        .frame(maxWidth: 760)
+                        .frame(maxWidth: SettingsMetrics.columnWidth)
                         .frame(maxWidth: .infinity, alignment: .center)
                     }
                     .coordinateSpace(name: "settings-scroll")
@@ -543,14 +613,14 @@ struct SettingsView: View {
                 }
             }
         }
-        .frame(maxWidth: Theme.Layout.settingsWidth)
-        .frame(maxWidth: .infinity, alignment: .center)
+        // Width and centring belong to `routeContent`, which applies them
+        // to every route identically.
         .sheet(isPresented: $isAddingSnippet) {
             AddSnippetSheet(isPresented: $isAddingSnippet)
         }
         .sheet(isPresented: $isAddingProvider) {
             AddProviderSheet(isPresented: $isAddingProvider) { newID in
-                editingProfileID = newID
+                route = .provider(newID)
             }
         }
     }
@@ -561,41 +631,57 @@ struct SettingsView: View {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? AppModel.appVersion
     }
 
+    /// The rail carries each section's glyph as well as its name — the same
+    /// glyph the card it scrolls to now shows in its own header, so the two
+    /// read as one thing. `SettingsSection.symbol` existed but nothing drew
+    /// it.
     private func jumpRail(proxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(SettingsSection.allCases) { section in
-                Button {
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo(section, anchor: .top)
-                    }
-                } label: {
-                    HStack {
-                        Text(section.rawValue)
-                            .font(.caption)
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .foregroundStyle(activeSection == section ? Theme.accent : Theme.secondaryText)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background {
-                        if activeSection == section {
-                            // Flat, matching sidebar rows — a glass chip on
-                            // this tiny rail read as a stray floating bead.
-                            RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
-                                .fill(Theme.sidebarSelection.opacity(0.55))
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                jumpRailRow(section, proxy: proxy)
             }
             Spacer(minLength: 0)
         }
-        .frame(width: 150)
+        .frame(width: Theme.Layout.settingsRail - 14)
         .padding(.leading, 14)
         .padding(.top, 20)
-        .animation(.easeOut(duration: 0.15), value: activeSection)
+        .animation(.easeOut(duration: 0.18), value: activeSection)
+    }
+
+    private func jumpRailRow(_ section: SettingsSection, proxy: ScrollViewProxy) -> some View {
+        let isActive = activeSection == section
+        return Button {
+            withAnimation(.easeOut(duration: 0.25)) {
+                proxy.scrollTo(section, anchor: .top)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: section.symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    // A fixed box, so names line up regardless of how wide
+                    // each glyph draws.
+                    .frame(width: 15, alignment: .center)
+                Text(section.rawValue)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(isActive ? Theme.accent : Theme.secondaryText)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background {
+                if isActive {
+                    // Flat, matching sidebar rows — a glass chip on
+                    // this tiny rail read as a stray floating bead.
+                    RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+                        .fill(Theme.sidebarSelection.opacity(0.55))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(JumpRailButtonStyle())
+        .accessibilityLabel(section.rawValue)
     }
 
     private var memoryTopics: [String] {
@@ -644,9 +730,7 @@ private struct McpServersCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if appModel.mcp.servers.isEmpty {
-                Label("No MCP servers configured.", systemImage: "puzzlepiece.extension")
-                    .font(.caption)
-                    .foregroundStyle(Theme.tertiaryText)
+                SettingsEmptyState(text: "No MCP servers configured.", symbol: "puzzlepiece.extension")
             }
             ForEach(appModel.mcp.servers) { server in
                 HStack(spacing: 8) {
@@ -677,6 +761,10 @@ private struct McpServersCard: View {
                         }
                     ))
                     .labelsHidden()
+                    // This one is a bare switch inside its own row, not a
+                    // labelled settings line, so it opts out of the card's
+                    // label-left/switch-right style.
+                    .toggleStyle(.switch)
                     Button {
                         editing = server
                     } label: {
@@ -700,8 +788,7 @@ private struct McpServersCard: View {
                 } label: {
                     Label("Add a Server…", systemImage: "plus.circle")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.accent)
+                .buttonStyle(SettingsAddButtonStyle())
                 Button {
                     importText = ""
                     importError = nil
@@ -709,8 +796,7 @@ private struct McpServersCard: View {
                 } label: {
                     Label("Import from JSON…", systemImage: "square.and.arrow.down")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.accent)
+                .buttonStyle(SettingsAddButtonStyle())
             }
         }
         .sheet(item: $editing) { server in
@@ -828,21 +914,26 @@ private struct McpServerSheet: View {
 private struct UpdatesRow: View {
     @Environment(UpdaterController.self) private var updater
 
+    /// Two settings lines, not one crammed one. As a single `LabeledContent`
+    /// this put a label, a switch, a button, and a timestamp on one row, so
+    /// its switch sat nowhere near the switches directly above it and the
+    /// timestamp had no room left to render.
     var body: some View {
-        LabeledContent("Updates") {
+        Toggle("Check for updates automatically", isOn: Binding(
+            get: { updater.automaticallyChecks },
+            set: { updater.automaticallyChecks = $0 }
+        ))
+        LabeledContent {
             HStack(spacing: 10) {
-                Toggle("Check automatically", isOn: Binding(
-                    get: { updater.automaticallyChecks },
-                    set: { updater.automaticallyChecks = $0 }
-                ))
-                .toggleStyle(.switch)
-                Button("Check Now") { updater.checkForUpdates() }
-                    .buttonStyle(.bordered)
-                    .disabled(!updater.canCheckForUpdates)
                 Text(updater.lastCheckDescription)
                     .font(.caption)
                     .foregroundStyle(Theme.tertiaryText)
+                Button("Check Now") { updater.checkForUpdates() }
+                    .buttonStyle(SettingsAddButtonStyle())
+                    .disabled(!updater.canCheckForUpdates)
             }
+        } label: {
+            Text("Updates")
         }
     }
 }
@@ -1081,19 +1172,24 @@ private enum Changelog {
 
 struct ChangelogView: View {
     var body: some View {
-        Form {
+        SettingsPage {
             ForEach(Changelog.entries) { entry in
-                Section("Version \(entry.version) · \(entry.date)") {
+                SettingsPanel(title: "Version \(entry.version) · \(entry.date)", symbol: "sparkles") {
                     ForEach(entry.highlights, id: \.self) { highlight in
-                        Label(highlight, systemImage: "sparkle")
-                            .font(.callout)
+                        HStack(alignment: .firstTextBaseline, spacing: 9) {
+                            Image(systemName: "sparkle")
+                                .font(.caption)
+                                .foregroundStyle(Theme.accent)
+                                .frame(width: 15)
+                            Text(highlight)
+                                .font(.callout)
+                                .foregroundStyle(Theme.text)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                        }
                     }
                 }
             }
         }
-        .formStyle(.grouped)
-        .navigationTitle("What's New")
-        .frame(maxWidth: Theme.Layout.settingsWidth)
-        .frame(maxWidth: .infinity, alignment: .center)
     }
 }

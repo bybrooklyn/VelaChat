@@ -222,6 +222,23 @@ final class AppModel {
         }
     }
     var pendingApproval: CommandApproval?
+
+    /// A question the model asked through the real `ask_user` tool, holding
+    /// the generation open until it's answered.
+    ///
+    /// The fenced ```ask-user block can't do this: it ends the turn, and the
+    /// answer arrives as a whole new user message. A tool call pauses
+    /// mid-reply exactly the way `CommandApproval` does, so the model can
+    /// ask and then keep working in the same turn.
+    struct PendingQuestion: Identifiable {
+        let id = UUID()
+        let conversationID: UUID
+        let payload: AskUserQuestionPayload
+        /// The composed answer text, or nil if the user dismissed without
+        /// answering — the model is told so rather than left waiting.
+        let respond: @Sendable (String?) -> Void
+    }
+    var pendingQuestion: PendingQuestion?
     /// Live plan steps per assistant message (update_plan) — rendered as
     /// the checklist card in that reply.
     var planByMessage: [UUID: [ToolCatalog.PlanStep]] = [:]
@@ -256,11 +273,21 @@ final class AppModel {
     /// True for failures worth an automatic, invisible-to-the-answer retry:
     /// network faults and provider-side transience (429/5xx). A 4xx other
     /// than 429 will fail identically on retry and is surfaced immediately.
+    ///
+    /// `.cannotFindHost` and `.dnsLookupFailed` are deliberately NOT
+    /// retryable, even though they're `URLError`s like the others: both
+    /// mean the endpoint's hostname doesn't resolve at all — a typo'd or
+    /// dead base URL — which is a configuration error, not a blip. It will
+    /// fail identically every time, so retrying it just spends the whole
+    /// backoff budget (~4s, see `Limits.transientRetry*`) before reporting
+    /// what was already knowable on the first attempt. `.cannotConnectToHost`
+    /// stays retryable because DNS resolved fine there — the host exists but
+    /// refused the connection, which a service mid-restart can recover from.
     nonisolated static func isTransientFailure(_ error: Error) -> Bool {
         if let urlError = error as? URLError {
             switch urlError.code {
-            case .timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
-                 .dnsLookupFailed, .notConnectedToInternet, .dataNotAllowed, .secureConnectionFailed:
+            case .timedOut, .cannotConnectToHost, .networkConnectionLost,
+                 .notConnectedToInternet, .dataNotAllowed, .secureConnectionFailed:
                 return true
             default:
                 return false

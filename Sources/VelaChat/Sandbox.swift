@@ -54,7 +54,36 @@ enum SandboxManager {
         guard !relativePath.isEmpty, !relativePath.hasPrefix("/"), !relativePath.contains("..") else { return nil }
         let base = directory.standardizedFileURL.resolvingSymlinksInPath()
         let candidate = base.appendingPathComponent(relativePath).standardizedFileURL
-        guard candidate.path == base.path || candidate.path.hasPrefix(base.path + "/") else { return nil }
+        // Textual containment is not enough on its own: the base resolves
+        // symlinks but the candidate did not, so a symlink *inside* the
+        // workspace pointing anywhere on disk read as contained and the
+        // read/write then followed it straight out. That never mattered
+        // while the workspace was only ever an app-created folder, but a
+        // user can attach a real project folder as the workspace root, and
+        // real project folders are full of symlinks.
+        guard isContained(candidate, in: base) else { return nil }
         return candidate
+    }
+
+    /// Whether `candidate` lands inside `base` once symlinks are followed.
+    /// A path that doesn't exist yet (a file about to be written) is judged
+    /// by its nearest existing ancestor, since that's the link that would
+    /// redirect it.
+    private static func isContained(_ candidate: URL, in base: URL) -> Bool {
+        var existingAncestor = candidate
+        var trailing: [String] = []
+        while !FileManager.default.fileExists(atPath: existingAncestor.path) {
+            let parent = existingAncestor.deletingLastPathComponent().standardizedFileURL
+            // Walked past the root without finding anything — refuse.
+            guard parent.path != existingAncestor.path else { return false }
+            trailing.insert(existingAncestor.lastPathComponent, at: 0)
+            existingAncestor = parent
+        }
+        var resolved = existingAncestor.resolvingSymlinksInPath()
+        for component in trailing {
+            resolved.appendPathComponent(component)
+        }
+        let path = resolved.standardizedFileURL.path
+        return path == base.path || path.hasPrefix(base.path + "/")
     }
 }
