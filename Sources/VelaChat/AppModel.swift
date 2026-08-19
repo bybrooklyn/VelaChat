@@ -73,6 +73,10 @@ final class AppModel {
         didSet { UserDefaults.standard.set(density.rawValue, forKey: "velachat.density") }
     }
     var section: Section = .chat
+    /// Drives NavigationSplitView's column state so the app's own toggle
+    /// (sidebar header + floating chip) fully replaces the system toolbar
+    /// button — the toolbar band itself is hidden.
+    var sidebarVisibility: NavigationSplitViewVisibility = .all
     /// The accent hue, observable so picking a swatch actually repaints the
     /// app (Theme reads UserDefaults statically and can't notify anyone) —
     /// RootView re-renders on change via .id.
@@ -519,6 +523,12 @@ final class AppModel {
         return notice
     }
 
+    func toggleSidebar() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            sidebarVisibility = sidebarVisibility == .detailOnly ? .all : .detailOnly
+        }
+    }
+
     func selectConversation(_ conversation: Conversation) {
         // Leaving a pending chat: a typed draft earns it a row (drafts
         // survive), an untouched one just evaporates.
@@ -623,7 +633,7 @@ final class AppModel {
                     profile: profile,
                     credential: credential,
                     model: model,
-                    thinking: .off,
+                    thinking: .auto,
                     messages: [ChatMessage(role: "user", content: prompt)]
                 )
                 for try await event in events {
@@ -1534,7 +1544,7 @@ final class AppModel {
                     profile: profile,
                     credential: credential,
                     model: model,
-                    thinking: .off,
+                    thinking: .auto,
                     messages: [ChatMessage(role: "user", content: prompt)]
                 )
                 for try await event in events {
@@ -1615,7 +1625,7 @@ final class AppModel {
                     profile: profile,
                     credential: credential,
                     model: model,
-                    thinking: .off,
+                    thinking: .auto,
                     messages: [ChatMessage(role: "user", content: prompt)]
                 )
                 for try await event in events {

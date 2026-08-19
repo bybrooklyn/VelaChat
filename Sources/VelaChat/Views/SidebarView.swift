@@ -80,6 +80,19 @@ struct SidebarView: View {
                     .foregroundStyle(Theme.tertiaryText)
             }
             Spacer(minLength: 0)
+            // The app's own sidebar toggle, opposite the wordmark — the
+            // system toolbar (and its long band) is hidden entirely.
+            Button {
+                appModel.toggleSidebar()
+            } label: {
+                Image(systemName: "sidebar.leading")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Hide Sidebar")
         }
     }
 
@@ -599,8 +612,10 @@ private struct ConversationRow: View {
                                 animateTitleChange(to: newValue)
                             }
                         if conversation.isGenerating && !selected {
-                            ProgressView()
-                                .controlSize(.mini)
+                            Circle()
+                                .fill(Theme.accent)
+                                .frame(width: 5, height: 5)
+                                .symbolEffectPulse()
                         }
                     }
                 }

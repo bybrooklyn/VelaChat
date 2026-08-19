@@ -5,8 +5,12 @@ struct RootView: View {
 
     var body: some View {
         @Bindable var appModel = appModel
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $appModel.sidebarVisibility) {
             SidebarView()
+                // The system toolbar (and its sidebar toggle) is gone — the
+                // app's own toggle lives in the sidebar header instead, so
+                // no toolbar band sits across the top of the window.
+                .toolbar(removing: .sidebarToggle)
                 // `ideal` is only a starting hint, not a live binding — there's
                 // no public API for a NavigationSplitView column width binding,
                 // so persistence works by reading back whatever width the
@@ -29,6 +33,7 @@ struct RootView: View {
                 .navigationTitle("")
         }
         .navigationSplitViewStyle(.balanced)
+        .toolbar(.hidden, for: .windowToolbar)
         .background(Theme.background)
         // Accent swatches used to visibly do nothing — Theme's statics
         // re-read UserDefaults but nothing forced a re-render. A full

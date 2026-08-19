@@ -303,11 +303,19 @@ enum ToolCatalog {
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
-        request.setValue("Mozilla/5.0 (Macintosh) VelaChat", forHTTPHeaderField: "User-Agent")
+        // Browser-shaped headers: many sites 403 anything that doesn't
+        // look like a real browser. Redirects follow by default.
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                return "Error: \(url.host ?? urlString) returned HTTP \(http.statusCode)."
+                let reason = HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+                let hint = (http.statusCode == 403 || http.statusCode == 429)
+                    ? " This site blocks automated readers — try a different source instead of retrying it."
+                    : ""
+                return "Error: \(url.host ?? urlString) returned HTTP \(http.statusCode) (\(reason)).\(hint)"
             }
             guard let raw = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
                 return "Error: the page is not text."

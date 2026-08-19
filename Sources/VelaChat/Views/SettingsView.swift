@@ -37,10 +37,6 @@ struct SettingsView: View {
     /// rather than two differently-chromed screens.
     private var header: some View {
         HStack(spacing: 10) {
-            if chrome.isFullScreen {
-                ExitFullScreenButton()
-            }
-
             Button {
                 appModel.section = .chat
             } label: {
@@ -602,8 +598,10 @@ private struct ProviderSettingsRow: View {
                 .foregroundStyle(Theme.warning)
                 .help("Needs an API key")
         } else if case .connecting = status {
-            ProgressView()
-                .controlSize(.mini)
+            Circle()
+                .fill(Theme.warning)
+                .frame(width: 5, height: 5)
+                .symbolEffectPulse()
         } else if case .failed = status {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.caption)

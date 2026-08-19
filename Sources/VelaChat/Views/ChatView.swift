@@ -63,6 +63,9 @@ struct ChatView: View {
                     } else {
                         welcome
                     }
+                    Color.clear
+                        .frame(height: 1)
+                        .id("vela.bottom")
                 }
                 .padding(.horizontal, 34)
                 .padding(.top, 20)
@@ -90,15 +93,23 @@ struct ChatView: View {
                 scrollToLast(proxy, animated: false)
             }
             .overlay(alignment: .topLeading) {
-                // Native fullscreen hides traffic lights system-wide — no app
-                // can override that — so this is a real, always-reachable
-                // substitute rather than an attempt to fake the OS control.
-                if chrome.isFullScreen {
-                    ExitFullScreenButton()
-                        .padding(8)
-                        .glassChip(in: Circle())
-                        .padding(.leading, 16)
-                        .padding(.top, 10)
+                if appModel.sidebarVisibility == .detailOnly {
+                    Button {
+                        appModel.toggleSidebar()
+                    } label: {
+                        Image(systemName: "sidebar.leading")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.secondaryText)
+                            .padding(8)
+                            .glassChip(in: Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show Sidebar")
+                    // Clears the traffic-light zone in windowed mode.
+                    .padding(.leading, 16)
+                    .padding(.top, chrome.isFullScreen ? 10 : 34)
+                    .transition(.opacity)
                 }
             }
             .overlay(alignment: .topTrailing) {
@@ -312,10 +323,7 @@ private struct PinnedMessagesButton: View {
             // status like "Finding a model…", never a failure.
             if let status = appModel.statusMessage {
                 HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(status)
-                        .foregroundStyle(Theme.secondaryText)
+                    ShimmerText(text: status, font: .caption)
                 }
                 .font(.caption)
                 .frame(maxWidth: contentWidth, alignment: .leading)
@@ -377,9 +385,10 @@ private struct PinnedMessagesButton: View {
                         Button {
                             presentAttachPanel()
                         } label: {
-                            Image(systemName: "paperclip")
+                            Image(systemName: "plus")
+                                .font(.system(size: 14, weight: .semibold))
                         }
-                        .buttonStyle(VelaControlButtonStyle(tint: Theme.tertiaryText))
+                        .buttonStyle(AttachPlusButtonStyle())
                         .help("Attach a file, image, or a git repo folder")
                         ModelPickerButton()
                         if appModel.availableThinkingLevels.count > 1 {
@@ -553,11 +562,16 @@ private struct PinnedMessagesButton: View {
     }
 
     private func scrollToLast(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        guard let id = appModel.activeConversation?.messages.last?.id else { return }
-        if animated {
-            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
-        } else {
-            proxy.scrollTo(id, anchor: .bottom)
+        // Targets a sentinel below the last row: sending appends two rows
+        // (user + streaming placeholder) in one update, and anchoring the
+        // placeholder's own bottom before layout settled left the new
+        // content half off-screen. One-tick defer lets layout land first.
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("vela.bottom", anchor: .bottom) }
+            } else {
+                proxy.scrollTo("vela.bottom", anchor: .bottom)
+            }
         }
     }
 }
@@ -570,26 +584,35 @@ private struct PinnedMessagesButton: View {
 /// nothing-to-send state stays a plain stroked outline rather than an
 /// untinted glass circle, which would read as inconsistent floating chrome
 /// with nothing to visually anchor it.
+/// The composer's plus button: a circular control with real physical press
+/// feedback — it visibly depresses before the file panel opens.
+private struct AttachPlusButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Theme.secondaryText)
+            .frame(width: 30, height: 30)
+            .background(Theme.controlBackground.opacity(configuration.isPressed ? 1 : 0.75), in: Circle())
+            .overlay { Circle().stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1) }
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.6), value: configuration.isPressed)
+            .contentShape(Circle())
+    }
+}
+
 private struct SendButtonBackground: ViewModifier {
     let fill: Color
     let isFilled: Bool
 
-    // One stable view tree — the old if/else swapped the whole view's
-    // identity, so the fill state POPPED instead of animating; now the
-    // stroke fades against a transitioning glass fill.
+    // Glass is applied directly to the label content (the same pattern
+    // ContextButton uses) — putting it in a .background ZStack made the
+    // glyph vanish the moment the fill appeared.
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
-            .background {
-                ZStack {
-                    Circle()
-                        .stroke(Theme.controlStroke.opacity(0.7), lineWidth: 1.2)
-                        .opacity(isFilled ? 0 : 1)
-                    if isFilled {
-                        Color.clear.glassCircle(tint: fill, interactive: true)
-                            .transition(.opacity)
-                    }
-                }
-            }
+        if isFilled {
+            content.glassCircle(tint: fill, interactive: true)
+        } else {
+            content.overlay { Circle().stroke(Theme.controlStroke.opacity(0.7), lineWidth: 1.2) }
+        }
     }
 }
 
@@ -750,10 +773,6 @@ private struct MessageRow: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(Theme.secondaryText)
                             .help(displayedMessage.modelID.map { "Generated by \($0)" } ?? "")
-                        if message.isStreaming {
-                            ProgressView()
-                                .controlSize(.mini)
-                        }
                         Spacer()
                         if message.isPinned {
                             pinIndicator

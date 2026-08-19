@@ -287,9 +287,10 @@ struct ContextButton: View {
                         )
                         .rotationEffect(.degrees(-90))
                 } else {
-                    Image(systemName: "circle.dotted")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Theme.accentForeground)
+                    // Unknown window: a plain quiet track — the dotted glyph
+                    // read as a perpetual spinner.
+                    Circle()
+                        .stroke(Theme.accentForeground.opacity(0.35), lineWidth: 2)
                 }
             }
             .frame(width: 14, height: 14)
@@ -360,6 +361,25 @@ struct ShimmerText: View {
                     )
                 )
         }
+    }
+}
+
+extension View {
+    /// A quiet opacity pulse for tiny status dots — the no-spinner stand-in
+    /// for ProgressView(.mini).
+    func symbolEffectPulse() -> some View {
+        modifier(PulseOpacity())
+    }
+}
+
+private struct PulseOpacity: ViewModifier {
+    @State private var dimmed = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(dimmed ? 0.35 : 1)
+            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: dimmed)
+            .onAppear { dimmed = true }
     }
 }
 
@@ -566,8 +586,10 @@ private struct ModelPaletteGroup: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Theme.text)
                 if appModel.providers.isDiscovering(id: profile.id) {
-                    ProgressView()
-                        .controlSize(.mini)
+                    Circle()
+                        .fill(Theme.tertiaryText)
+                        .frame(width: 5, height: 5)
+                        .symbolEffectPulse()
                 }
                 Spacer()
             }
@@ -927,25 +949,6 @@ struct RichMessageText: View {
                 .foregroundStyle(isUser ? .white : Theme.text)
                 .textSelection(.enabled)
         }
-    }
-}
-
-/// A real, always-visible way out of native fullscreen. macOS hides the
-/// traffic lights (including the green exit-fullscreen control) for every
-/// app while in fullscreen — that's a system limit, not something any app's
-/// window configuration can override — so this is the substitute rather than
-/// a fake traffic light.
-struct ExitFullScreenButton: View {
-    var body: some View {
-        Button {
-            NSApp.keyWindow?.toggleFullScreen(nil)
-        } label: {
-            Image(systemName: "arrow.down.right.and.arrow.up.left")
-                .font(.system(size: 11, weight: .semibold))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Theme.tertiaryText)
-        .help("Exit Full Screen")
     }
 }
 
