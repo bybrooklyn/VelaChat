@@ -813,3 +813,43 @@ embeddings + dreaming), Inspector/workspace work (P4), Mac-native pass
 (P5 — App Intents, light mode, Services, universal binary), Textual
 migration (P6). The ChatGPT provider still has not been exercised
 against a live account.
+
+### Memory system (round 6, later) — foundation + integration shipped
+
+`Sources/VelaChat/Memory/`: `MemoryStore` (SQLite/WAL, facts + FTS5-indexed
+chunks + Float32 embedding blobs), `MemoryEmbedder` (on-device),
+`MemoryIndexer` (incremental + resumable backfill).
+
+**The load-bearing finding: on-device embeddings cannot retrieve on
+their own.** Measured, twice:
+1. Mean-pooled `NLContextualEmbedding` puts every pair of English
+   sentences in a 0.77–0.89 cosine band. For a real query, a note about
+   *pizza dough* scored 0.855 while the correct answer scored 0.852.
+   `NLEmbedding.sentenceEmbedding` separates the same pair 0.274 vs
+   0.140, so it is now preferred and contextual is only a fallback.
+2. Even then: the query "zzzqqq unrelated gibberish xyzzy" scored an
+   unrelated note at **0.279 — higher than the correct hit for a real
+   question (0.274)**. No absolute threshold survives that, and no
+   relative one either (nonsense still yields a confident top hit).
+
+So retrieval is **keyword-first**: FTS5 decides what is a candidate (it
+cannot invent a match), embeddings only re-rank those candidates. Real
+semantic recall needs a real model — that is exactly what the opt-in
+pplx-embed/MLX upgrade is for, and it is now a functional requirement,
+not a nice-to-have.
+
+Verified against a seeded store (8/8) and against the running app: the
+backfill indexed real messages with embeddings, and querying that live
+database returns the right conversations for "keyboard mash", "michael
+jackson story", and "bash script".
+
+Wired in: recall injected into the send path (silent when nothing
+matches), a "Drew on N memories and N past messages" line under replies
+that expands with Open/forget per item (forget really deletes), a
+per-provider "Send memories to this provider" switch, and index status +
+controls in Settings.
+
+**Still to do on memory:** dreaming (background synthesis, merging,
+contradiction resolution, time-shifting), fact-layer migration into the
+store (facts still live in the old `memories` array and are mirrored,
+not moved), and the MLX/pplx-embed opt-in.
