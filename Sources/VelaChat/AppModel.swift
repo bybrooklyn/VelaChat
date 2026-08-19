@@ -379,6 +379,9 @@ final class AppModel {
         if let active = activeConversation, let providerID = active.providerID {
             providers.select(providerID, markExplicit: false)
         }
+        // Clear out empty conversations accumulated by earlier builds that
+        // never pruned them.
+        pruneUnusedConversations()
         providers.start()
         // Silent if denied — background-reply notifications are a courtesy
         // once the app can actually stay alive with the window closed
@@ -445,6 +448,24 @@ final class AppModel {
             thinkingLevel = .auto
         }
         section = .chat
+        pruneUnusedConversations()
+    }
+
+    /// An empty "New conversation" left behind after clicking away is pure
+    /// sidebar clutter — `newConversation()` would reuse it anyway, so
+    /// nothing is lost by dropping it. Keeps anything pinned, renamed,
+    /// drafted, or currently active.
+    private func pruneUnusedConversations() {
+        let before = conversations.count
+        conversations.removeAll { conversation in
+            conversation.id != activeConversationID
+                && !conversation.isPinned
+                && !conversation.titleIsCustom
+                && conversation.realMessages.isEmpty
+                && conversation.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && conversation.draftAttachments.isEmpty
+        }
+        if conversations.count != before { saveHistory() }
     }
 
     func renameConversation(_ conversation: Conversation, to title: String) {

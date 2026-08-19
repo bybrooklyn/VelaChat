@@ -36,6 +36,18 @@ enum AccentPreset: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    /// The original hand-tuned seafoam family. The derived variants below
+    /// land close but visibly lighter and muddier than these — the whole
+    /// app's feel was tuned against the hand-picked values, so the default
+    /// preset uses the real ones and only the alternate hues pay the
+    /// "derived" tax.
+    var handTunedFamily: (strong: UInt32, soft: UInt32, bubble: UInt32, selection: UInt32, mark: UInt32)? {
+        switch self {
+        case .teal: (strong: 0x52B9A8, soft: 0x153A39, bubble: 0x245C5F, selection: 0x1B4140, mark: 0x173333)
+        default: nil
+        }
+    }
+
     static var current: AccentPreset {
         get {
             UserDefaults.standard.string(forKey: "velachat.accent-preset").flatMap(AccentPreset.init(rawValue:)) ?? .teal
@@ -109,7 +121,9 @@ enum Theme {
     // only changes a hue, never a background a text color depends on.
     static let background = Color(hex: 0x0F1718)
     static let sidebarBackground = Color(hex: 0x142021)
-    static var sidebarSelection: Color { accent.blended(toward: background, amount: 0.72) }
+    static var sidebarSelection: Color {
+        AccentPreset.current.handTunedFamily.map { Color(hex: $0.selection) } ?? accent.blended(toward: background, amount: 0.72)
+    }
     static let text = Color(nsColor: .labelColor)
     static let secondaryText = Color(nsColor: .secondaryLabelColor)
     static let tertiaryText = Color(nsColor: .tertiaryLabelColor)
@@ -120,13 +134,21 @@ enum Theme {
     // dashboard: seafoam for action, horizon blue for model state, and coral
     // for a small amount of human warmth.
     static var accent: Color { Color(hex: AccentPreset.current.baseHex) }
-    static var accentStrong: Color { accent.darkened(by: 0.35) }
-    static var accentSoft: Color { accent.blended(toward: background, amount: 0.9) }
+    static var accentStrong: Color {
+        AccentPreset.current.handTunedFamily.map { Color(hex: $0.strong) } ?? accent.darkened(by: 0.35)
+    }
+    static var accentSoft: Color {
+        AccentPreset.current.handTunedFamily.map { Color(hex: $0.soft) } ?? accent.blended(toward: background, amount: 0.9)
+    }
     static let modelAccent = Color(hex: 0x9CB7F7)
     static let reasoningAccent = Color(hex: 0xD8B0EC)
     static let coral = Color(hex: 0xF0A58D)
-    static var markBackground: Color { accent.blended(toward: background, amount: 0.82) }
-    static var userBubble: Color { accent.blended(toward: background, amount: 0.52) }
+    static var markBackground: Color {
+        AccentPreset.current.handTunedFamily.map { Color(hex: $0.mark) } ?? accent.blended(toward: background, amount: 0.82)
+    }
+    static var userBubble: Color {
+        AccentPreset.current.handTunedFamily.map { Color(hex: $0.bubble) } ?? accent.blended(toward: background, amount: 0.52)
+    }
     static let accentForeground = Color(hex: 0x071416)
     static let controlStroke = Color(hex: 0x2C4548)
 
@@ -137,8 +159,8 @@ enum Theme {
     /// A single shared corner-radius scale so rounding reads as one system
     /// instead of ad hoc per-view values.
     enum Radius {
-        static let compact: CGFloat = 10   // palette/menu rows
-        static let row: CGFloat = 12       // sidebar navigation & conversation rows
+        static let compact: CGFloat = 8    // palette/menu rows
+        static let row: CGFloat = 9        // sidebar navigation & conversation rows
         static let card: CGFloat = 12      // footer, small cards
         static let bubble: CGFloat = 14    // message bubbles
         static let composer: CGFloat = 26  // composer glass panel — heavy, near-pill rounding
