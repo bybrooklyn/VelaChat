@@ -33,11 +33,6 @@ extension View {
             .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
     }
 
-    /// Tinted capsule chrome — floating badges.
-    func glassCapsule(tint: Color, interactive: Bool = true) -> some View {
-        glassEffect(interactive ? .regular.tint(tint).interactive() : .regular.tint(tint), in: .capsule)
-    }
-
     /// Tinted circular chrome — send/context/back/floating-chip buttons.
     func glassCircle(tint: Color, interactive: Bool = true) -> some View {
         glassEffect(interactive ? .regular.tint(tint).interactive() : .regular.tint(tint), in: .circle)
