@@ -369,6 +369,12 @@ struct SidebarView: View {
             } label: {
                 Label("Copy Handoff Document", systemImage: "arrow.turn.up.right")
             }
+            Menu {
+                Button("Markdown…") { ConversationExporter.exportMarkdown(conversation) }
+                Button("PDF…") { ConversationExporter.exportPDF(conversation) }
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+            }
             .disabled(conversation.isGenerating)
             Divider()
             Button(role: .destructive) {

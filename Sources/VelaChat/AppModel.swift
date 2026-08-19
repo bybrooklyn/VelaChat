@@ -723,6 +723,31 @@ final class AppModel {
         if conversations.count != before { saveHistory() }
     }
 
+    /// Forks a conversation at (and including) the given message into a
+    /// new chat — notices dropped, compaction markers kept so the branch's
+    /// request history stays coherent, every message re-id'd.
+    func branchConversation(from message: ChatMessage, in conversation: Conversation) {
+        guard let index = conversation.messages.firstIndex(where: { $0.id == message.id }) else { return }
+        let copied = conversation.messages[...index]
+            .filter { $0.role != "notice" }
+            .map { $0.duplicatedWithFreshID() }
+        guard !copied.isEmpty else { return }
+        let title = "(branch) " + conversation.title
+        let branch = Conversation(
+            title: String(title.prefix(60)),
+            messages: copied,
+            providerID: conversation.providerID,
+            model: conversation.model
+        )
+        pendingConversation = nil
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            conversations.insert(branch, at: 0)
+        }
+        activeConversationID = branch.id
+        section = .chat
+        saveHistory()
+    }
+
     func renameConversation(_ conversation: Conversation, to title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

@@ -738,6 +738,49 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         noticeKind = try container.decodeIfPresent(String.self, forKey: .noticeKind)
     }
 
+    /// Full-field copy initializer — the only way to reproduce a message
+    /// with a chosen id/createdAt (the memberwise init hardcodes both).
+    init(id: UUID, role: String, content: String, reasoning: String?, error: String?, isStreaming: Bool, createdAt: Date, providerName: String?, modelID: String?, isPinned: Bool, attachments: [Attachment], usage: UsageSummary?, alternates: [ChatMessage], segments: [MessageSegment], noticeKind: String?) {
+        self.id = id
+        self.role = role
+        self.content = content
+        self.reasoning = reasoning
+        self.error = error
+        self.isStreaming = isStreaming
+        self.createdAt = createdAt
+        self.providerName = providerName
+        self.modelID = modelID
+        self.isPinned = isPinned
+        self.attachments = attachments
+        self.usage = usage
+        self.alternates = alternates
+        self.segments = segments
+        self.noticeKind = noticeKind
+    }
+
+    /// A copy with a fresh identity (alternates re-id'd too) — used by
+    /// conversation branching, where duplicated ids across two live
+    /// conversations would confuse every id-keyed lookup.
+    func duplicatedWithFreshID() -> ChatMessage {
+        ChatMessage(
+            id: UUID(),
+            role: role,
+            content: content,
+            reasoning: reasoning,
+            error: error,
+            isStreaming: false,
+            createdAt: createdAt,
+            providerName: providerName,
+            modelID: modelID,
+            isPinned: isPinned,
+            attachments: attachments,
+            usage: usage,
+            alternates: alternates.map { $0.duplicatedWithFreshID() },
+            segments: segments,
+            noticeKind: noticeKind
+        )
+    }
+
     /// If this message's content contains a well-formed ```ask-user fenced
     /// block, splits it into the prose before the block and the parsed
     /// question — `nil` while the block isn't complete yet (still

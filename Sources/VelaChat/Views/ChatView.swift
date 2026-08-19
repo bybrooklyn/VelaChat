@@ -962,6 +962,13 @@ private struct MessageRow: View {
                                     Label("Edit", systemImage: "pencil")
                                 }
                                 Button {
+                                    if let conversation = appModel.activeConversation {
+                                        appModel.branchConversation(from: message, in: conversation)
+                                    }
+                                } label: {
+                                    Label("Branch from Here", systemImage: "arrow.triangle.branch")
+                                }
+                                Button {
                                     appModel.toggleMessagePin(message)
                                 } label: {
                                     Label(message.isPinned ? "Unpin" : "Pin", systemImage: message.isPinned ? "pin.slash" : "pin")
@@ -1089,6 +1096,13 @@ private struct MessageRow: View {
                                         Label("Continue Generating", systemImage: "arrow.forward.to.line")
                                     }
                                     .disabled(appModel.isGenerating)
+                                }
+                                Button {
+                                    if let conversation = appModel.activeConversation {
+                                        appModel.branchConversation(from: message, in: conversation)
+                                    }
+                                } label: {
+                                    Label("Branch from Here", systemImage: "arrow.triangle.branch")
                                 }
                                 Button {
                                     appModel.toggleMessagePin(message)
