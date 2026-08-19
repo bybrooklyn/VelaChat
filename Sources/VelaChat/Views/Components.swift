@@ -533,6 +533,7 @@ private struct ModelPaletteView: View {
                     .animation(.easeOut(duration: 0.18), value: visibleGroups.map(\.id))
                 }
                 .scrollIndicators(.hidden)
+                .scrollEdgeEffectStyle(.soft, for: .bottom)
                 .frame(maxHeight: 560)
             }
 
@@ -580,8 +581,8 @@ private struct ModelPaletteGroup: View {
         // continuous list with faint seams between providers instead of
         // clearly separate groups.
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                ProviderMark(kind: profile.kind, size: 13)
+            HStack(spacing: 7) {
+                ProviderGlyphView(kind: profile.kind, size: 17, color: Theme.text)
                 Text(profile.name)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Theme.text)
@@ -627,6 +628,7 @@ private struct ModelPaletteGroup: View {
                             model: model,
                             selected: model.id == selectedModelID,
                             recommended: showRecommended && index == 0 && models.count > 1,
+                            providerKind: profile.kind,
                             action: { action(model) }
                         )
                     }
@@ -646,6 +648,7 @@ private struct ModelPaletteRow: View {
     let model: RemoteModel
     let selected: Bool
     let recommended: Bool
+    var providerKind: ProviderKind = .compatible
     let action: () -> Void
 
     @State private var isHovering = false
@@ -653,8 +656,7 @@ private struct ModelPaletteRow: View {
     var body: some View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: model.isCloudHosted ? "cloud" : (model.isLocal ? "internaldrive" : "cpu"))
-                    .foregroundStyle(model.isCloudHosted ? Theme.modelAccent : (model.isLocal ? Theme.success : Theme.modelAccent))
+                ProviderGlyphView(kind: providerKind, size: 18, color: Theme.secondaryText)
                     .frame(width: 20)
                     .padding(.top, 2)
                 VStack(alignment: .leading, spacing: 3) {
