@@ -121,6 +121,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case xai = "xAI"
     case perplexity = "Perplexity"
     case codex = "Codex"
+    case chatGPT = "ChatGPT"
     case ollama = "Ollama"
     case lmStudio = "LM Studio"
     case blockrun = "blockrun.ai"
@@ -133,7 +134,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         switch self {
         case .preview: Theme.accent
         case .appleIntelligence: Color(hex: 0xE8E4F0)
-        case .openAI, .codex: Color(hex: 0x10A37F)
+        case .openAI, .codex, .chatGPT: Color(hex: 0x10A37F)
         case .anthropic: Color(hex: 0xD97757)
         case .google: Color(hex: 0x4285F4)
         case .deepSeek: Color(hex: 0x4D6BFE)
@@ -163,6 +164,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .xai: "Grok models from xAI"
         case .perplexity: "Answers with built-in live web search"
         case .codex: "Use your Codex CLI login"
+        case .chatGPT: "Your ChatGPT account — sign in, no API key"
         case .ollama: "Local models on this Mac"
         case .lmStudio: "Local models via LM Studio"
         case .blockrun: "No key, no sign-up — free models only, IP rate-limited"
@@ -173,7 +175,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// Every hosted provider here speaks the same `/chat/completions` shape
     /// that OpenAI defined — surfaced in the UI so the relationship between
     /// "OpenAI" and "OpenAI Compatible" reads as one family, not two ideas.
-    var speaksOpenAIProtocol: Bool { self != .preview && self != .codex && self != .appleIntelligence }
+    var speaksOpenAIProtocol: Bool { self != .preview && self != .codex && self != .appleIntelligence && self != .chatGPT }
 
     var isLocal: Bool { self == .ollama || self == .lmStudio || self == .appleIntelligence }
 
@@ -184,7 +186,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     enum UsageStyle { case subscription, metered, local }
     var usageStyle: UsageStyle {
         switch self {
-        case .codex: .subscription
+        case .codex, .chatGPT: .subscription
         case .ollama, .lmStudio, .preview, .appleIntelligence: .local
         default: .metered
         }
@@ -196,6 +198,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     var logoDomain: String? {
         switch self {
         case .openAI, .codex: "openai.com"
+        case .chatGPT: "chatgpt.com"
         case .anthropic: "anthropic.com"
         case .google: "gemini.google.com"
         case .deepSeek: "deepseek.com"
@@ -223,7 +226,8 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var requiresKey: Bool {
         switch self {
-        case .preview, .ollama, .lmStudio, .blockrun, .appleIntelligence: false
+        // ChatGPT signs in with a browser session, never an API key.
+        case .preview, .ollama, .lmStudio, .blockrun, .appleIntelligence, .chatGPT: false
         default: true
         }
     }
@@ -243,7 +247,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .ollama: URL(string: "https://ollama.com")
         case .lmStudio: URL(string: "https://lmstudio.ai")
         case .blockrun: URL(string: "https://blockrun.ai")
-        case .preview, .compatible, .appleIntelligence: nil
+        case .preview, .compatible, .appleIntelligence, .chatGPT: nil
         }
     }
 
@@ -263,6 +267,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .xai: "grok-4"
         case .perplexity: "sonar-pro"
         case .codex: "gpt-5.6-sol"
+        case .chatGPT: "auto"
         case .ollama: "qwen3:8b"
         case .lmStudio: "local-model"
         case .blockrun: "nvidia/nemotron-nano-9b-v2"
@@ -310,6 +315,7 @@ struct ProviderProfile: Identifiable, Codable, Equatable, Sendable {
             ProviderProfile(kind: .xai, name: "xAI", endpoint: "https://api.x.ai/v1"),
             ProviderProfile(kind: .perplexity, name: "Perplexity", endpoint: "https://api.perplexity.ai"),
             ProviderProfile(kind: .codex, name: "Codex", endpoint: "https://api.openai.com/v1"),
+            ProviderProfile(kind: .chatGPT, name: "ChatGPT", endpoint: "https://chatgpt.com"),
             ProviderProfile(kind: .ollama, name: "Ollama", endpoint: "http://127.0.0.1:11434/v1"),
             ProviderProfile(kind: .lmStudio, name: "LM Studio", endpoint: "http://127.0.0.1:1234/v1"),
             ProviderProfile(kind: .blockrun, name: "blockrun.ai", endpoint: "https://blockrun.ai/api/v1"),
@@ -473,6 +479,10 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
             hasProviderSignal = lowerID.contains("deepseek-v4") || lowerID.contains("reasoner")
         case .codex, .openAI:
             hasProviderSignal = lowerID.contains("gpt-5") || lowerID.contains("o1") || lowerID.contains("o3") || lowerID.contains("o4")
+        case .chatGPT:
+            // ChatGPT models always carry account-discovered efforts in
+            // supportedEfforts; there is no ID-based inference to do.
+            hasProviderSignal = false
         case .ollama, .lmStudio:
             hasProviderSignal = lowerID.contains("qwen3") || lowerID.contains("gpt-oss") || lowerID.contains("deepseek-r") || lowerID.contains("reason")
         case .anthropic:
@@ -507,19 +517,21 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
             return [.auto, .off, .low, .medium, .high, .extraHigh, .max]
         case .openRouter, .compatible, .anthropic, .google, .xai, .blockrun:
             return [.auto, .off, .low, .medium, .high]
-        case .preview, .groq, .mistral, .perplexity:
+        case .preview, .groq, .mistral, .perplexity, .chatGPT:
             return [.auto]
         }
     }
 
     private static func level(for effort: String) -> ThinkingLevel? {
         switch effort.lowercased() {
-        case "none", "off", "disabled": .off
+        // "instant" is ChatGPT's word for no extended reasoning; "pro" is
+        // its deepest route — both map onto the existing ladder ends.
+        case "none", "off", "disabled", "instant": .off
         case "low", "light": .low
         case "medium", "standard": .medium
         case "high": .high
         case "xhigh", "extra_high", "extra-high": .extraHigh
-        case "max": .max
+        case "max", "pro": .max
         default: nil
         }
     }
@@ -634,6 +646,11 @@ enum ModelCatalog {
             else if lower.contains("gpt-5.6-terra") { score += 90 }
             else if lower.contains("gpt-5.6-luna") { score += 80 }
             else if lower.contains("gpt-5") { score += 40 }
+        case .chatGPT:
+            if lower == "auto" { score += 100 }
+            else if lower.contains("gpt-5.6-sol") { score += 95 }
+            else if lower.contains("gpt-5.6") { score += 85 }
+            else if lower.contains("gpt-5") { score += 60 }
         case .deepSeek:
             if lower.contains("v4-flash") { score += 100 }
             else if lower.contains("v4-pro") { score += 90 }

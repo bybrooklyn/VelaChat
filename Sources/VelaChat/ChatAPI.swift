@@ -268,6 +268,11 @@ final class CompatibleChatClient: @unchecked Sendable {
             return
         }
 
+        if profile.kind == .chatGPT {
+            try await ChatGPTWebChat.stream(model: model, thinking: thinking, messages: messages, onEvent: onEvent)
+            return
+        }
+
         if profile.kind == .anthropic {
             try await streamAnthropic(profile: profile, model: model, credential: credential, thinking: thinking, modelInfo: modelInfo, messages: messages, tools: tools, toolContext: toolContext, onEvent: onEvent)
             return
@@ -532,7 +537,9 @@ final class CompatibleChatClient: @unchecked Sendable {
             return RequestSettings(reasoningEffort: nil, reasoning: nil, thinking: nil, think: nil)
         }
         switch kind {
-        case .appleIntelligence:
+        case .appleIntelligence, .chatGPT:
+            // ChatGPT Web takes its effort in the conversation body, not
+            // OpenAI-compatible request fields.
             return RequestSettings(reasoningEffort: nil, reasoning: nil, thinking: nil, think: nil)
         case .deepSeek:
             let deepSeekEffort: String?

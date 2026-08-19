@@ -69,6 +69,11 @@ struct UsagePopover: View {
         }
         .padding(14)
         .frame(width: 300)
+        .task {
+            if let provider = appModel.selectedProvider, provider.kind == .chatGPT {
+                await appModel.refreshChatGPTQuota(provider.id)
+            }
+        }
     }
 
     // MARK: - Subscription (plan windows only)

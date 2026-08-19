@@ -80,6 +80,10 @@ final class ProviderStore {
     private var pullTasks: [String: Task<Void, Never>] = [:]
     var codexCredential: CodexCredential?
     var codexMessage: String?
+    /// Cached "is a ChatGPT session stored" — primed off-main like the key
+    /// cache (a per-render Keychain read blocked the window once before),
+    /// updated by the login/sign-out flow.
+    var chatGPTSessionPresent = false
     /// Key presence per profile — see `hasStoredKey(for:)`.
     private(set) var hasKeyByID: [UUID: Bool] = [:]
 
@@ -170,6 +174,9 @@ final class ProviderStore {
         if profile.kind == .appleIntelligence {
             return UserDefaults.standard.bool(forKey: "velachat.apple-intelligence-enabled") && AppleIntelligence.isAvailable
         }
+        if profile.kind == .chatGPT {
+            return chatGPTSessionPresent
+        }
         if profile.kind.requiresKey {
             if profile.kind == .codex, codexCredential != nil { return true }
             return hasStoredKey(for: profile.id)
@@ -185,6 +192,7 @@ final class ProviderStore {
         for profile in profiles where profile.kind.requiresKey {
             hasKeyByID[profile.id] = !(SecureStore.value(for: keychainAccount(profile.id)) ?? "").isEmpty
         }
+        chatGPTSessionPresent = ChatGPTWebClient.hasStoredSession
     }
 
     func select(_ id: UUID, markExplicit: Bool = true) {
@@ -579,6 +587,12 @@ final class ProviderStore {
         func attempt() async throws -> [RemoteModel] {
             if profile.kind == .codex && credential(for: profile).isCodexOAuth {
                 return ModelCatalog.curated(for: .codex)
+            }
+            if profile.kind == .chatGPT {
+                guard chatGPTSessionPresent else {
+                    throw APIError.message("Sign in to ChatGPT from the provider page first.")
+                }
+                return try await ChatGPTWebClient.shared.fetchModels(force: true)
             }
             return try await CompatibleChatClient.shared.fetchModels(profile: profile, credential: credential(for: profile))
         }

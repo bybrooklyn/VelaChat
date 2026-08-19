@@ -177,6 +177,14 @@ final class AppModel {
         }
     }
 
+    /// Refresh-on-open for the one provider with a real usage endpoint —
+    /// everyone else's quota arrives passively on response headers.
+    func refreshChatGPTQuota(_ providerID: UUID) async {
+        guard providers.chatGPTSessionPresent else { return }
+        guard let snapshot = (try? await ChatGPTWebClient.shared.usageQuota()) ?? nil else { return }
+        quotaByProvider[providerID] = snapshot
+    }
+
     private func restoreQuotaSnapshots() {
         guard let data = UserDefaults.standard.data(forKey: "velachat.quota-snapshots"),
               let saved = try? JSONDecoder().decode([UUID: QuotaSnapshot].self, from: data) else { return }

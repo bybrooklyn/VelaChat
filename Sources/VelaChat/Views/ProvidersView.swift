@@ -349,6 +349,8 @@ struct ProviderEditorView: View {
                 Text(AppleIntelligence.unavailabilityReason ?? "Runs entirely on this Mac — no key, no network, no cost. Conversations never leave the device.")
                     .foregroundStyle(Theme.secondaryText)
             }
+        case .chatGPT:
+            ChatGPTLoginSection()
         case .codex:
             Section("Codex login") {
                 Text(appModel.providers.codexMessage ?? "Use the official Codex CLI login, or enter an API key above.")
