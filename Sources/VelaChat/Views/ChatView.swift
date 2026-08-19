@@ -1,4 +1,5 @@
 import SwiftUI
+import HighlightSwift
 import AppKit
 import UniformTypeIdentifiers
 
@@ -43,7 +44,6 @@ struct ChatView: View {
             if let artifact = artifactPresenter.activeArtifact {
                 Divider()
                 ArtifactPanel(artifact: artifact)
-                    .frame(width: 420)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
@@ -983,70 +983,161 @@ private struct ArtifactPanel: View {
     @Environment(AppModel.self) private var appModel
     let artifact: Artifact
     @State private var copied = false
+    @State private var isEditing = false
+    @State private var editText = ""
+    @State private var width: CGFloat = {
+        let saved = UserDefaults.standard.double(forKey: "velachat.inspector-width")
+        return saved > 0 ? min(max(saved, 320), 720) : 420
+    }()
+    @State private var dragStartWidth: CGFloat?
+
+    private var isWorkspaceFile: Bool {
+        if case .workspaceFile = artifact.source { return true }
+        return false
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "sidebar.right")
-                    .foregroundStyle(Theme.accent)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(artifact.title)
-                        .font(.subheadline.weight(.semibold))
-                    Text(artifact.kind.displayName)
-                        .font(.caption2)
-                        .foregroundStyle(Theme.tertiaryText)
-                }
-                Spacer()
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(artifact.content, forType: .string)
-                    copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
-                } label: {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .buttonStyle(VelaIconButtonStyle())
-                .foregroundStyle(copied ? Theme.success : Theme.tertiaryText)
-                .help(copied ? "Copied" : "Copy source")
-                .animation(.easeOut(duration: 0.12), value: copied)
-                Button {
-                    downloadArtifact()
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
-                }
-                .buttonStyle(VelaIconButtonStyle())
-                .foregroundStyle(Theme.tertiaryText)
-                .help("Save to disk")
-                Button {
-                    artifactPresenter.close()
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(VelaIconButtonStyle())
-                .foregroundStyle(Theme.tertiaryText)
-                .help("Close")
-            }
-            .padding(12)
+            header
             Divider()
-            ArtifactWebView(html: artifact.previewHTML)
-                .background(Color.white)
+            content
         }
+        .frame(width: width)
         .background(Theme.background)
+        // Resizable: a slim grab strip on the leading edge.
+        .overlay(alignment: .leading) {
+            Color.clear
+                .frame(width: 8)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { value in
+                            let start = dragStartWidth ?? width
+                            dragStartWidth = start
+                            width = min(max(start - value.translation.width, 320), 720)
+                        }
+                        .onEnded { _ in
+                            dragStartWidth = nil
+                            UserDefaults.standard.set(width, forKey: "velachat.inspector-width")
+                        }
+                )
+        }
+        .onChange(of: artifact.id) { _, _ in
+            isEditing = false
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sidebar.right")
+                .foregroundStyle(Theme.accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(artifact.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(artifact.kind.displayName)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+            Spacer()
+            if isWorkspaceFile {
+                if isEditing {
+                    Button("Save") {
+                        if let error = artifactPresenter.save(artifact, content: editText) {
+                            appModel.postNotice(error)
+                        } else {
+                            withAnimation(.easeOut(duration: 0.18)) { isEditing = false }
+                        }
+                    }
+                    .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                } else {
+                    Button {
+                        editText = artifact.content
+                        withAnimation(.easeOut(duration: 0.18)) { isEditing = true }
+                    } label: {
+                        Image(systemName: "pencil")
+                    }
+                    .buttonStyle(VelaIconButtonStyle())
+                    .foregroundStyle(Theme.tertiaryText)
+                    .help("Edit")
+                }
+            }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(isEditing ? editText : artifact.content, forType: .string)
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .buttonStyle(VelaIconButtonStyle())
+            .foregroundStyle(copied ? Theme.success : Theme.tertiaryText)
+            .help(copied ? "Copied" : "Copy source")
+            .animation(.easeOut(duration: 0.12), value: copied)
+            Button {
+                downloadArtifact()
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
+            .buttonStyle(VelaIconButtonStyle())
+            .foregroundStyle(Theme.tertiaryText)
+            .help("Save to disk")
+            Button {
+                artifactPresenter.close()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(VelaIconButtonStyle())
+            .foregroundStyle(Theme.tertiaryText)
+            .help("Close")
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if isEditing {
+            TextEditor(text: $editText)
+                .font(.system(size: 12.5, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .background(Theme.controlBackground.opacity(0.35))
+        } else {
+            switch artifact.kind {
+            case .markdown:
+                ScrollView {
+                    RichMessageText(text: artifact.content, isUser: false)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .id(artifact.id)
+                .transition(.opacity)
+            case .code:
+                ScrollView([.vertical, .horizontal]) {
+                    CodeText(artifact.content)
+                        .font(.system(size: 12.5, design: .monospaced))
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .id(artifact.id)
+                .transition(.opacity)
+            default:
+                ArtifactWebView(html: artifact.previewHTML)
+                    .background(Color.white)
+            }
+        }
     }
 
     private func downloadArtifact() {
         let panel = NSSavePanel()
-        let ext: String
-        switch artifact.kind {
-        case .html: ext = "html"
-        case .svg: ext = "svg"
-        case .mermaid: ext = "mmd"
-        }
-        panel.nameFieldStringValue = "artifact.\(ext)"
+        panel.nameFieldStringValue = artifact.title.contains(".") ? artifact.title : "artifact.\(artifact.kind.fileExtension)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try artifact.content.write(to: url, atomically: true, encoding: .utf8)
+            try (isEditing ? editText : artifact.content).write(to: url, atomically: true, encoding: .utf8)
         } catch {
             appModel.postNotice("Couldn't save the artifact: \(error.localizedDescription)")
         }
@@ -1522,6 +1613,8 @@ struct AssistantTimeline: View {
 struct ActivityLine: View {
     enum Style { case interleaved, summary }
 
+    @Environment(ArtifactPresenter.self) private var artifactPresenter
+    @Environment(AppModel.self) private var appModel
     let records: [ActivityRecord]
     var style: Style = .interleaved
     @State private var isExpanded = false
@@ -1664,9 +1757,25 @@ struct ActivityLine: View {
                     ForEach(records) { record in
                         VStack(alignment: .leading, spacing: 3) {
                             if !record.argument.isEmpty {
-                                Text(record.kind.finishedLabel(argument: record.argument))
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(Theme.secondaryText)
+                                HStack(spacing: 8) {
+                                    Text(record.kind.finishedLabel(argument: record.argument))
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(Theme.secondaryText)
+                                    // Files the model wrote or read open in
+                                    // the inspector, rendered for real.
+                                    if record.kind == .fileWrite || record.kind == .fileRead,
+                                       !record.isError,
+                                       let conversationID = appModel.activeConversationID {
+                                        Button {
+                                            artifactPresenter.openWorkspaceFile(conversationID: conversationID, relativePath: record.argument)
+                                        } label: {
+                                            Label("Open", systemImage: "sidebar.right")
+                                                .font(.caption2)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(Theme.accent)
+                                    }
+                                }
                             }
                             if !record.result.isEmpty {
                                 Text(record.result)

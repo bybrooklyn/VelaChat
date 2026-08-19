@@ -124,12 +124,17 @@ private struct VelaCodeBlock: View {
     /// a new convention taught to the model, since it already writes these
     /// tags unprompted whenever asked for a webpage/diagram/vector graphic.
     private var artifactKind: Artifact.Kind? {
-        guard let language = configuration.language?.lowercased(), configuration.content.count > 120 else { return nil }
+        guard let language = configuration.language?.lowercased(), !language.isEmpty else { return nil }
         switch language {
-        case "html": return .html
-        case "svg": return .svg
-        case "mermaid": return .mermaid
-        default: return nil
+        case "html" where configuration.content.count > 120: return .html
+        case "svg" where configuration.content.count > 120: return .svg
+        case "mermaid" where configuration.content.count > 120: return .mermaid
+        // Any sizeable markdown or code block opens in the inspector with
+        // real rendering/highlighting.
+        case "markdown", "md":
+            return configuration.content.count > 400 ? .markdown : nil
+        default:
+            return configuration.content.count > 400 ? .code(language: language) : nil
         }
     }
 
@@ -144,7 +149,7 @@ private struct VelaCodeBlock: View {
                     Button {
                         artifactPresenter.open(kind: artifactKind, content: configuration.content, title: artifactKind.displayName)
                     } label: {
-                        Label("Open in Artifact", systemImage: "sidebar.right")
+                        Label("Open in Inspector", systemImage: "sidebar.right")
                             .font(.caption2)
                     }
                     .buttonStyle(.plain)

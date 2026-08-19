@@ -13,22 +13,64 @@ import WebKit
 /// know two artifacts across different messages are "the same" one without
 /// the model explicitly signaling that, which isn't attempted here.
 struct Artifact: Identifiable, Equatable {
-    enum Kind: String {
+    enum Kind: Equatable {
         case html, svg, mermaid
+        case markdown
+        case code(language: String?)
 
         var displayName: String {
             switch self {
             case .html: "HTML"
             case .svg: "SVG"
             case .mermaid: "Diagram"
+            case .markdown: "Markdown"
+            case .code(let language): language?.capitalized ?? "Code"
             }
         }
+
+        var fileExtension: String {
+            switch self {
+            case .html: "html"
+            case .svg: "svg"
+            case .mermaid: "mmd"
+            case .markdown: "md"
+            case .code(let language): language ?? "txt"
+            }
+        }
+
+        /// Rendered natively (MarkdownUI / HighlightSwift) — no WKWebView.
+        var rendersNatively: Bool {
+            switch self {
+            case .markdown, .code: true
+            default: false
+            }
+        }
+
+        static func from(fileExtension ext: String) -> Kind {
+            switch ext.lowercased() {
+            case "html", "htm": .html
+            case "svg": .svg
+            case "mmd", "mermaid": .mermaid
+            case "md", "markdown": .markdown
+            case "txt", "": .code(language: nil)
+            default: .code(language: ext.lowercased())
+            }
+        }
+    }
+
+    /// Where the content came from — workspace files are editable and
+    /// savable back to disk; chat blocks are read-only views of the
+    /// message text.
+    enum Source: Equatable {
+        case chat
+        case workspaceFile(conversationID: UUID, relativePath: String)
     }
 
     let id = UUID()
     let kind: Kind
     var title: String
-    let content: String
+    var content: String
+    var source: Source = .chat
 
     static func == (lhs: Artifact, rhs: Artifact) -> Bool { lhs.id == rhs.id }
 
@@ -38,6 +80,8 @@ struct Artifact: Identifiable, Equatable {
     /// shipping a vendored copy of the library for this one preview case).
     var previewHTML: String {
         switch kind {
+        case .markdown, .code:
+            return ""  // rendered natively, never loaded into a web view
         case .html:
             return content
         case .svg:
@@ -96,6 +140,43 @@ final class ArtifactPresenter {
 
     func open(kind: Artifact.Kind, content: String, title: String) {
         activeArtifact = Artifact(kind: kind, title: title, content: content)
+    }
+
+    /// Opens a file the model wrote into the conversation's private
+    /// workspace — the inspector renders it by extension and can save
+    /// edits back to the same path.
+    func openWorkspaceFile(conversationID: UUID, relativePath: String) {
+        let directory = SandboxManager.directory(for: conversationID)
+        guard let url = SandboxManager.resolve(relativePath, in: directory),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        let ext = (relativePath as NSString).pathExtension
+        activeArtifact = Artifact(
+            kind: .from(fileExtension: ext),
+            title: (relativePath as NSString).lastPathComponent,
+            content: text,
+            source: .workspaceFile(conversationID: conversationID, relativePath: relativePath)
+        )
+    }
+
+    /// Saves edited content back to a workspace file. Returns an error
+    /// message, or nil on success. Chat-sourced artifacts have no file.
+    func save(_ artifact: Artifact, content: String) -> String? {
+        guard case .workspaceFile(let conversationID, let relativePath) = artifact.source else {
+            return "This artifact isn't a workspace file."
+        }
+        let directory = SandboxManager.directory(for: conversationID)
+        guard let url = SandboxManager.resolve(relativePath, in: directory) else {
+            return "The file's path is no longer valid."
+        }
+        do {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            if activeArtifact?.id == artifact.id {
+                activeArtifact?.content = content
+            }
+            return nil
+        } catch {
+            return "Couldn't save: \(error.localizedDescription)"
+        }
     }
 
     func close() {
