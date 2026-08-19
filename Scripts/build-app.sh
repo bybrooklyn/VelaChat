@@ -90,12 +90,36 @@ PLIST
   -e "s|__SPARKLE_PUBLIC_KEY__|$SPARKLE_PUBLIC_KEY|" \
   "$CONTENTS/Info.plist"
 
-# Sparkle ships XPC services and its own framework; copy whatever SwiftPM
-# produced next to the binary so the updater can actually launch.
+# Sparkle is a dynamic framework: it has to travel inside the bundle AND
+# the binary needs an rpath pointing at it. Without the rpath the app dies
+# at launch with "Library not loaded: @rpath/Sparkle.framework" — a failure
+# that never shows up in a `swift build`, only in the shipped bundle.
 SPARKLE_FRAMEWORK="$(find "$ROOT/.build" -maxdepth 6 -name "Sparkle.framework" -type d 2>/dev/null | head -1)"
 if [[ -n "$SPARKLE_FRAMEWORK" ]]; then
   mkdir -p "$CONTENTS/Frameworks"
   cp -R "$SPARKLE_FRAMEWORK" "$CONTENTS/Frameworks/"
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS/VelaChat" 2>/dev/null || true
+fi
+
+# Every @rpath dependency must resolve inside the bundle. This is the check
+# that would have caught the missing rpath above, so it runs on every build
+# rather than living in a comment.
+MISSING=0
+while read -r dep; do
+  case "$dep" in
+    @rpath/*)
+      framework_path="$CONTENTS/Frameworks/${dep#@rpath/}"
+      loader_path="$MACOS/${dep#@rpath/}"
+      if [[ ! -f "$framework_path" && ! -f "$loader_path" ]]; then
+        echo "✗ Unresolved dependency: $dep" >&2
+        MISSING=1
+      fi
+      ;;
+  esac
+done < <(otool -L "$MACOS/VelaChat" | awk 'NR>1 {print $1}')
+if [[ "$MISSING" -eq 1 ]]; then
+  echo "✗ The bundle would crash at launch — fix the framework copy/rpath above." >&2
+  exit 1
 fi
 
 IDENTITY="VelaChat Local Dev"

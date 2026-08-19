@@ -64,6 +64,21 @@ jobs:
           test -x build/VelaChat.app/Contents/MacOS/VelaChat
           test -f build/VelaChat.app/Contents/Info.plist
           codesign --verify --verbose build/VelaChat.app
+          # Existing + signed is not the same as launchable. A missing
+          # rpath for an embedded framework passes every check above and
+          # still dies instantly on a user's machine, so actually start
+          # the app and confirm it's alive a few seconds later.
+          ./build/VelaChat.app/Contents/MacOS/VelaChat > /tmp/launch.log 2>&1 &
+          APP_PID=$!
+          sleep 10
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            kill "$APP_PID" || true
+            echo "App stayed alive."
+          else
+            echo "::error::The bundled app exited during launch:"
+            cat /tmp/launch.log
+            exit 1
+          fi
 
       - name: Zip
         run: ditto -c -k --keepParent build/VelaChat.app VelaChat.zip
