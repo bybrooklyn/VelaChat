@@ -778,7 +778,9 @@ private struct MessageRow: View {
                                     .buttonStyle(.bordered)
                             }
                         }
-                    } else if !message.isStreaming, alternateIndex == 0, let ask = displayedMessage.askQuestion {
+                    } else if alternateIndex == 0, let ask = displayedMessage.askQuestion {
+                        // The card appears the moment the closing fence
+                        // arrives — no need to wait for the stream to end.
                         VStack(alignment: .leading, spacing: 10) {
                             if !ask.prefix.isEmpty {
                                 RichMessageText(text: ask.prefix, isUser: false)
@@ -787,6 +789,25 @@ private struct MessageRow: View {
                                 payload: ask.payload,
                                 interactive: isLastMessage && !appModel.isGenerating
                             )
+                            if !ask.suffix.isEmpty {
+                                RichMessageText(text: ask.suffix, isUser: false)
+                            }
+                        }
+                    } else if message.isStreaming, alternateIndex == 0,
+                              AskUserQuestionPayload.hasUnterminatedFence(in: displayedMessage.content) {
+                        // Mid-stream, fence open: never show the raw JSON
+                        // typing itself out — a quiet placeholder instead.
+                        VStack(alignment: .leading, spacing: 10) {
+                            let prefix = AskUserQuestionPayload.prefixBeforeUnterminatedFence(in: displayedMessage.content)
+                            if !prefix.isEmpty {
+                                RichMessageText(text: prefix, isUser: false)
+                            }
+                            HStack(spacing: 8) {
+                                Image(systemName: "questionmark.circle")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Theme.tertiaryText)
+                                ShimmerText(text: "Preparing a question…", font: .callout)
+                            }
                         }
                     } else {
                         AssistantTimeline(message: displayedMessage)
@@ -1167,8 +1188,8 @@ private struct AskUserQuestionCard: View {
     private var canSubmit: Bool { !selected.isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 7) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
                 Image(systemName: "questionmark.circle.fill")
                     .foregroundStyle(Theme.accent)
                 Text(payload.question)
@@ -1192,13 +1213,17 @@ private struct AskUserQuestionCard: View {
                     .disabled(!canSubmit)
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.controlBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .stroke(Theme.accent.opacity(0.2), lineWidth: 1)
         }
+        // Selection and the post-submit state settle with a fade instead of
+        // controls vanishing in one frame.
+        .animation(.easeOut(duration: 0.15), value: selected)
+        .animation(.easeOut(duration: 0.2), value: submitted)
     }
 
     private func optionRow(_ option: AskUserQuestionPayload.Option) -> some View {
@@ -1226,12 +1251,19 @@ private struct AskUserQuestionCard: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 9)
+            .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(
                 selected.contains(option.label) ? Theme.accentSoft.opacity(0.7) : Color.clear,
                 in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
             )
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+                    .stroke(
+                        selected.contains(option.label) ? Theme.accent.opacity(0.35) : Theme.controlStroke.opacity(0.4),
+                        lineWidth: 1
+                    )
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1256,10 +1288,6 @@ private struct AskUserQuestionCard: View {
         appModel.send(summary)
     }
 }
-
-/// Renders a ```remember block as a real confirm/dismiss card — nothing the
-/// model proposes is ever stored automatically, matching the instruction
-/// given to it (`AppModel.memoryInstruction`).
 
 private struct MessageActionRow: View {
     @Environment(AppModel.self) private var appModel

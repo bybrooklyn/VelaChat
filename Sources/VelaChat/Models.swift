@@ -707,7 +707,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// question — `nil` while the block isn't complete yet (still
     /// streaming) or isn't present at all. Parsed on demand rather than
     /// stored, since it's cheap and only ever needed at render time.
-    var askQuestion: (prefix: String, payload: AskUserQuestionPayload)? {
+    var askQuestion: (prefix: String, payload: AskUserQuestionPayload, suffix: String)? {
         AskUserQuestionPayload.parse(from: content)
     }
 
@@ -769,21 +769,47 @@ struct AskUserQuestionPayload: Decodable, Equatable {
         allowNotes = try container.decodeIfPresent(Bool.self, forKey: .allowNotes) ?? true
     }
 
-    static func parse(from content: String) -> (prefix: String, payload: AskUserQuestionPayload)? {
-        guard let openRange = content.range(of: "```ask-user"),
-              let closeRange = content.range(of: "```", range: openRange.upperBound..<content.endIndex) else {
+    /// Fences must sit at the start of a line — prose that merely *mentions*
+    /// the ```ask-user format (e.g. the model explaining the convention) no
+    /// longer swallows the whole reply into a card. Text after the closing
+    /// fence is preserved, not silently dropped.
+    static func parse(from content: String) -> (prefix: String, payload: AskUserQuestionPayload, suffix: String)? {
+        guard let openMatch = content.range(of: #"(?m)^```ask-user[ \t]*$"#, options: .regularExpression),
+              let closeMatch = content.range(of: #"(?m)^```[ \t]*$"#, options: .regularExpression, range: openMatch.upperBound..<content.endIndex) else {
             return nil
         }
-        let jsonText = content[openRange.upperBound..<closeRange.lowerBound]
+        let jsonText = content[openMatch.upperBound..<closeMatch.lowerBound]
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let data = jsonText.data(using: .utf8),
               let payload = try? JSONDecoder().decode(AskUserQuestionPayload.self, from: data),
               !payload.question.isEmpty, !payload.options.isEmpty else {
             return nil
         }
-        let prefix = String(content[content.startIndex..<openRange.lowerBound])
+        let prefix = String(content[content.startIndex..<openMatch.lowerBound])
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (prefix, payload)
+        let suffix = String(content[closeMatch.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (prefix, payload, suffix)
+    }
+
+    /// True while a line-start ```ask-user fence has opened but not closed —
+    /// the streaming state where the raw JSON must be hidden behind a
+    /// placeholder instead of typing itself out on screen.
+    static func hasUnterminatedFence(in content: String) -> Bool {
+        guard let openMatch = content.range(of: #"(?m)^```ask-user[ \t]*$"#, options: .regularExpression) else {
+            return false
+        }
+        return content.range(of: #"(?m)^```[ \t]*$"#, options: .regularExpression, range: openMatch.upperBound..<content.endIndex) == nil
+    }
+
+    /// The prose before an unterminated fence — shown above the
+    /// "Preparing a question…" placeholder while streaming.
+    static func prefixBeforeUnterminatedFence(in content: String) -> String {
+        guard let openMatch = content.range(of: #"(?m)^```ask-user[ \t]*$"#, options: .regularExpression) else {
+            return content
+        }
+        return String(content[content.startIndex..<openMatch.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
