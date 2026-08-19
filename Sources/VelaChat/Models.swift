@@ -711,13 +711,6 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         AskUserQuestionPayload.parse(from: content)
     }
 
-    /// If this message's content contains a well-formed ```remember fenced
-    /// block, splits it into the prose before/after and the parsed
-    /// proposal — `nil` while streaming or if absent.
-    var memoryProposal: (prefix: String, proposal: MemoryProposal, suffix: String)? {
-        MemoryProposal.parse(from: content)
-    }
-
     /// Local-only UI artifacts — `"notice"` cards and `"compaction"`
     /// markers — never real conversation content. Anywhere that builds
     /// what actually gets sent to a provider, or asks "has this

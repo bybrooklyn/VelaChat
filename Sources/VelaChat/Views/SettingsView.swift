@@ -135,26 +135,36 @@ struct SettingsView: View {
 
             Section {
                 if appModel.memories.isEmpty {
-                    Label("No memories yet.", systemImage: "brain")
+                    Label("Nothing remembered yet — the model saves facts as you chat.", systemImage: "brain")
                         .font(.caption)
                         .foregroundStyle(Theme.tertiaryText)
                 } else {
-                    ForEach($appModel.memories) { $memory in
-                        HStack(spacing: 8) {
-                            Image(systemName: "brain")
-                                .font(.caption)
+                    ForEach(memoryTopics, id: \.self) { topic in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(topic)
+                                .font(.caption.weight(.semibold))
                                 .foregroundStyle(Theme.tertiaryText)
-                            TextField("Memory", text: $memory.content, axis: .vertical)
-                                .textFieldStyle(.plain)
-                            Button {
-                                appModel.removeMemory(memory)
-                            } label: {
-                                Image(systemName: "trash")
+                            ForEach($appModel.memories) { $memory in
+                                if memory.displayTopic == topic {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "brain")
+                                            .font(.caption)
+                                            .foregroundStyle(Theme.tertiaryText)
+                                        TextField("Memory", text: $memory.content, axis: .vertical)
+                                            .textFieldStyle(.plain)
+                                        Button {
+                                            appModel.removeMemory(memory)
+                                        } label: {
+                                            Image(systemName: "trash")
+                                        }
+                                        .buttonStyle(VelaIconButtonStyle())
+                                        .foregroundStyle(Theme.tertiaryText)
+                                    }
+                                    .transition(.opacity)
+                                }
                             }
-                            .buttonStyle(VelaIconButtonStyle())
-                            .foregroundStyle(Theme.tertiaryText)
                         }
-                        .transition(.opacity)
+                        .padding(.vertical, 2)
                     }
                 }
                 HStack(spacing: 8) {
@@ -171,7 +181,7 @@ struct SettingsView: View {
             } header: {
                 Text("Memory")
             } footer: {
-                Text("Facts the model keeps across every conversation \u{2014} yours to edit or remove.")
+                Text("Written by the model as you chat, kept on this Mac only \u{2014} yours to edit or remove, grouped by topic.")
             }
 
             Section {
@@ -408,6 +418,19 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, alignment: .center)
         .sheet(isPresented: $isAddingSnippet) {
             AddSnippetSheet(isPresented: $isAddingSnippet)
+        }
+    }
+
+    private var memoryTopics: [String] {
+        var topics: [String] = []
+        for memory in appModel.memories where !topics.contains(memory.displayTopic) {
+            topics.append(memory.displayTopic)
+        }
+        // "General" (untopiced) sorts last, everything else alphabetical.
+        return topics.sorted { lhs, rhs in
+            if lhs == "General" { return false }
+            if rhs == "General" { return true }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
         }
     }
 

@@ -785,16 +785,6 @@ private struct MessageRow: View {
                                 interactive: isLastMessage && !appModel.isGenerating
                             )
                         }
-                    } else if !message.isStreaming, alternateIndex == 0, let memory = displayedMessage.memoryProposal {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if !memory.prefix.isEmpty {
-                                RichMessageText(text: memory.prefix, isUser: false)
-                            }
-                            MemoryProposalCard(proposal: memory.proposal)
-                            if !memory.suffix.isEmpty {
-                                RichMessageText(text: memory.suffix, isUser: false)
-                            }
-                        }
                     } else {
                         AssistantTimeline(message: displayedMessage)
                             .contextMenu {
@@ -1267,45 +1257,6 @@ private struct AskUserQuestionCard: View {
 /// Renders a ```remember block as a real confirm/dismiss card — nothing the
 /// model proposes is ever stored automatically, matching the instruction
 /// given to it (`AppModel.memoryInstruction`).
-private struct MemoryProposalCard: View {
-    @Environment(AppModel.self) private var appModel
-    let proposal: MemoryProposal
-    @State private var resolution: Resolution?
-
-    private enum Resolution { case saved, dismissed }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: resolution == nil ? "brain" : (resolution == .saved ? "checkmark.circle.fill" : "xmark.circle"))
-                .foregroundStyle(resolution == .saved ? Theme.success : Theme.accent)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(resolution == nil ? "Remember this?" : (resolution == .saved ? "Remembered" : "Not saved"))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Theme.secondaryText)
-                Text(proposal.content)
-                    .font(.callout)
-                    .foregroundStyle(Theme.text)
-            }
-            Spacer(minLength: 0)
-            if resolution == nil {
-                Button("Dismiss") { resolution = .dismissed }
-                    .buttonStyle(.bordered)
-                Button("Save") {
-                    appModel.addMemory(proposal.content)
-                    resolution = .saved
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accentStrong)
-            }
-        }
-        .padding(12)
-        .background(Theme.controlBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .stroke(Theme.accent.opacity(0.2), lineWidth: 1)
-        }
-    }
-}
 
 private struct MessageActionRow: View {
     @Environment(AppModel.self) private var appModel

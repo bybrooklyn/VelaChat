@@ -99,6 +99,28 @@ enum ToolCatalog {
         guidance: "Cheap — call it rather than guessing filenames."
     )
 
+    static let saveMemory = Definition(
+        name: "save_memory",
+        description: "Save a durable fact about the user to your persistent memory — it will be available in every future conversation. One short, standalone sentence per call, with a topic for grouping (reuse existing topics from search_memory when one fits).",
+        parametersJSON: #"{"type":"object","properties":{"content":{"type":"string","description":"The fact, as one short standalone sentence"},"topic":{"type":"string","description":"A short grouping topic, e.g. a project name, \"Preferences\", \"Work\""}},"required":["content","topic"]}"#,
+        summary: "save a durable fact to your persistent cross-conversation memory",
+        guidance: "Save preferences, recurring projects, and facts the user states about themselves — proactively, without asking. Never save secrets, credentials, or trivia only relevant right now."
+    )
+    static let searchMemory = Definition(
+        name: "search_memory",
+        description: "Search your persistent memory for stored facts. Returns matching memories with their ids and topics — the id is what edit_memory needs.",
+        parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"A word or phrase to look for; empty returns the most recent memories"}},"required":["query"]}"#,
+        summary: "search your persistent memory",
+        guidance: "The prompt only carries the memories that look relevant — search before assuming you don't know something about the user."
+    )
+    static let editMemory = Definition(
+        name: "edit_memory",
+        description: "Update or delete one stored memory by id (get ids from search_memory). Use when a stored fact becomes wrong or obsolete.",
+        parametersJSON: #"{"type":"object","properties":{"id":{"type":"string","description":"The memory's id, from search_memory"},"action":{"type":"string","enum":["update","delete"]},"content":{"type":"string","description":"Replacement text (update only)"},"topic":{"type":"string","description":"Replacement topic (update only)"}},"required":["id","action"]}"#,
+        summary: "update or delete a stored memory",
+        guidance: "Keep memory truthful: when the user corrects something you had saved, update it rather than saving a contradicting duplicate."
+    )
+
     /// The system-prompt tool inventory: the wire `tools` array alone is not
     /// enough — models routinely claim "I don't have internet access" while
     /// a web_search tool sits attached. Built from the exact tools being
@@ -128,6 +150,26 @@ enum ToolCatalog {
         /// Full text of the conversation's text-bearing attachments, keyed
         /// by filename — what `read_attachment` serves.
         var attachmentTexts: [String: String] = [:]
+        /// The memory tools' window into `AppModel.memories` — a read
+        /// snapshot plus a MainActor-hopping mutator.
+        var memory: MemoryAccess? = nil
+    }
+
+    struct MemorySnapshot: Sendable {
+        let id: UUID
+        let content: String
+        let topic: String?
+    }
+
+    enum MemoryMutation: Sendable {
+        case save(content: String, topic: String?)
+        case update(id: UUID, content: String?, topic: String?)
+        case delete(id: UUID)
+    }
+
+    struct MemoryAccess: Sendable {
+        let snapshot: [MemorySnapshot]
+        let mutate: @Sendable (MemoryMutation) async -> String
     }
 
     /// The minimal slice of a conversation `search_conversations` needs —
@@ -185,9 +227,52 @@ enum ToolCatalog {
         case readAttachment.name:
             guard let filename = arguments?["filename"] as? String, !filename.isEmpty else { return "Error: \"filename\" is required." }
             return readAttachmentResult(filename: filename, context: context)
+        case saveMemory.name:
+            guard let memory = context.memory else { return "Error: memory is unavailable." }
+            guard let content = arguments?["content"] as? String,
+                  !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return "Error: \"content\" is required."
+            }
+            return await memory.mutate(.save(content: content, topic: arguments?["topic"] as? String))
+        case searchMemory.name:
+            guard let memory = context.memory else { return "Error: memory is unavailable." }
+            return searchMemoryResult(query: arguments?["query"] as? String ?? "", memory: memory)
+        case editMemory.name:
+            guard let memory = context.memory else { return "Error: memory is unavailable." }
+            guard let idString = arguments?["id"] as? String, let id = UUID(uuidString: idString) else {
+                return "Error: a valid \"id\" from search_memory is required."
+            }
+            switch arguments?["action"] as? String {
+            case "delete":
+                return await memory.mutate(.delete(id: id))
+            case "update":
+                return await memory.mutate(.update(id: id, content: arguments?["content"] as? String, topic: arguments?["topic"] as? String))
+            default:
+                return "Error: \"action\" must be \"update\" or \"delete\"."
+            }
         default:
             return "Error: unknown tool \"\(name)\"."
         }
+    }
+
+    private static func searchMemoryResult(query: String, memory: MemoryAccess) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let matches: [MemorySnapshot]
+        if trimmed.isEmpty {
+            matches = Array(memory.snapshot.suffix(12).reversed())
+        } else {
+            matches = memory.snapshot.filter {
+                $0.content.lowercased().contains(trimmed) || ($0.topic?.lowercased().contains(trimmed) ?? false)
+            }
+        }
+        guard !matches.isEmpty else {
+            return memory.snapshot.isEmpty
+                ? "Memory is empty — nothing has been saved yet."
+                : "No stored memories match \"\(query)\"."
+        }
+        return matches
+            .map { "[\($0.id.uuidString)] (\($0.topic ?? "General")) \($0.content)" }
+            .joined(separator: "\n")
     }
 
     private static func currentDatetimeResult() -> String {

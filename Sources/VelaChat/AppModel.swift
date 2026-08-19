@@ -43,26 +43,11 @@ final class AppModel {
         never for routine replies.
         """
 
-    /// Teaches the model it can propose remembering something durable —
-    /// same fenced-block pattern as `askUserQuestionInstruction`. Nothing
-    /// is ever stored automatically: the proposal renders as a card the
-    /// user has to actually confirm (`MemoryProposalCard`, ChatView.swift).
-    static let memoryInstruction = """
-        You can propose remembering a durable fact about the user or their \
-        projects — something worth knowing in every future conversation, \
-        not just this one (a preference, a recurring project detail, \
-        something they explicitly asked you to remember). To do this, \
-        include a fenced block anywhere in your reply in exactly this shape:
-
-        ```remember
-        {"content": "The fact to remember, written as a short standalone sentence"}
-        ```
-
-        This never saves anything by itself — the user sees it as a card and \
-        has to confirm it. Use this rarely, only for something genuinely \
-        worth carrying forward, and only when it fits naturally in what \
-        you're already saying — never as the sole content of a reply.
-        """
+    // The old fenced ```remember``` propose-and-confirm flow is gone: the
+    // model manages memory itself through the real save_memory /
+    // search_memory / edit_memory tools (ToolCatalog), every write shows as
+    // a visible activity line, and Settings → Memory is the user's control
+    // surface.
 
     let providers = ProviderStore()
     let skills = SkillsStore()
@@ -645,26 +630,101 @@ final class AppModel {
         }
     }
 
-    /// Every memory gets injected on every request today — fine for a
-    /// short list, but unbounded as it grows. Caps at the most-recent
-    /// entries that fit a token budget instead of letting memory alone
-    /// silently eat an ever-larger share of context on every single
-    /// message. (A relevance-ranked subset would need embeddings, which
-    /// this app doesn't have — recency is the honest fallback.)
-    private func boundedMemoryText(maxCharacters: Int = 2_000) -> String {
-        let sorted = memories.sorted { $0.createdAt > $1.createdAt }
-        var lines: [String] = []
-        var total = 0
-        for memory in sorted {
-            let line = "- \(memory.content)"
-            guard total + line.count <= maxCharacters else { break }
-            lines.append(line)
-            total += line.count
+    /// Relevance-ranked injection: with a short list everything goes in
+    /// (grouped by topic); past 15 memories, only the ones that share real
+    /// words with the recent conversation do, with topic matches weighted
+    /// double — and a note that `search_memory` can find the rest. Plain
+    /// word overlap on purpose: no embeddings infrastructure exists here,
+    /// and honest keyword scoring beats pretending otherwise.
+    private static let memoryStopwords: Set<String> = [
+        "the", "and", "for", "that", "this", "with", "you", "your", "have",
+        "are", "was", "but", "not", "can", "what", "how", "about", "just",
+        "like", "its", "it's", "from", "they", "them", "when", "where"
+    ]
+
+    private func relevantMemoryText(for conversation: Conversation) -> String {
+        let selection: [MemoryItem]
+        var omitted = 0
+        if memories.count <= 15 {
+            selection = memories
+        } else {
+            let recentText = conversation.realMessages.suffix(5).map(\.content).joined(separator: " ").lowercased()
+            let contextWords = Set(
+                recentText.split { !$0.isLetter && !$0.isNumber }
+                    .map(String.init)
+                    .filter { $0.count > 2 && !Self.memoryStopwords.contains($0) }
+            )
+            func score(_ memory: MemoryItem) -> Int {
+                let contentWords = memory.content.lowercased()
+                    .split { !$0.isLetter && !$0.isNumber }
+                    .map(String.init)
+                var value = contentWords.filter { contextWords.contains($0) }.count
+                if let topic = memory.topic?.lowercased() {
+                    let topicWords = topic.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+                    value += 2 * topicWords.filter { contextWords.contains($0) }.count
+                }
+                return value
+            }
+            let ranked = memories
+                .map { (memory: $0, score: score($0)) }
+                .sorted { ($0.score, $0.memory.createdAt.timeIntervalSince1970) > ($1.score, $1.memory.createdAt.timeIntervalSince1970) }
+            let matched = ranked.filter { $0.score > 0 }.prefix(12).map(\.memory)
+            // Nothing matched (fresh conversation): fall back to recency.
+            selection = matched.isEmpty
+                ? Array(memories.sorted { $0.createdAt > $1.createdAt }.prefix(12))
+                : matched
+            omitted = memories.count - selection.count
         }
-        if lines.count < memories.count {
-            lines.append("(\(memories.count - lines.count) older memor\(memories.count - lines.count == 1 ? "y" : "ies") omitted to save context — see Settings → Memory for the full list.)")
+        var topics: [String] = []
+        var grouped: [String: [MemoryItem]] = [:]
+        for memory in selection {
+            let topic = memory.displayTopic
+            if grouped[topic] == nil { topics.append(topic) }
+            grouped[topic, default: []].append(memory)
+        }
+        var lines: [String] = []
+        for topic in topics {
+            lines.append("\(topic):")
+            for memory in grouped[topic] ?? [] {
+                lines.append("- \(memory.content)")
+            }
+        }
+        if omitted > 0 {
+            lines.append("(\(omitted) more stored memor\(omitted == 1 ? "y" : "ies") — use search_memory to find them.)")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// The memory tools' MainActor entry point — every mutation lands in
+    /// `memories`, whose `didSet` persists it, and Settings reflects it
+    /// immediately.
+    func applyMemoryMutation(_ mutation: ToolCatalog.MemoryMutation) -> String {
+        switch mutation {
+        case .save(let content, let topic):
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return "Error: the memory content is empty." }
+            let cleanTopic = topic?.trimmingCharacters(in: .whitespacesAndNewlines)
+            memories.append(MemoryItem(content: trimmed, topic: (cleanTopic?.isEmpty ?? true) ? nil : cleanTopic))
+            return "Saved."
+        case .update(let id, let content, let topic):
+            guard let index = memories.firstIndex(where: { $0.id == id }) else {
+                return "Error: no memory with that id — use search_memory to find the right one."
+            }
+            if let content, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                memories[index].content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let topic {
+                let cleaned = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+                memories[index].topic = cleaned.isEmpty ? nil : cleaned
+            }
+            return "Updated."
+        case .delete(let id):
+            guard memories.contains(where: { $0.id == id }) else {
+                return "Error: no memory with that id — use search_memory to find the right one."
+            }
+            memories.removeAll { $0.id == id }
+            return "Deleted."
+        }
     }
 
     func togglePin(_ conversation: Conversation) {
@@ -886,6 +946,7 @@ final class AppModel {
             tools.append(ToolCatalog.fetchURL)
             tools.append(ToolCatalog.currentDatetime)
             tools.append(ToolCatalog.calculator)
+            tools.append(contentsOf: [ToolCatalog.saveMemory, ToolCatalog.searchMemory, ToolCatalog.editMemory])
             if isWorkspaceEnabled {
                 tools.append(contentsOf: [ToolCatalog.writeFile, ToolCatalog.readFile, ToolCatalog.listWorkspaceFiles])
             }
@@ -910,7 +971,10 @@ final class AppModel {
             systemMessages.append(ChatMessage(role: "system", content: trimmedInstructions))
         }
         if !memories.isEmpty {
-            systemMessages.append(ChatMessage(role: "system", content: "Remembered facts about the user, true across every conversation:\n\(boundedMemoryText())"))
+            let managementNote = modelSupportsTools
+                ? "\n\nYou maintain this memory yourself: save new durable facts with save_memory as you learn them, and correct or remove outdated ones with edit_memory."
+                : ""
+            systemMessages.append(ChatMessage(role: "system", content: "Remembered facts about the user, true across every conversation:\n\(relevantMemoryText(for: conversation))\(managementNote)"))
         }
         // Active skills' bodies become extra scoped context for the rest of
         // this conversation — the same shape custom instructions already
@@ -923,7 +987,6 @@ final class AppModel {
             systemMessages.append(ChatMessage(role: "system", content: inventory))
         }
         systemMessages.append(ChatMessage(role: "system", content: Self.askUserQuestionInstruction))
-        systemMessages.append(ChatMessage(role: "system", content: Self.memoryInstruction))
         requestMessages.insert(contentsOf: systemMessages, at: 0)
         let toolContext = ToolCatalog.ExecutionContext(
             conversationSummaries: conversations
@@ -937,7 +1000,15 @@ final class AppModel {
                 },
             searchEndpoint: trimmedSearchEndpoint,
             workspaceDirectory: SandboxManager.directory(for: conversation.id),
-            attachmentTexts: attachmentTexts
+            attachmentTexts: attachmentTexts,
+            memory: ToolCatalog.MemoryAccess(
+                snapshot: memories.map { ToolCatalog.MemorySnapshot(id: $0.id, content: $0.content, topic: $0.topic) },
+                mutate: { [weak self] mutation in
+                    await MainActor.run { [weak self] in
+                        self?.applyMemoryMutation(mutation) ?? "Error: memory is unavailable."
+                    }
+                }
+            )
         )
         // Providers/models without real tool-calling support keep the old
         // pre-fetch behavior exactly as before — nothing regresses for them.

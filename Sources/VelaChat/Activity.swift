@@ -4,7 +4,8 @@ import Foundation
 /// the present/past-tense phrasing in the transcript.
 enum ActivityKind: String, Codable, Sendable {
     case webSearch, conversationSearch, fetchURL, fileRead, fileWrite, fileList
-    case datetime, calculation, attachment, memory, note
+    case datetime, calculation, attachment, note
+    case memory, memorySave, memorySearch, memoryEdit
 
     static func from(toolName: String) -> ActivityKind {
         switch toolName {
@@ -17,7 +18,9 @@ enum ActivityKind: String, Codable, Sendable {
         case ToolCatalog.currentDatetime.name: .datetime
         case ToolCatalog.calculator.name: .calculation
         case ToolCatalog.readAttachment.name: .attachment
-        case "save_memory", "search_memory", "edit_memory": .memory
+        case "save_memory": .memorySave
+        case "search_memory": .memorySearch
+        case "edit_memory": .memoryEdit
         default: .note
         }
     }
@@ -33,7 +36,7 @@ enum ActivityKind: String, Codable, Sendable {
         case .datetime: "clock"
         case .calculation: "plus.forwardslash.minus"
         case .attachment: "paperclip"
-        case .memory: "brain"
+        case .memory, .memorySave, .memorySearch, .memoryEdit: "brain"
         case .note: "info.circle"
         }
     }
@@ -52,6 +55,9 @@ enum ActivityKind: String, Codable, Sendable {
         case .calculation: return "Calculating"
         case .attachment: return "Reading \(argument.isEmpty ? "an attachment" : argument)"
         case .memory: return "Working with memory"
+        case .memorySave: return "Saving a memory"
+        case .memorySearch: return "Searching memory"
+        case .memoryEdit: return "Updating memory"
         case .note: return argument
         }
     }
@@ -70,6 +76,9 @@ enum ActivityKind: String, Codable, Sendable {
         case .calculation: return "Calculated \(argument)"
         case .attachment: return "Read \(argument.isEmpty ? "an attachment" : argument)"
         case .memory: return "Updated memory"
+        case .memorySave: return "Saved a memory"
+        case .memorySearch: return "Recalled from memory"
+        case .memoryEdit: return "Updated a memory"
         case .note: return argument
         }
     }
@@ -89,7 +98,8 @@ enum ActivityKind: String, Codable, Sendable {
         case .datetime: return "checked the time"
         case .calculation: return "\(count) calculation\(plural)"
         case .attachment: return "read \(count) attachment\(plural)"
-        case .memory: return "\(count) memory update\(plural)"
+        case .memory, .memorySave, .memoryEdit: return "\(count) memory update\(plural)"
+        case .memorySearch: return "\(count) memory lookup\(plural)"
         case .note: return "\(count) note\(plural)"
         }
     }
