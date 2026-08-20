@@ -261,6 +261,10 @@ struct PlanCard: View {
 /// free: any tab can be opened in any order, and a question can be left
 /// blank. Because of that, Send never blocks on completeness; it only warns
 /// before going out incomplete, via `showingIncompleteConfirm`.
+///
+/// The primary button reads `Next` until the last question and `Send` only
+/// there, so a multi-question card can't be fired off from question one by
+/// pressing the only obvious control on screen.
 struct AskUserQuestionCard: View {
     @Environment(AppModel.self) private var appModel
     let payload: AskUserQuestionPayload
@@ -290,6 +294,15 @@ struct AskUserQuestionCard: View {
         questions.filter { !isAnswered($0) }.count
     }
 
+    /// `Next` until the last question, then `Send` — see
+    /// `AskUserQuestionPayload.primaryAction`, which owns the rule so it can
+    /// be tested. Free navigation via the tab strip is untouched: any
+    /// question can still be revisited in any order, and any of them may
+    /// still be left blank.
+    private var primaryAction: AskUserQuestionPayload.PrimaryAction {
+        AskUserQuestionPayload.primaryAction(activeIndex: activeIndex, questionCount: questions.count)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if questions.count > 1 {
@@ -304,9 +317,27 @@ struct AskUserQuestionCard: View {
             }
             if interactive, !submitted {
                 HStack(spacing: 10) {
-                    Button("Send") { attemptSubmit() }
-                        .buttonStyle(.glassProminent)
-                        .tint(Theme.accentStrong)
+                    let action = primaryAction
+                    Button(action.title) {
+                        switch action {
+                        case .next(let index): activeIndex = index
+                        case .send: attemptSubmit()
+                        }
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.accentStrong)
+                    // The title is the whole meaning of this control, so the
+                    // announced label has to move with it — a button that
+                    // reads "Send" to VoiceOver while showing "Next" is
+                    // worse than no label at all.
+                    .accessibilityLabel(
+                        {
+                            switch action {
+                            case .next(let index): "Next question, \(index + 1) of \(questions.count)"
+                            case .send: "Send answers"
+                            }
+                        }()
+                    )
                     if questions.count > 1 {
                         Text("\(questions.count - unansweredCount) of \(questions.count) answered")
                             .font(.caption)

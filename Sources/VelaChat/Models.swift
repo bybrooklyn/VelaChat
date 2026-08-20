@@ -948,6 +948,35 @@ struct AskUserQuestionPayload: Decodable, Equatable {
         self.allowNotes = allowNotes
     }
 
+    /// What the card's one primary button does at a given position.
+    ///
+    /// Every question used to share a single `Send`, which was a trap on a
+    /// multi-question card: answering the first one and pressing the obvious
+    /// button fired the whole card off with the rest blank, and nothing said
+    /// the other tabs were still there. The button now advances until the
+    /// last question, so reaching `Send` is deliberate.
+    ///
+    /// It lives here, as data, rather than as a branch inside the view so
+    /// the progression can be tested without a running SwiftUI hierarchy —
+    /// the property that matters (every intermediate press advances, *only*
+    /// the last submits) is exactly the kind that silently regresses.
+    enum PrimaryAction: Equatable {
+        case next(index: Int)
+        case send
+
+        var title: String {
+            switch self {
+            case .next: "Next"
+            case .send: "Send"
+            }
+        }
+    }
+
+    static func primaryAction(activeIndex: Int, questionCount: Int) -> PrimaryAction {
+        guard activeIndex < questionCount - 1 else { return .send }
+        return .next(index: activeIndex + 1)
+    }
+
     /// A real payload was once rejected outright and fell through to the
     /// generic Markdown code-block renderer (raw JSON in a box titled
     /// "Ask-User") because a *type*, not a shape, was off: a model emitted

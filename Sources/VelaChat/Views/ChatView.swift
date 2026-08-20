@@ -38,6 +38,7 @@ struct ChatView: View {
 
 
     @Environment(ArtifactPresenter.self) private var artifactPresenter
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 0) {
@@ -155,6 +156,13 @@ struct ChatView: View {
                    approval.conversationID == appModel.activeConversationID {
                     // Modal-feeling but in-place: the reply is genuinely
                     // paused behind this decision.
+                    //
+                    // The scrim stays here and *only* here. An approval
+                    // blocks on a safety decision — something is about to
+                    // run on the user's machine — so dimming the transcript
+                    // to insist on an answer is proportionate. A question
+                    // blocks on a preference, which is not an emergency and
+                    // does not earn a darkened window.
                     ZStack {
                         Color.black.opacity(0.18)
                             .ignoresSafeArea()
@@ -165,33 +173,8 @@ struct ChatView: View {
                 }
             }
             .animation(.easeOut(duration: 0.18), value: appModel.pendingApproval?.id)
-            .overlay {
-                if let question = appModel.pendingQuestion,
-                   question.conversationID == appModel.activeConversationID {
-                    // Same in-place modal shape as a command approval, for
-                    // the same reason: the reply really is suspended on this
-                    // answer, and a card that could scroll out of view would
-                    // leave the model waiting on something the user can no
-                    // longer see.
-                    ZStack {
-                        Color.black.opacity(0.18)
-                            .ignoresSafeArea()
-                        AskUserQuestionCard(
-                            payload: question.payload,
-                            interactive: true,
-                            onAnswer: { question.respond($0) }
-                        )
-                        .frame(maxWidth: 560)
-                        .padding(20)
-                        .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-                        .glassChip(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-                        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous), emphasis: 0.5)
-                        .id(question.id)
-                    }
-                    .transition(.opacity)
-                }
-            }
-            .animation(.easeOut(duration: 0.18), value: appModel.pendingQuestion?.id)
+            // The question card's own animation moved down to the composer
+            // with the card itself — see `pendingQuestionCard`.
             .overlay(alignment: .top) {
                 if appModel.isChatFindShown, let conversation = appModel.activeConversation {
                     ChatFindBar(conversation: conversation, proxy: proxy)
@@ -347,8 +330,46 @@ struct ChatView: View {
         .frame(maxWidth: contentWidth, alignment: .leading)
     }
 
+    /// A blocked `ask_user` call, pinned just above the composer.
+    ///
+    /// It lives in the composer's own stack rather than as an overlay over
+    /// the transcript for two reasons. It sits where the answer is about to
+    /// be given instead of over the middle of the reply it interrupts, and
+    /// — unlike an overlay anchored to the scroll view's bottom edge, which
+    /// would land on top of the composer that `safeAreaInset` draws there —
+    /// it can never cover the input.
+    ///
+    /// There is deliberately **no scrim**. A command approval keeps one
+    /// because it blocks on a safety decision; a question blocks on a
+    /// preference, which doesn't earn a darkened window. The shadow is the
+    /// only chrome: `AskUserQuestionCard` already draws its own padding,
+    /// surface, and accent stroke, and the container this used to sit in
+    /// added a second padded, glassed, bordered one on top — a visible box
+    /// inside a box.
+    @ViewBuilder
+    private var pendingQuestionCard: some View {
+        if let question = appModel.pendingQuestion,
+           question.conversationID == appModel.activeConversationID {
+            AskUserQuestionCard(
+                payload: question.payload,
+                interactive: true,
+                onAnswer: { question.respond($0) }
+            )
+            .frame(maxWidth: 560)
+            .shadow(color: .black.opacity(0.28), radius: 22, y: 8)
+            .id(question.id)
+            .transition(
+                reduceMotion
+                    ? .opacity
+                    : .opacity.combined(with: .move(edge: .bottom))
+            )
+        }
+    }
+
     private var composer: some View {
         VStack(spacing: 6) {
+            pendingQuestionCard
+
             // Real errors render as cards in the transcript itself now
             // (`postNotice`/`role == "notice"` in `MessageRow`), not a
             // banner here — this is only ever a transient, self-clearing
@@ -532,6 +553,7 @@ struct ChatView: View {
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity)
         .background(Theme.background.opacity(0.92))
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: appModel.pendingQuestion?.id)
         .animation(.easeOut(duration: 0.16), value: appModel.statusMessage != nil)
         .animation(.easeOut(duration: 0.16), value: appModel.activeConversation?.activeSkillPaths.isEmpty ?? true)
         .animation(.easeOut(duration: 0.16), value: slashQuery != nil)
