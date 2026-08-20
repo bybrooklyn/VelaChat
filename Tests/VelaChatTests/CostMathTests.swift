@@ -87,7 +87,7 @@ final class CostMathTests: XCTestCase {
 
     /// The same physical request under both conventions must cost the
     /// same. This is the whole point of the per-provider capability.
-    func testTheTwoConventionsAgreeOnTheSameRequest() {
+    func testTheTwoConventionsAgreeOnTheSameRequest() throws {
         let openAIStyle = summary(prompt: 100_000, completion: 1_000, cached: 80_000)
             .costUSD(for: model, promptIncludesCached: true)
         let anthropicStyle = summary(prompt: 20_000, completion: 1_000, cached: 80_000)
@@ -97,7 +97,7 @@ final class CostMathTests: XCTestCase {
 
     /// The old formula's overcount, pinned so a regression is visible:
     /// billing 80k cached tokens at full rate instead of 0.10x.
-    func testCachedTokensAreNotBilledAtFullInputRate() {
+    func testCachedTokensAreNotBilledAtFullInputRate() throws {
         let cost = try? XCTUnwrap(
             summary(prompt: 100_000, completion: 1_000, cached: 80_000)
                 .costUSD(for: model, promptIncludesCached: true)
@@ -123,14 +123,14 @@ final class CostMathTests: XCTestCase {
     }
 
     /// Collapsing the two tiers into one number would misprice by 60%.
-    func testTheTwoWriteTiersArePricedDifferently() {
+    func testTheTwoWriteTiersArePricedDifferently() throws {
         let fiveMinute = summary(write5m: 10_000).costUSD(for: model, promptIncludesCached: false)
         let oneHour = summary(write1h: 10_000).costUSD(for: model, promptIncludesCached: false)
         XCTAssertNotEqual(try XCTUnwrap(fiveMinute), try XCTUnwrap(oneHour))
     }
 
     /// Writes were previously unpriced entirely — the Anthropic undercount.
-    func testWritesAreNotFree() {
+    func testWritesAreNotFree() throws {
         let cost = summary(prompt: 1_000, completion: 100, write1h: 50_000)
             .costUSD(for: model, promptIncludesCached: false)
         let withoutWrites = summary(prompt: 1_000, completion: 100)
@@ -154,7 +154,7 @@ final class CostMathTests: XCTestCase {
 
     // MARK: Batch
 
-    func testBatchHalvesEverything() {
+    func testBatchHalvesEverything() throws {
         let normal = try? XCTUnwrap(
             summary(prompt: 5_000, completion: 2_000, cached: 50_000, write5m: 4_000, write1h: 2_000)
                 .costUSD(for: model, promptIncludesCached: false)
