@@ -960,6 +960,29 @@ private struct ContextInspector: View {
 
             contextLimitEditor
 
+            // Pre-send cost. Input only, and always worded as an estimate:
+            // the token count is a character approximation and the reply
+            // length is unknowable before it exists.
+            if let cost = appModel.estimatedNextTurnInputCostUSD {
+                Divider()
+                HStack(spacing: 6) {
+                    Image(systemName: "dollarsign.circle")
+                        .foregroundStyle(Theme.secondaryText)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("~\(String(format: "$%.4f", cost)) to send")
+                            .font(.callout.weight(.medium))
+                        Text("Estimated input only, at this model's published rate. The reply is extra.")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.tertiaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Estimated cost to send")
+                .accessibilityValue("About \(String(format: "%.4f", cost)) dollars, input only")
+            }
+
             if let conversation = appModel.activeConversation, conversation.realMessages.count >= 6 {
                 Divider()
                 Button {

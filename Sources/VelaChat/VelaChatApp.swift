@@ -59,6 +59,15 @@ struct VelaChatApp: App {
                 .keyboardShortcut(".", modifiers: [.command])
                 .disabled(!appModel.isGenerating)
 
+                // Stopping keeps the partial reply. Discarding it is a
+                // separate, deliberate action rather than a modifier on
+                // the same one, so neither can happen by accident.
+                Button("Stop and Discard Reply") {
+                    appModel.stopGenerationDiscardingPartial()
+                }
+                .keyboardShortcut(".", modifiers: [.command, .shift])
+                .disabled(!appModel.isGenerating)
+
                 Button("Command Palette…") {
                     appModel.isCommandPaletteShown = true
                 }

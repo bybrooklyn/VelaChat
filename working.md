@@ -1057,3 +1057,81 @@ per-message cost on hover.
   permission in this session.
 - `--include-partial-messages` is wired into the argument builder but
   never exercised, since no transport spawns the process yet.
+
+### Round 7 (continued) — CI that can fail, a dock icon, and the bug CI caught
+
+#### CI was structurally incapable of failing
+
+The test step guarded on `swift test --list-tests` and skipped on any
+non-zero exit. A test target that fails to **build** exits non-zero — so
+a broken test suite was reported as "no tests defined yet" and the run
+went green. It has been running `swift test` directly since.
+
+The first run under the new step failed immediately, and every error was
+in `MemoryStoreTests`, a suite that had never compiled: `throw XCTSkip`
+in a non-throwing method, and `XCTAssertNil(await ...)`, which cannot
+work because XCTAssert takes an autoclosure and an autoclosure cannot
+contain `await`. Auditing the suites added this round for the same class
+of mistake turned up five more (XCTUnwrap is throwing, so its callers
+must be marked `throws`). None of it had ever been compiled anywhere.
+
+**Now green: 146 tests, 0 failures**, and the bundle-launch check passes.
+
+#### The bug the tests caught the moment they could
+
+`SystemPrompt.compose` budgeted sections with `continue`, so a section
+that didn't fit was skipped and later, *smaller*, lower-priority sections
+could still slip in behind it. A squeezed prompt therefore lost its tool
+inventory while keeping the artifacts guidance — exactly the "random
+subset" the test's own comment says must not happen.
+
+Fixed as the file already described itself: environment and the tool
+inventory are never dropped ("the two things a model genuinely cannot
+work without"), and everything below them `break`s rather than
+`continue`s so priority order is real. Two tests pin both halves.
+
+This is the first real bug the restored CI found, in the first run it was
+able to fail.
+
+#### Dock icon
+
+The app had no `CFBundleIconFile` at all, so macOS drew the generic blank
+tile. `Scripts/make-icon.swift` renders the same marque as `VelaMark`,
+reading its colors from `Theme.swift`'s hand-tuned teal family so the two
+cannot drift. `just icon` regenerates; the `.icns` is **committed** and
+copied by `build-app.sh` rather than generated during the build, because
+rasterizing an SF Symbol needs AppKit and doing that on a runner with no
+window server is the classic works-locally-fails-in-CI trap.
+
+Verified live: `NSRunningApplication.icon()` returns the real icon with
+all reps from 16 to 2048. It renders **blue** rather than teal because
+this Mac has `AppleIconAppearanceTheme = TintedDark` — macOS 26 recolors
+every dock icon system-wide. The palette underneath is correct; switching
+icon appearance away from Tinted shows the seafoam and coral.
+
+#### Also shipped this round
+
+- **Crash-safe streaming.** Partial replies are now persisted while they
+  arrive, throttled to `Limits.streamingPersistInterval` (4s) because the
+  encode behind `saveHistory` walks every conversation. A recovered
+  fragment is explicitly labelled partial — silently presenting a
+  truncated answer as a finished one is worse than losing it.
+- **Stop and discard**, distinct from stop-and-keep, on ⇧⌘. and the send
+  button's context menu. Promotes an existing alternate back into place
+  rather than destroying edit history, and leaves the user's turn alone.
+- **Pre-send cost estimate** in the existing `ContextInspector`. Input
+  only, and worded as an estimate everywhere: the token count is a
+  character approximation and the reply length is unknowable in advance.
+
+#### Needs human verification
+
+- The app builds and launches, but **the window would not composite
+  onscreen** on the last two launches. Investigated rather than assumed:
+  the 1382x865 window *exists* in the window list with
+  `kCGWindowIsOnscreen` unset, the process sits at 0.1% CPU, and there is
+  no crash report. That is the flake `AGENTS.md` documents, so per its
+  instruction it was not "fixed" with an AppKit fallback. Earlier launches
+  this session did composite normally.
+- Redaction chips, the Privacy card, the local-only banner, the pre-send
+  cost row, and the new stop-and-discard menu item have never been seen
+  rendered — no Screen Recording permission in this session.

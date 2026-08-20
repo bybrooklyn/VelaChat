@@ -76,6 +76,37 @@ final class SystemPromptTests: XCTestCase {
         XCTAssertFalse(squeezed.contains("# Artifacts"))
     }
 
+    /// The budget used `continue`, so a section that didn't fit was skipped
+    /// and smaller, lower-priority sections could still slip in behind it —
+    /// producing a squeezed prompt that had lost its tool inventory but
+    /// still carried the artifacts guidance. Pin both halves of the fix:
+    /// the required sections survive any budget, and nothing below the
+    /// first section that doesn't fit sneaks in.
+    func testRequiredSectionsSurviveAnAbsurdlySmallWindow() {
+        let squeezed = compose {
+            $0.tools = [ToolCatalog.writeFile, ToolCatalog.runCommand]
+            $0.hasMemories = true
+            $0.contextWindow = 1
+        }
+        XCTAssertTrue(squeezed.contains("# Environment"), "environment is not droppable")
+        XCTAssertTrue(squeezed.contains("# Tools"), "the tool inventory is not droppable")
+        XCTAssertTrue(squeezed.contains(ToolCatalog.runCommand.name), "a listed tool must survive with its section")
+    }
+
+    func testNothingLeapfrogsADroppedSection() {
+        let squeezed = compose {
+            $0.tools = [ToolCatalog.writeFile, ToolCatalog.runCommand]
+            $0.hasMemories = true
+            $0.contextWindow = 4_000
+        }
+        // Artifacts is the lowest-priority section. If it appears while a
+        // higher-priority optional section was dropped, ordering was not
+        // honoured.
+        let keptArtifacts = squeezed.contains("# Artifacts")
+        let keptMemory = squeezed.contains("# Memory")
+        XCTAssertFalse(keptArtifacts && !keptMemory, "a lower-priority section outranked a dropped higher-priority one")
+    }
+
     func testLargeWindowKeepsEverything() {
         let prompt = compose {
             $0.tools = [ToolCatalog.writeFile]

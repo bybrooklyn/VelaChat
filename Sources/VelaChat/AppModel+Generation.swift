@@ -674,6 +674,40 @@ extension AppModel {
         enqueue(.activityUpdate(id: id, result: result, isError: isError), for: assistantID, conversation: conversation)
     }
 
+    /// Stop, and throw away what had arrived.
+    ///
+    /// The distinct counterpart to `stopGeneration`, which keeps the
+    /// partial reply. Both are legitimate: a half-written answer worth
+    /// continuing is the common case, but a reply that went wrong
+    /// immediately is just clutter, and re-sending on top of it means
+    /// deleting it by hand first.
+    ///
+    /// The user turn is deliberately left in place — discarding the reply
+    /// should not also discard what was asked.
+    func stopGenerationDiscardingPartial(for conversation: Conversation? = nil) {
+        guard let conversation = conversation ?? activeConversation else { return }
+        let assistantID = conversation.messages.last(where: { $0.isStreaming })?.id
+        stopGeneration(for: conversation)
+        guard let assistantID,
+              let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) else { return }
+        // Alternates hold superseded replies from an earlier edit or
+        // regenerate. Dropping the message wholesale would take that
+        // history with it, so an existing alternate is promoted back into
+        // place instead of being lost.
+        let discarded = conversation.messages[index]
+        if let restored = discarded.alternates.first {
+            var promoted = restored
+            promoted.alternates = Array(discarded.alternates.dropFirst())
+            conversation.messages[index] = promoted
+        } else {
+            conversation.messages.remove(at: index)
+        }
+        discardTransientState(for: [discarded])
+        recallByMessage[assistantID] = nil
+        conversation.updatedAt = Date()
+        saveHistory()
+    }
+
     func stopGeneration(for conversation: Conversation? = nil) {
         guard let conversation = conversation ?? activeConversation else { return }
         // An `ask_user` call suspends on a continuation that only the card
@@ -912,6 +946,23 @@ extension AppModel {
                 conversation.messages[index].updateActivity(id: id, result: result, isError: isError)
             }
         }
+        persistStreamingProgress()
+    }
+
+    /// Crash-safety for a reply that is still arriving. Partial text is
+    /// written to history at most every `Limits.streamingPersistInterval`
+    /// seconds, so a hard quit mid-stream keeps what had been received
+    /// instead of discarding the turn.
+    ///
+    /// Throttled deliberately. `saveHistory()` already coalesces within its
+    /// own one-second debounce, but the encode behind it walks every
+    /// conversation — doing that once per revealed chunk would spend more
+    /// time serializing than streaming.
+    private func persistStreamingProgress() {
+        let now = Date()
+        guard now.timeIntervalSince(lastStreamingPersist) >= Limits.streamingPersistInterval else { return }
+        lastStreamingPersist = now
+        saveHistory()
     }
 
     /// True while the head of a message's reveal queue is reasoning —
