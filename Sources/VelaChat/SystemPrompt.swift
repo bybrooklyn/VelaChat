@@ -27,6 +27,10 @@ enum SystemPrompt {
         var userFirstName: String?
         var workspaceFiles: [String] = []
         var hasAttachedFolder = false
+        /// Planning mode. The constraint is enforced in the tool layer
+        /// (`PlanMode`); this only tells the model why its tools look the
+        /// way they do and how the mode ends.
+        var isPlanning = false
         var activeSkillNames: [String] = []
         var memoryCount = 0
         var attachmentNames: [String] = []
@@ -51,6 +55,12 @@ enum SystemPrompt {
         sections.append(Section(priority: 0, body: environment(context)))
         if let tools = toolInventory(context) {
             sections.append(Section(priority: 1, body: tools))
+        }
+        // Required, like the tool inventory: a model that doesn't know it
+        // is planning reads the missing write tools as a broken app and
+        // starts apologizing for being unable to help.
+        if context.isPlanning {
+            sections.append(Section(priority: 1, body: planningStance))
         }
         if let agent = agentGuidance(context) {
             sections.append(Section(priority: 2, body: agent))
@@ -241,6 +251,26 @@ enum SystemPrompt {
         }
         return lines.joined(separator: "\n")
     }
+
+    /// Only when the conversation is actually in planning mode. What it
+    /// does NOT do is ask the model not to write files — that part is
+    /// already true of the request, since those tools were never attached.
+    /// It explains the shape of the turn instead, because a model that
+    /// silently finds write_file missing tends to tell the user it lacks
+    /// file access entirely rather than getting on with the plan.
+    private static let planningStance = """
+    # Planning mode
+    This conversation is in planning mode, so this request was sent \
+    without the tools that change anything: no file writing or editing, no \
+    memory writes, and run_command refuses every command that isn't \
+    read-only. That is enforced by the app, not a request — do not promise \
+    a change now, and never describe one as already made.
+    Explore as much as the plan needs: read files, search the workspace, \
+    the web, and past conversations, and run read-only commands. Then post \
+    the plan with update_plan. The user gets Approve and Reject buttons on \
+    it: approving starts a fresh turn with the full toolset back, \
+    rejecting sends you their feedback to revise against.
+    """
 
     private static let artifacts = """
     # Artifacts

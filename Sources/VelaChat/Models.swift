@@ -1129,9 +1129,20 @@ final class Conversation: Identifiable {
     var workspaceRootPath: String?
     /// Session-scoped run_command trust: armed "allow all" plus exact
     /// commands the user marked always-allowed. Deliberately not
-    /// persisted — trust re-arms per app run.
+    /// persisted — trust re-arms per app run. (Prefix rules that DO
+    /// survive a relaunch live in `CommandTrust`, keyed by the attached
+    /// folder rather than by the conversation.)
     var allowAllCommands = false
     var alwaysAllowedCommands: Set<String> = []
+    /// Planning mode: while this is on, the tools that write anything are
+    /// never attached to a request, and non-read-only commands are refused
+    /// (see `PlanMode`). Persisted, because "I am still planning this"
+    /// outlives a relaunch exactly the way an attached folder does.
+    var isPlanning: Bool
+    /// Whether the one-time "want to plan this first?" offer has already
+    /// been made here. Persisted so it stays one-time — an offer that
+    /// reappears on every launch is the nagging this is designed not to be.
+    var didOfferPlanning: Bool
 
     var isGenerating: Bool = false
     var generationProviderName: String = ""
@@ -1146,7 +1157,7 @@ final class Conversation: Identifiable {
     /// persisted.
     var currentGenerationID: UUID?
 
-    init(id: UUID = UUID(), title: String = "New conversation", messages: [ChatMessage] = [], providerID: UUID? = nil, model: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil) {
+    init(id: UUID = UUID(), title: String = "New conversation", messages: [ChatMessage] = [], providerID: UUID? = nil, model: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1159,6 +1170,8 @@ final class Conversation: Identifiable {
         self.isPinned = isPinned
         self.activeSkillPaths = activeSkillPaths
         self.workspaceRootPath = workspaceRootPath
+        self.isPlanning = isPlanning
+        self.didOfferPlanning = didOfferPlanning
     }
 
     /// The directory every workspace tool (and run_command) resolves
@@ -1169,6 +1182,20 @@ final class Conversation: Identifiable {
             return URL(fileURLWithPath: workspaceRootPath, isDirectory: true)
         }
         return SandboxManager.directory(for: id)
+    }
+
+    /// The folder allowed to hold persisted `run_command` rules — the one
+    /// the user attached themselves, and nil for the synthetic
+    /// per-conversation sandbox. Build trust is granted for a place on
+    /// disk the user chose and can open in Finder; a UUID directory inside
+    /// Application Support is neither chosen nor looked at, and a rule
+    /// stored against one would be trust granted invisibly. The existence
+    /// check mirrors `workspaceRoot`: a folder that has since been moved
+    /// or deleted falls back to the sandbox, and must not keep its rules
+    /// live for a path that no longer resolves there.
+    var commandTrustFolderPath: String? {
+        guard let workspaceRootPath, FileManager.default.fileExists(atPath: workspaceRootPath) else { return nil }
+        return workspaceRootPath
     }
 
     /// `"notice"`-role messages are synthetic, local-only UI cards (errors
@@ -1219,8 +1246,11 @@ struct SavedConversation: Codable {
     /// User-chosen local folder acting as this conversation's workspace
     /// root instead of the synthetic per-conversation directory.
     var workspaceRootPath: String?
+    /// Planning mode, and whether its one-time offer has been made.
+    var isPlanning: Bool = false
+    var didOfferPlanning: Bool = false
 
-    init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil) {
+    init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1233,6 +1263,8 @@ struct SavedConversation: Codable {
         self.isPinned = isPinned
         self.activeSkillPaths = activeSkillPaths
         self.workspaceRootPath = workspaceRootPath
+        self.isPlanning = isPlanning
+        self.didOfferPlanning = didOfferPlanning
     }
 
     init(from decoder: Decoder) throws {
@@ -1249,6 +1281,8 @@ struct SavedConversation: Codable {
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         activeSkillPaths = try container.decodeIfPresent([String].self, forKey: .activeSkillPaths) ?? []
         workspaceRootPath = try container.decodeIfPresent(String.self, forKey: .workspaceRootPath)
+        isPlanning = try container.decodeIfPresent(Bool.self, forKey: .isPlanning) ?? false
+        didOfferPlanning = try container.decodeIfPresent(Bool.self, forKey: .didOfferPlanning) ?? false
     }
 }
 

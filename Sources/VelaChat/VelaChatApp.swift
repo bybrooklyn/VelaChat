@@ -68,6 +68,15 @@ struct VelaChatApp: App {
                 .keyboardShortcut(".", modifiers: [.command, .shift])
                 .disabled(!appModel.isGenerating)
 
+                // Entry point number two for planning mode (the others are
+                // the + menu and the one-time offer above the composer).
+                // A mode that only exists behind a menu inside a popover is
+                // a mode nobody turns on deliberately.
+                Button(appModel.isPlanningActive ? "Leave Planning Mode" : "Plan Before Acting") {
+                    appModel.togglePlanningMode()
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+
                 Button("Command Palette…") {
                     appModel.isCommandPaletteShown = true
                 }

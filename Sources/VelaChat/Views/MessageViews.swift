@@ -173,7 +173,11 @@ struct MessageRow: View {
                     }
 
                     if alternateIndex == 0, let steps = appModel.planByMessage[message.id], !steps.isEmpty {
-                        PlanCard(steps: steps, isWorking: message.isStreaming)
+                        PlanCard(
+                            steps: steps,
+                            isWorking: message.isStreaming,
+                            decision: planDecision(for: message, steps: steps)
+                        )
                     }
 
                     if alternateIndex == 0, let recalled = appModel.recallByMessage[message.id], !recalled.isEmpty {
@@ -353,6 +357,23 @@ struct MessageRow: View {
             }
             .onHover { isHovering = $0 }
         }
+    }
+
+    /// Approve/Reject on a plan, but only where they mean something: the
+    /// conversation is actually in planning mode, this is the newest reply,
+    /// and it has finished streaming. On an older plan the buttons would be
+    /// approving a plan that has since been revised; mid-stream they would
+    /// be approving a list still being written.
+    private func planDecision(for message: ChatMessage, steps: [ToolCatalog.PlanStep]) -> PlanDecision? {
+        guard let conversation = appModel.activeConversation,
+              conversation.isPlanning,
+              isLastMessage,
+              !message.isStreaming,
+              !appModel.isGenerating else { return nil }
+        return PlanDecision(
+            approve: { appModel.approvePlan(steps, for: conversation) },
+            reject: { appModel.rejectPlan(feedback: $0, for: conversation) }
+        )
     }
 }
 

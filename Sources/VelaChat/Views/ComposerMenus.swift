@@ -12,6 +12,11 @@ struct AttachMenu: View {
     let onFolder: () -> Void
     let onPasteboard: () -> Void
     let onRepo: (String) -> Void
+    /// Planning mode lives here rather than in Settings because it is a
+    /// per-conversation decision made in the middle of composing, next to
+    /// the folder you just attached — not a preference.
+    let isPlanning: Bool
+    let onPlanMode: () -> Void
 
     @State private var page: Page = .root
     @State private var repos: [String]? = nil
@@ -46,6 +51,14 @@ struct AttachMenu: View {
     private var rootPage: some View {
         menuRow(symbol: "doc.badge.plus", title: "Attach file…", action: onFile)
         menuRow(symbol: "folder.badge.gearshape", title: "Open folder as workspace…", action: onFolder)
+        menuRow(
+            symbol: isPlanning ? "checkmark.circle" : "list.bullet.rectangle",
+            title: isPlanning ? "Leave planning mode" : "Plan first (no edits)",
+            action: onPlanMode
+        )
+        .accessibilityLabel(isPlanning
+            ? "Leave planning mode"
+            : "Plan first: read and explore only, with no file edits until you approve a plan")
         if ghAvailable {
             menuRow(symbol: "arrow.triangle.branch", title: "Add GitHub repo", chevron: true) {
                 page = .repos
