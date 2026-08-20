@@ -124,8 +124,12 @@ final class CostMathTests: XCTestCase {
 
     /// Collapsing the two tiers into one number would misprice by 60%.
     func testTheTwoWriteTiersArePricedDifferently() throws {
-        let fiveMinute = summary(write5m: 10_000).costUSD(for: model, promptIncludesCached: false)
-        let oneHour = summary(write1h: 10_000).costUSD(for: model, promptIncludesCached: false)
+        // prompt/completion must be present: a cost is only computed when
+        // both token counts were actually reported.
+        let fiveMinute = summary(prompt: 0, completion: 0, write5m: 10_000)
+            .costUSD(for: model, promptIncludesCached: false)
+        let oneHour = summary(prompt: 0, completion: 0, write1h: 10_000)
+            .costUSD(for: model, promptIncludesCached: false)
         XCTAssertNotEqual(try XCTUnwrap(fiveMinute), try XCTUnwrap(oneHour))
     }
 
