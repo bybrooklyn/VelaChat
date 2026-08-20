@@ -391,6 +391,11 @@ extension AppModel {
                 contextWindow: modelInfo?.contextLength
             )
             if let self {
+                // The resolved window, not just the catalog's — the prompt's
+                // own budget maths (and what the model is told it has to work
+                // with) should use the same number the ring shows, including
+                // a learned or curated one.
+                promptContext.contextWindow = self.contextWindow(for: conversation) ?? modelInfo?.contextLength
                 promptContext.userFirstName = NSFullUserName().components(separatedBy: " ").first
                 promptContext.workspaceFiles = (try? FileManager.default.contentsOfDirectory(atPath: conversation.workspaceRoot.path))?.filter { !$0.hasPrefix(".") }.sorted() ?? []
                 promptContext.activeSkillNames = conversation.activeSkillPaths.compactMap { path in
@@ -509,6 +514,24 @@ extension AppModel {
                                     }
                                 }
                                 try Task.checkCancellation()
+                                // Ground truth for the token-ratio fit: the
+                                // exact text this request carries, banked so
+                                // `recordUsage` can divide it by the
+                                // provider's own prompt_tokens once the reply
+                                // lands. Only the first request of a reply is
+                                // a valid sample — a continuation's usage
+                                // covers two requests, and the tool loop's
+                                // covers a round per hop.
+                                if let self, continueCount == 0 {
+                                    self.noteCalibrationSend(
+                                        assistantID: assistantID,
+                                        conversation: conversation,
+                                        providerID: profile.id,
+                                        model: model,
+                                        messages: finalMessages,
+                                        tools: tools
+                                    )
+                                }
                                 let events = CompatibleChatClient.shared.streamChatEvents(
                                     profile: profile,
                                     credential: credential,
@@ -573,6 +596,8 @@ extension AppModel {
                               continueCount < Limits.maxAutoContinues,
                               !streamedText.isEmpty else { break }
                         continueCount += 1
+                        // Two requests now share one `prompt_tokens` total.
+                        self.calibrationSampleByMessage.removeValue(forKey: assistantID)
                         self.finishReasonByMessage[assistantID] = nil
                         self.postRetryNote("Reply hit the length cap — continuing", to: conversation, assistantID: assistantID,
                                            finish: "Continued automatically")
@@ -1001,6 +1026,12 @@ extension AppModel {
                     finishReasonByMessage[assistantID] = normalized
                 }
             case .activityStarted(let id, let name, let argument):
+                // A real tool call means this reply is several requests, and
+                // `ToolLoopUsage` reports their SUM. Measured against the
+                // single round's text that would fit a ratio a multiple too
+                // small, so the sample is dropped rather than skewed. "note"
+                // activities are the app's own status lines, not rounds.
+                if name != "note" { calibrationSampleByMessage.removeValue(forKey: assistantID) }
                 var record = ActivityRecord(id: id, kind: .from(toolName: name), toolName: name, argument: argument)
                 record.isRunning = true
                 enqueue(.activity(record), for: assistantID, conversation: conversation)
@@ -1047,6 +1078,9 @@ extension AppModel {
     /// summary — providers emit .usage several times mid-stream, so the
     /// per-event path must never feed the ledger directly.
     private func recordUsage(for conversation: Conversation, assistantID: UUID) {
+        // Always taken, never left behind: a reply that ends without usage
+        // would otherwise leak its sample for the rest of the session.
+        let calibration = calibrationSampleByMessage.removeValue(forKey: assistantID)
         guard let providerID = conversation.providerID,
               let message = conversation.messages.first(where: { $0.id == assistantID }),
               let summary = usageByMessage[assistantID] ?? message.usage else { return }
@@ -1057,6 +1091,64 @@ extension AppModel {
             completionTokens: summary.completionTokens,
             costUSD: summary.costUSD(for: modelInfo, providerKind: providers.profile(id: providerID)?.kind)
         )
+        // The one place real tokenizer ground truth exists. Everything the
+        // request carried, divided by what the provider says that cost.
+        if let calibration, let promptTokens = summary.promptTokens {
+            tokenCalibration.record(
+                key: calibration.key,
+                sentUnits: calibration.sentUnits,
+                overheadUnits: calibration.overheadUnits,
+                promptTokens: promptTokens
+            )
+        }
+    }
+
+    /// Banks what a request is about to carry, so the reply's reported
+    /// `prompt_tokens` can be turned into a characters-per-token ratio.
+    ///
+    /// `sentUnits` is the whole request — system prompt, tool schemas,
+    /// transcript — because `prompt_tokens` counts the whole request.
+    /// Subtracting the transcript's own bytes leaves the per-turn overhead
+    /// the context readout has no other way to see: the view layer never
+    /// gets near a composed system prompt or an MCP tool schema.
+    private func noteCalibrationSend(
+        assistantID: UUID,
+        conversation: Conversation,
+        providerID: UUID,
+        model: String,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition]
+    ) {
+        guard !model.isEmpty else { return }
+        var sentUnits = messages.reduce(0) { $0 + TokenCalibration.units(of: $1.contentForRequest) }
+        for tool in tools {
+            sentUnits += TokenCalibration.units(of: tool.name)
+                + TokenCalibration.units(of: tool.description)
+                + TokenCalibration.units(of: tool.parametersJSON)
+        }
+        let transcriptUnits = transcriptUnits(for: conversation).units
+        calibrationSampleByMessage[assistantID] = TokenCalibrationSample(
+            key: ProviderStore.modelKey(providerID, model),
+            sentUnits: sentUnits,
+            overheadUnits: max(0, sentUnits - transcriptUnits)
+        )
+    }
+
+    /// Providers state their real context window in the error they return
+    /// when a request overruns it — "This model's maximum context length is
+    /// 8192 tokens" and friends. That sentence is the only *observation* of
+    /// an endpoint's true limit this app can ever make: a gateway, a proxy
+    /// or a self-hosted server can all cap far below whatever the model is
+    /// documented to support, and no catalog will say so.
+    ///
+    /// Recorded into its own store, never into the user's manual override —
+    /// see `ContextWindowResolver` for why that separation is what makes the
+    /// precedence expressible at all.
+    private func learnContextWindow(from errorText: String, conversation: Conversation) {
+        guard let providerID = conversation.providerID,
+              !conversation.model.isEmpty,
+              let window = ContextWindowLearning.contextLength(fromErrorText: errorText) else { return }
+        providers.recordLearnedContextWindow(window, providerID: providerID, model: conversation.model)
     }
 
     private func completeGeneration(for conversation: Conversation, assistantID: UUID) {
@@ -1259,6 +1351,7 @@ extension AppModel {
             conversation.messages[index].error = message
         }
         recordUsage(for: conversation, assistantID: assistantID)
+        learnContextWindow(from: message, conversation: conversation)
         conversation.updatedAt = Date()
         // See the matching comment in `finishGeneration` — same race guard.
         if conversation.currentGenerationID == assistantID {

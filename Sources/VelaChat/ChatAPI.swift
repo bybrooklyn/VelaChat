@@ -297,6 +297,12 @@ final class CompatibleChatClient: @unchecked Sendable {
             return
         }
 
+        // Note for anyone adding caching here: OpenAI-compatible providers
+        // cache automatically on an exact prefix match and expose no knob at
+        // all. Anthropic's `cache_control` blocks are not part of this wire
+        // format — sending them to an OpenAI-shaped endpoint is at best
+        // ignored and at worst a 400 on strict-schema gateways. "OpenAI-
+        // compatible" is a claim, not a guarantee (see AGENTS.md).
         let settings = requestSettings(for: profile.kind, level: thinking, modelInfo: modelInfo)
         var wireMessages = messages.map {
             APIMessage(role: $0.role, text: $0.contentForRequest, imageDataURLs: $0.imageAttachments.map(\.dataURL))
@@ -316,7 +322,22 @@ final class CompatibleChatClient: @unchecked Sendable {
         var toolsDisabled = false
         var seenCallSignatures = Set<String>()
         var lastFinishReason: String?
+        // Tool-result messages still being replayed verbatim, with the round
+        // that produced them. Every round resends the whole exchange, so a
+        // large result from round 2 is re-billed in rounds 3…N — that is the
+        // quadratic term. Entries leave this list once condensed, which also
+        // makes the rewrite idempotent.
+        var verbatimToolResults: [(round: Int, index: Int)] = []
         for round in 0..<maxRounds {
+            var stillVerbatim: [(round: Int, index: Int)] = []
+            for entry in verbatimToolResults {
+                if ToolResultReplay.shouldCondense(round: entry.round, currentRound: round) {
+                    wireMessages[entry.index].text = ToolResultReplay.condensed(wireMessages[entry.index].text)
+                } else {
+                    stillVerbatim.append(entry)
+                }
+            }
+            verbatimToolResults = stillVerbatim
             let url = try endpointURL(profile: profile, path: "chat/completions")
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -435,6 +456,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 onEvent(.activityStarted(id: activityID, name: call.name, argument: ToolCatalog.displayArgument(from: call.arguments)))
                 let result = await ToolCatalog.execute(name: call.name, argumentsJSON: call.arguments, context: toolContext)
                 onEvent(.activityFinished(id: activityID, result: result, isError: result.hasPrefix("Error")))
+                verbatimToolResults.append((round: round, index: wireMessages.count))
                 wireMessages.append(APIMessage(role: "tool", text: result, imageDataURLs: [], toolCallID: call.id))
             }
             if round == maxRounds - 2 {
@@ -711,7 +733,20 @@ final class CompatibleChatClient: @unchecked Sendable {
         var usageTotals = ToolLoopUsage()
         var toolsDisabled = false
         var seenCallSignatures = Set<String>()
+        // Same replay economy as the other two loops: the Responses API
+        // resends every input item on each round, so an older round's bulky
+        // `function_call_output` is re-billed for the rest of the reply.
+        var verbatimToolOutputs: [(round: Int, index: Int)] = []
         for round in 0..<maxRounds {
+            var stillVerbatim: [(round: Int, index: Int)] = []
+            for entry in verbatimToolOutputs {
+                if ToolResultReplay.shouldCondense(round: entry.round, currentRound: round) {
+                    inputItems[entry.index] = inputItems[entry.index].condensingToolOutput()
+                } else {
+                    stillVerbatim.append(entry)
+                }
+            }
+            verbatimToolOutputs = stillVerbatim
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = Limits.streamIdleTimeout  // idle: reset by every received byte
@@ -811,6 +846,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 onEvent(.activityStarted(id: activityID, name: call.name, argument: ToolCatalog.displayArgument(from: call.arguments)))
                 let result = await ToolCatalog.execute(name: call.name, argumentsJSON: call.arguments, context: toolContext)
                 onEvent(.activityFinished(id: activityID, result: result, isError: result.hasPrefix("Error")))
+                verbatimToolOutputs.append((round: round, index: inputItems.count))
                 inputItems.append(.functionCallOutput(callID: call.callID, output: result))
             }
             if round == maxRounds - 2 {
@@ -906,7 +942,28 @@ final class CompatibleChatClient: @unchecked Sendable {
         var usageTotals = ToolLoopUsage()
         var toolsDisabled = false
         var seenCallSignatures = Set<String>()
+        // See the matching list in `streamChat`: turns holding tool results
+        // still replayed verbatim, with the round that produced them.
+        // Entries leave once condensed, so the rewrite runs exactly once.
+        var verbatimToolResultTurns: [(round: Int, index: Int)] = []
         for round in 0..<maxRounds {
+            var stillVerbatim: [(round: Int, index: Int)] = []
+            for entry in verbatimToolResultTurns {
+                if ToolResultReplay.shouldCondense(round: entry.round, currentRound: round) {
+                    Self.condenseToolResults(in: &turnsJSON, at: entry.index)
+                } else {
+                    stillVerbatim.append(entry)
+                }
+            }
+            verbatimToolResultTurns = stillVerbatim
+            // Breakpoint 2 of 2 (see `AnthropicPromptCache`). Re-placed every
+            // round rather than left where it was: a breakpoint only matches
+            // within roughly 20 content blocks of itself, so one pinned to
+            // the head of a long tool loop quietly stops earning anything.
+            // Stripping before re-adding is what holds the request's total at
+            // two — this one plus the system block's — well under Anthropic's
+            // hard limit of four per request.
+            AnthropicPromptCache.markLatestTurn(&turnsJSON)
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = Limits.streamIdleTimeout  // idle: reset by every received byte
@@ -921,12 +978,13 @@ final class CompatibleChatClient: @unchecked Sendable {
                 "stream": true
             ]
             if !systemText.isEmpty {
-                // A cache breakpoint on the system block also covers `tools`
-                // (rendered ahead of it) per Anthropic's own documented
-                // request order — one marker, not one per section. Below
-                // the model's minimum cacheable size this is simply a
-                // no-op (`cache_creation_input_tokens: 0`), never an error,
-                // so it's safe to always attach rather than track each
+                // Breakpoint 1 of 2 (see `AnthropicPromptCache`). A marker on
+                // the system block also covers `tools` — they're rendered
+                // ahead of it in Anthropic's own documented request order —
+                // so this is one marker for the whole static head, not one
+                // per section. Below the model's minimum cacheable size it's
+                // simply a no-op (`cache_creation_input_tokens: 0`), never an
+                // error, so it's safe to always attach rather than track each
                 // model's exact threshold (512–4096 tokens, and not
                 // monotonic across model generations).
                 bodyJSON["system"] = [
@@ -1039,6 +1097,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 onEvent(.activityFinished(id: activityID, result: result, isError: result.hasPrefix("Error")))
                 toolResultContent.append(["type": "tool_result", "tool_use_id": call.id, "content": result])
             }
+            verbatimToolResultTurns.append((round: round, index: turnsJSON.count))
             turnsJSON.append(["role": "user", "content": toolResultContent])
             if round == maxRounds - 2 {
                 turnsJSON.append(["role": "user", "content": [["type": "text", "text": "(Tool budget for this reply is exhausted — answer now with what you have.)"]]])
@@ -1047,6 +1106,20 @@ final class CompatibleChatClient: @unchecked Sendable {
                 onEvent(.activityFinished(id: noteID, result: "The per-reply tool budget (\(Limits.maxToolRounds) rounds) was reached.", isError: false))
             }
         }
+    }
+
+    /// Rewrites one replayed turn's `tool_result` blocks down to a
+    /// summary. Only touches `tool_result` blocks, so an assistant's own
+    /// text in the same turn is never trimmed.
+    private static func condenseToolResults(in turns: inout [[String: Any]], at index: Int) {
+        guard turns.indices.contains(index),
+              var blocks = turns[index]["content"] as? [[String: Any]] else { return }
+        for blockIndex in blocks.indices {
+            guard blocks[blockIndex]["type"] as? String == "tool_result",
+                  let text = blocks[blockIndex]["content"] as? String else { continue }
+            blocks[blockIndex]["content"] = ToolResultReplay.condensed(text)
+        }
+        turns[index]["content"] = blocks
     }
 
     private static func anthropicToolWireObject(_ tool: ToolCatalog.Definition) -> [String: Any] {
@@ -1128,7 +1201,9 @@ final class CompatibleChatClient: @unchecked Sendable {
 /// `[{"type":"text","text":...},{"type":"image_url","image_url":{"url":...}}]`.
 private struct APIMessage: Encodable {
     let role: String
-    let text: String
+    /// `var` because the tool loop rewrites older rounds' results down to a
+    /// summary before replaying them — see `ToolResultReplay`.
+    var text: String
     let imageDataURLs: [String]
     /// Set only on an assistant message that made tool calls — mirrors what
     /// the model actually sent, replayed back so the provider has the full
@@ -1465,6 +1540,14 @@ private enum CodexInputItem: Encodable {
             try container.encode(callID, forKey: .callID)
             try container.encode(output, forKey: .output)
         }
+    }
+
+    /// The same item with an older round's tool output shortened for replay
+    /// (see `ToolResultReplay`). Anything that isn't a tool output is
+    /// returned untouched — the model's own turns are never trimmed.
+    func condensingToolOutput() -> CodexInputItem {
+        guard case .functionCallOutput(let callID, let output) = self else { return self }
+        return .functionCallOutput(callID: callID, output: ToolResultReplay.condensed(output))
     }
 }
 

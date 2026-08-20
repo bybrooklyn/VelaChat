@@ -23,6 +23,7 @@ final class ProviderStore {
     private let explicitSelectionKey = DefaultsKey.explicitProviderSelection
     private let catalogsKey = DefaultsKey.modelCatalogs
     private let contextOverridesKey = DefaultsKey.contextWindowOverrides
+    private let learnedWindowsKey = DefaultsKey.learnedContextWindows
 
     var profiles: [ProviderProfile] = []
     /// Manual context-window corrections, keyed by `"<providerID>|<modelID>"`
@@ -32,6 +33,21 @@ final class ProviderStore {
     private(set) var contextWindowOverrides: [String: Int] = [:] {
         didSet {
             defaults.set(contextWindowOverrides, forKey: contextOverridesKey)
+        }
+    }
+    /// Context windows the endpoint itself reported, keyed the same way —
+    /// parsed out of "maximum context length is N tokens" style errors by
+    /// `ContextWindowLearning`.
+    ///
+    /// A separate dictionary from the manual overrides above, deliberately.
+    /// Merged into one store they'd be indistinguishable, and the next
+    /// error would quietly overwrite whatever the user had typed. Kept
+    /// apart, provenance survives and `ContextWindowResolver` can rank a
+    /// human's decision above an observation while still ranking an
+    /// observation above the catalog.
+    private(set) var learnedContextWindows: [String: Int] = [:] {
+        didSet {
+            defaults.set(learnedContextWindows, forKey: learnedWindowsKey)
         }
     }
     /// Starred models ("providerID|modelID") pinned atop the picker.
@@ -132,6 +148,7 @@ final class ProviderStore {
         } ?? migratedProfiles.first?.id ?? ProviderProfile.defaults()[0].id
         restoreCatalogs()
         contextWindowOverrides = defaults.dictionary(forKey: contextOverridesKey) as? [String: Int] ?? [:]
+        learnedContextWindows = defaults.dictionary(forKey: learnedWindowsKey) as? [String: Int] ?? [:]
         refreshCodex()
         saveProfiles()
         // Deliberately *not* primed here. Keychain calls can block on a
@@ -405,6 +422,23 @@ final class ProviderStore {
         } else {
             contextWindowOverrides.removeValue(forKey: key)
         }
+    }
+
+    func learnedContextWindow(providerID: UUID, model: String) -> Int? {
+        guard !model.isEmpty else { return nil }
+        return learnedContextWindows[contextOverrideKey(providerID: providerID, model: model)]
+    }
+
+    /// Records a window the endpoint reported in an error.
+    ///
+    /// Always the newest value, never a minimum of the ones seen: a
+    /// gateway's limit can be raised, a local server restarted with a
+    /// bigger `num_ctx`, and the most recent error is the only one that
+    /// describes the endpoint as it is now.
+    func recordLearnedContextWindow(_ value: Int, providerID: UUID, model: String) {
+        guard !model.isEmpty,
+              ContextWindowLearning.plausibleRange.contains(value) else { return }
+        learnedContextWindows[contextOverrideKey(providerID: providerID, model: model)] = value
     }
 
     func selectedModelInfo(for id: UUID) -> RemoteModel? {

@@ -612,17 +612,14 @@ enum ModelCatalog {
     }
 
     /// A catalog that omits `context_length` entirely (most do) shouldn't
-    /// leave the context popover with nothing to show. Deliberately narrow:
-    /// only families this codebase has an actually-observed number for
-    /// (DeepSeek V4's own preset above; GPT-5.6's `context_window` as
-    /// published live by blockrun.ai's `/v1/models`), rather than a guessed
-    /// figure for every model family presented as fact. Everything else
-    /// falls through to the manual override in the context popover instead.
+    /// leave the context popover with nothing to show.
+    ///
+    /// The table itself lives in `ContextWindowTable`, which is also what
+    /// the context readout falls back to for providers whose catalogs
+    /// never reach this parsing path at all. One table, so the number a
+    /// model gets can't depend on which provider happened to list it.
     static func curatedContextLength(for id: String) -> Int? {
-        let lower = id.lowercased()
-        if lower.contains("deepseek-v4") { return 1_000_000 }
-        if lower.contains("gpt-5.6") { return 1_050_000 }
-        return nil
+        ContextWindowTable.contextLength(for: id)
     }
 
     static func isLegacyAutomaticModel(_ value: String) -> Bool {

@@ -36,6 +36,14 @@ enum DefaultsKey {
     static let modelFavorites = "velachat.model-favorites"
     static let modelRecents = "velachat.model-recents"
     static let contextWindowOverrides = "velachat.context-window-overrides"
+    /// Context windows read out of a provider's own error text. Kept apart
+    /// from the manual overrides above so a learned number can never
+    /// silently replace a human's explicit correction — see
+    /// `ContextWindowResolver` for the precedence that distinction buys.
+    static let learnedContextWindows = "velachat.learned-context-windows"
+    /// Per-model characters-per-token ratios fitted from provider-reported
+    /// `prompt_tokens` (`TokenCalibrationStore`). Small numbers only.
+    static let tokenRatios = "velachat.token-ratios"
     static let thinkingLevel = "velachat.thinking-level"
     static let usageLedger = "velachat.usage-ledger"
     static let quotaSnapshots = "velachat.quota-snapshots"
