@@ -174,19 +174,56 @@ struct ActivityRecord: Identifiable, Codable, Equatable, Sendable {
     var result: String = ""
     var isError: Bool = false
     var isRunning: Bool = false
+    /// Wall-clock bounds of the call, stamped where the stream event
+    /// actually arrived — not where the paced reveal drained it, which
+    /// would report the typewriter's backlog as the tool's runtime.
+    ///
+    /// Both are optional on purpose. Transcripts saved before this field
+    /// existed decode untouched, and a record missing either end renders no
+    /// duration at all rather than an invented `0s`: an unobserved number is
+    /// never implied.
+    var startedAt: Date?
+    var finishedAt: Date?
+
+    /// How long the call took, or `nil` when either end wasn't observed.
+    var duration: TimeInterval? {
+        guard let startedAt, let finishedAt else { return nil }
+        let elapsed = finishedAt.timeIntervalSince(startedAt)
+        // A clock adjustment mid-call is the only way this goes negative,
+        // and "-2.1s" is worse than saying nothing.
+        return elapsed >= 0 ? elapsed : nil
+    }
+
+    /// `"0.4s"` / `"12s"` / `"1m 04s"` — sub-second precision only where it
+    /// carries information, so a fast call doesn't read as "0s".
+    var durationLabel: String? {
+        guard let duration else { return nil }
+        if duration < 10 { return String(format: "%.1fs", duration) }
+        if duration < 60 { return "\(Int(duration.rounded()))s" }
+        let total = Int(duration.rounded())
+        return String(format: "%dm %02ds", total / 60, total % 60)
+    }
 }
 
 /// The ordered render timeline of an assistant message: text runs with
-/// activity lines between them, exactly where the model paused to act.
-/// `ChatMessage.content` stays the canonical full text — the concatenation
-/// of the text segments always equals it.
+/// activity lines and reasoning between them, exactly where the model
+/// paused to act or to think. `ChatMessage.content` stays the canonical
+/// full text — the concatenation of the text segments always equals it —
+/// and `ChatMessage.reasoning` relates to the reasoning segments the same
+/// way.
 enum MessageSegment: Identifiable, Codable, Equatable {
     case text(id: UUID, content: String)
+    /// A reasoning run, placed where the model actually thought. Reasoning
+    /// used to render only as one block pinned above the whole message,
+    /// which put a chain of thought produced *between* two tool rounds
+    /// above the text it followed.
+    case reasoning(id: UUID, content: String)
     case activity(ActivityRecord)
 
     var id: UUID {
         switch self {
         case .text(let id, _): id
+        case .reasoning(let id, _): id
         case .activity(let record): record.id
         }
     }
@@ -198,7 +235,15 @@ enum MessageSegment: Identifiable, Codable, Equatable {
         switch try container.decode(String.self, forKey: .type) {
         case "activity":
             self = .activity(try container.decode(ActivityRecord.self, forKey: .record))
+        case "reasoning":
+            self = .reasoning(
+                id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
+                content: try container.decodeIfPresent(String.self, forKey: .content) ?? ""
+            )
         default:
+            // Still a catch-all rather than a hard failure: an unknown type
+            // written by a newer build degrades to a text run instead of
+            // sinking the whole conversation's decode.
             self = .text(
                 id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
                 content: try container.decodeIfPresent(String.self, forKey: .content) ?? ""
@@ -211,6 +256,10 @@ enum MessageSegment: Identifiable, Codable, Equatable {
         switch self {
         case .text(let id, let content):
             try container.encode("text", forKey: .type)
+            try container.encode(id, forKey: .id)
+            try container.encode(content, forKey: .content)
+        case .reasoning(let id, let content):
+            try container.encode("reasoning", forKey: .type)
             try container.encode(id, forKey: .id)
             try container.encode(content, forKey: .content)
         case .activity(let record):
@@ -234,16 +283,41 @@ extension ChatMessage {
         }
     }
 
+    /// The reasoning counterpart of `appendTimelineText`, with the same
+    /// contract: `reasoning` stays the canonical concatenation, the trailing
+    /// reasoning segment grows, and anything else at the tail (text, a tool
+    /// call, nothing at all) starts a new one. Everything downstream that
+    /// reads `reasoning` — export, alternates, the pre-segment fallback
+    /// view — keeps working without knowing segments carry it now.
+    mutating func appendTimelineReasoning(_ chunk: String) {
+        guard !chunk.isEmpty else { return }
+        reasoning = (reasoning ?? "") + chunk
+        if case .reasoning(let id, let existing) = segments.last {
+            segments[segments.count - 1] = .reasoning(id: id, content: existing + chunk)
+        } else {
+            segments.append(.reasoning(id: UUID(), content: chunk))
+        }
+    }
+
+    /// True once any reasoning sits on the timeline. The top-of-message
+    /// reasoning block is the fallback for transcripts saved before that was
+    /// possible, so it keys off this rather than off `reasoning` being
+    /// non-empty — otherwise both would render the same chain twice.
+    var hasTimelineReasoning: Bool {
+        segments.contains { if case .reasoning = $0 { return true } else { return false } }
+    }
+
     mutating func appendActivity(_ record: ActivityRecord) {
         segments.append(.activity(record))
     }
 
-    mutating func updateActivity(id: UUID, result: String, isError: Bool) {
+    mutating func updateActivity(id: UUID, result: String, isError: Bool, finishedAt: Date? = nil) {
         for index in segments.indices.reversed() {
             if case .activity(var record) = segments[index], record.id == id {
                 record.result = result
                 record.isError = isError
                 record.isRunning = false
+                record.finishedAt = finishedAt
                 segments[index] = .activity(record)
                 return
             }

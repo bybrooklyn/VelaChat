@@ -679,9 +679,10 @@ extension AppModel {
     private func postRetryNote(_ label: String, to conversation: Conversation, assistantID: UUID, finish: String? = nil) -> UUID {
         var record = ActivityRecord(id: UUID(), kind: .note, toolName: "note", argument: label)
         record.isRunning = true
+        record.startedAt = Date()
         enqueue(.activity(record), for: assistantID, conversation: conversation)
         if let finish {
-            enqueue(.activityUpdate(id: record.id, result: finish, isError: false), for: assistantID, conversation: conversation)
+            enqueue(.activityUpdate(id: record.id, result: finish, isError: false, finishedAt: Date()), for: assistantID, conversation: conversation)
         }
         return record.id
     }
@@ -696,7 +697,7 @@ extension AppModel {
         let result = isError
             ? "Retries ran out — the failure is being reported instead."
             : "The provider or network failed before the reply started; VelaChat retried automatically."
-        enqueue(.activityUpdate(id: id, result: result, isError: isError), for: assistantID, conversation: conversation)
+        enqueue(.activityUpdate(id: id, result: result, isError: isError, finishedAt: Date()), for: assistantID, conversation: conversation)
     }
 
     /// Stop, and throw away what had arrived.
@@ -888,16 +889,16 @@ extension AppModel {
                     }
                     if pending.isEmpty { queue.removeFirst() } else { queue[0] = .reasoning(pending) }
                     self.revealQueues[assistantID] = queue
-                    conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + chunk
+                    conversation.messages[index].appendTimelineReasoning(chunk)
                     try? await Task.sleep(nanoseconds: 33_000_000)
                 case .activity(let record):
                     queue.removeFirst()
                     self.revealQueues[assistantID] = queue
                     conversation.messages[index].appendActivity(record)
-                case .activityUpdate(let id, let result, let isError):
+                case .activityUpdate(let id, let result, let isError, let finishedAt):
                     queue.removeFirst()
                     self.revealQueues[assistantID] = queue
-                    conversation.messages[index].updateActivity(id: id, result: result, isError: isError)
+                    conversation.messages[index].updateActivity(id: id, result: result, isError: isError, finishedAt: finishedAt)
                 }
             }
         }
@@ -922,7 +923,7 @@ extension AppModel {
             let chunk = Self.popNextWord(from: &pending)
             if pending.isEmpty { queue.removeFirst() } else { queue[0] = .reasoning(pending) }
             revealQueues[assistantID] = queue
-            conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + chunk
+            conversation.messages[index].appendTimelineReasoning(chunk)
             noteFirstToken(for: assistantID, conversation: conversation)
         case .activity, .activityUpdate:
             break  // the paced drain handles these; they aren't "first token"
@@ -964,11 +965,11 @@ extension AppModel {
             case .text(let chunk):
                 conversation.messages[index].appendTimelineText(chunk)
             case .reasoning(let chunk):
-                conversation.messages[index].reasoning = (conversation.messages[index].reasoning ?? "") + chunk
+                conversation.messages[index].appendTimelineReasoning(chunk)
             case .activity(let record):
                 conversation.messages[index].appendActivity(record)
-            case .activityUpdate(let id, let result, let isError):
-                conversation.messages[index].updateActivity(id: id, result: result, isError: isError)
+            case .activityUpdate(let id, let result, let isError, let finishedAt):
+                conversation.messages[index].updateActivity(id: id, result: result, isError: isError, finishedAt: finishedAt)
             }
         }
         persistStreamingProgress()
@@ -1034,6 +1035,7 @@ extension AppModel {
                 if name != "note" { calibrationSampleByMessage.removeValue(forKey: assistantID) }
                 var record = ActivityRecord(id: id, kind: .from(toolName: name), toolName: name, argument: argument)
                 record.isRunning = true
+                record.startedAt = Date()
                 enqueue(.activity(record), for: assistantID, conversation: conversation)
             case .quota(let snapshot):
                 if let providerID = conversation.providerID {
@@ -1045,7 +1047,7 @@ extension AppModel {
                 let capped = result.count > Limits.toolResultBytes
                     ? String(result.prefix(Limits.toolResultBytes)) + "\n\n[Truncated — kept the first 4 KB.]"
                     : result
-                enqueue(.activityUpdate(id: id, result: capped, isError: isError), for: assistantID, conversation: conversation)
+                enqueue(.activityUpdate(id: id, result: capped, isError: isError, finishedAt: Date()), for: assistantID, conversation: conversation)
             }
         }
         if promptTokens != nil || completionTokens != nil {

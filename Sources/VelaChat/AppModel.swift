@@ -1860,7 +1860,11 @@ final class AppModel {
         case text(String)
         case reasoning(String)
         case activity(ActivityRecord)
-        case activityUpdate(id: UUID, result: String, isError: Bool)
+        /// `finishedAt` is stamped where the stream event arrived, not where
+        /// this op is drained — the reveal queue is deliberately paced, so
+        /// reading the clock at drain time would report the typewriter's
+        /// backlog as the tool call's runtime.
+        case activityUpdate(id: UUID, result: String, isError: Bool, finishedAt: Date)
     }
 
 

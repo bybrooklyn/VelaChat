@@ -180,7 +180,15 @@ struct MessageRow: View {
                         RecallLine(recalls: recalled)
                     }
 
-                    if let reasoning = displayedMessage.reasoning, !reasoning.isEmpty {
+                    // Fallback only. Reasoning now rides the timeline and
+                    // renders inside `AssistantTimeline` at the point the
+                    // model actually thought; this pinned-to-the-top block
+                    // is what transcripts saved before segments carried
+                    // reasoning still need. Gating on `hasTimelineReasoning`
+                    // rather than on `reasoning` being non-empty is what
+                    // stops a new message showing the same chain twice.
+                    if let reasoning = displayedMessage.reasoning, !reasoning.isEmpty,
+                       !displayedMessage.hasTimelineReasoning {
                         ReasoningDisclosure(
                             reasoning: reasoning,
                             isThinking: alternateIndex == 0 && message.isStreaming
@@ -572,19 +580,25 @@ struct ShareButton: NSViewRepresentable {
 }
 
 /// An assistant reply rendered as its real timeline: text runs with dim
-/// activity lines woven between them exactly where the model paused to act
-/// — the Claude-web pattern. Messages from before segments existed fall
-/// back to one plain text run.
+/// activity lines and reasoning woven between them exactly where the model
+/// paused to act or to think — the Claude-web pattern. Messages from before
+/// segments existed fall back to one plain text run.
 struct AssistantTimeline: View {
     let message: ChatMessage
 
+    /// Which inline reasoning blocks the reader has opened. Keyed by segment
+    /// id so a message with several thinking runs tracks them independently.
+    @State private var expandedReasoning: Set<UUID> = []
+
     private enum Item: Identifiable {
         case text(id: UUID, content: String)
+        case reasoning(id: UUID, content: String)
         case activities([ActivityRecord])
 
         var id: UUID {
             switch self {
             case .text(let id, _): id
+            case .reasoning(let id, _): id
             case .activities(let records): records.first?.id ?? UUID()
             }
         }
@@ -602,9 +616,23 @@ struct AssistantTimeline: View {
                 // are invisible — they must not break line aggregation.
                 guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 items.append(.text(id: id, content: content))
+            case .reasoning(let id, let content):
+                guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                items.append(.reasoning(id: id, content: content))
             case .activity(let record):
                 // Consecutive completed, successful calls aggregate into one
                 // line; a running or failed call always stands alone.
+                //
+                // This aggregation is load-bearing, not cosmetic: a reply
+                // that fetched thirty pages used to push thirty separate
+                // "Read <url> — failed" rows through the transcript and then
+                // collapse them all in one frame at the end — noise plus a
+                // visible thirty-row jump on completion. The same rule runs
+                // mid-stream and after, so collapsing happens continuously,
+                // one call at a time: at most the single in-flight row is
+                // ever extra, and the last one folding in when the reply
+                // lands moves one row, not the whole stack. Any change here
+                // has to keep that.
                 if case .activities(let group) = items.last,
                    !record.isRunning, !record.isError,
                    group.allSatisfy({ !$0.isRunning && !$0.isError }) {
@@ -617,56 +645,77 @@ struct AssistantTimeline: View {
         return items
     }
 
-    private var allActivities: [ActivityRecord] {
-        message.segments.compactMap {
-            if case .activity(let record) = $0 { return record }
-            return nil
-        }
-    }
-
-    /// Markdown parsing of the whole growing reply on every reveal tick was
-    /// the single biggest source of streaming lag — the still-growing tail
-    /// renders as plain text and becomes real Markdown when the reply
-    /// finishes.
+    /// Live Markdown without re-parsing the world.
+    ///
+    /// Handing `Markdown(_:)` the whole growing reply on every reveal tick
+    /// was the single biggest source of streaming lag, which is why the tail
+    /// used to stay plain `Text` until the reply finished — and why simply
+    /// deleting that guard is not the fix. Instead `StreamingMarkdown` peels
+    /// off the blocks that can no longer change (everything before the last
+    /// blank line outside an open code fence) and only those are parsed,
+    /// once each, keyed by position so SwiftUI rebuilds just the block that
+    /// newly completed. The still-typing fragment is the only plain `Text`
+    /// left, so headings, lists, emphasis, and closed code fences format as
+    /// they arrive and the finish-time swap is nearly invisible.
     @ViewBuilder
     private func textRun(_ content: String, isTail: Bool) -> some View {
         if message.isStreaming && isTail {
-            Text(content)
-                .font(.body)
-                .foregroundStyle(Theme.text)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            let split = StreamingMarkdown.split(content)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(split.blocks.enumerated()), id: \.offset) { _, block in
+                    RichMessageText(text: block, isUser: false)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if !split.tail.isEmpty {
+                    Text(split.tail)
+                        .font(.body)
+                        .foregroundStyle(Theme.text)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         } else {
             RichMessageText(text: content, isUser: false)
         }
     }
 
-    /// Only the text runs — activities are represented by the single
-    /// summary line above them, in both the streaming and finished states.
-    private var textItems: [Item] {
-        items.filter { if case .text = $0 { return true } else { return false } }
+    private func reasoningBinding(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { expandedReasoning.contains(id) },
+            set: { isOpen in
+                if isOpen { expandedReasoning.insert(id) } else { expandedReasoning.remove(id) }
+            }
+        )
     }
 
     var body: some View {
+        // `items` is rendered in order, which is what `MessageSegment`'s own
+        // documentation always promised and what the previous body threw
+        // away: it built the interleaved sequence and then rendered one
+        // summary activity line pinned above every text run. A reply that
+        // searched, wrote a paragraph, then searched again showed both
+        // searches above the paragraph — the transcript claimed an order of
+        // events that never happened.
+        let lastID = items.last?.id
         VStack(alignment: .leading, spacing: 10) {
-            if !allActivities.isEmpty {
-                // One dim line for the whole stack, running or finished, with
-                // the full per-call record one click away.
-                //
-                // This used to be the finished-state layout only: while
-                // streaming, every call got its own row, so a reply that
-                // fetched thirty pages pushed thirty lines of "Read <url> —
-                // failed" through the transcript and then collapsed them all
-                // in one frame at the end. That was both the noise and a
-                // visible layout jump on completion. Same structure in both
-                // states means neither happens.
-                ActivityLine(records: allActivities, style: .summary)
-                    .transition(.opacity)
-            }
-            let lastID = textItems.last?.id
-            ForEach(textItems) { item in
-                if case .text(_, let content) = item {
+            ForEach(items) { item in
+                switch item {
+                case .text(_, let content):
                     textRun(content, isTail: item.id == lastID)
+                case .reasoning(_, let content):
+                    ReasoningDisclosure(
+                        reasoning: content,
+                        // Still thinking only while this run is the tail of a
+                        // streaming message: the moment text or a tool call
+                        // lands after it, the model has demonstrably moved
+                        // on, so the timer settles to "Thought for Ns".
+                        isThinking: message.isStreaming && item.id == lastID,
+                        isExpanded: reasoningBinding(item.id)
+                    )
+                case .activities(let records):
+                    ActivityLine(records: records)
+                        .transition(.opacity)
                 }
             }
         }
@@ -679,25 +728,25 @@ struct AssistantTimeline: View {
 /// emphasized when several calls collapse into one line. Click to unfold
 /// the real arguments and results in place.
 struct ActivityLine: View {
-    enum Style { case interleaved, summary }
-
     @Environment(ArtifactPresenter.self) private var artifactPresenter
     @Environment(AppModel.self) private var appModel
     let records: [ActivityRecord]
-    var style: Style = .interleaved
     @State private var isExpanded = false
     @State private var isHovering = false
 
     private var isRunning: Bool { records.contains { $0.isRunning } }
-    private var isError: Bool { records.contains { $0.isError } }
 
     private var label: String {
-        if style == .summary { return summaryLabel }
         guard records.count > 1 else {
             guard let record = records.first else { return "" }
             if record.isRunning { return record.kind.runningLabel(argument: record.argument) }
-            if record.isError { return record.kind.finishedLabel(argument: record.argument) + " — failed" }
-            return record.kind.finishedLabel(argument: record.argument)
+            // A single finished call can say how long it took, because both
+            // ends of it were actually observed. A group can't — the calls
+            // may not have been contiguous in time — so it says nothing
+            // rather than implying a total nobody measured.
+            let duration = record.durationLabel.map { " · \($0)" } ?? ""
+            if record.isError { return record.kind.finishedLabel(argument: record.argument) + " — failed" + duration }
+            return record.kind.finishedLabel(argument: record.argument) + duration
         }
         // Aggregate: counts per kind, in order of first appearance —
         // "Ran 3 web searches, read 2 pages".
@@ -717,46 +766,6 @@ struct ActivityLine: View {
         }
         var sentence = parts.joined(separator: ", ")
         if let first = sentence.first {
-            sentence = first.uppercased() + sentence.dropFirst()
-        }
-        return sentence
-    }
-
-    /// The one-line settle of a finished reply's whole activity stack:
-    /// successes aggregated per kind, failures counted as "blocked" —
-    /// "Browsed the web · read 2 pages, 8 blocked".
-    private var summaryLabel: String {
-        let succeeded = records.filter { !$0.isError && !$0.isRunning }
-        let failed = records.filter { $0.isError }
-        guard records.count > 1 else {
-            guard let record = records.first else { return "" }
-            // This style now also renders mid-stream, so a lone in-flight
-            // call has to read in the present tense instead of announcing
-            // itself as already finished.
-            if record.isRunning { return record.kind.runningLabel(argument: record.argument) }
-            if record.isError { return record.kind.finishedLabel(argument: record.argument) + " — failed" }
-            return record.kind.finishedLabel(argument: record.argument)
-        }
-        var orderedKinds: [ActivityKind] = []
-        var counts: [ActivityKind: Int] = [:]
-        for record in succeeded {
-            if counts[record.kind] == nil { orderedKinds.append(record.kind) }
-            counts[record.kind, default: 0] += 1
-        }
-        var parts = orderedKinds.map { ($0, counts[$0] ?? 0) }.map { $0.0.aggregateUnit(count: $0.1) }
-        if !failed.isEmpty {
-            parts.append("\(failed.count) blocked")
-        }
-        let browsed = records.contains { $0.kind == .webSearch || $0.kind == .fetchURL }
-        // Nothing has come back yet — every call is still in flight. Naming
-        // the work beats an empty sentence (or a bare "Browsed the web · ").
-        if parts.isEmpty {
-            return browsed ? "Browsing the web…" : "Working…"
-        }
-        var sentence = parts.joined(separator: ", ")
-        if browsed {
-            sentence = "Browsed the web · " + sentence
-        } else if let first = sentence.first {
             sentence = first.uppercased() + sentence.dropFirst()
         }
         return sentence
@@ -788,16 +797,23 @@ struct ActivityLine: View {
     }
 
     private var symbol: String {
-        if style == .summary, records.contains(where: { $0.kind == .webSearch || $0.kind == .fetchURL }) {
-            return "globe"
-        }
-        return records.first?.kind.symbol ?? "circle"
+        records.first?.kind.symbol ?? "circle"
     }
 
-    /// In summary style a few blocked pages shouldn't paint the whole line
-    /// as an error — only an all-failed stack does.
+    /// A few blocked pages inside an otherwise fine group shouldn't paint
+    /// the whole line as an error — only an all-failed one does. (The
+    /// aggregation rule means a group of more than one is always
+    /// all-succeeded anyway; this stays honest if that ever loosens.)
     private var showsErrorTint: Bool {
-        style == .summary ? records.allSatisfy(\.isError) : isError
+        !records.isEmpty && records.allSatisfy(\.isError)
+    }
+
+    /// What VoiceOver reads for the whole row, including its state — the
+    /// visual chevron carries the expandability and a shimmer carries the
+    /// running state, neither of which is announced on its own.
+    private var accessibilityDescription: String {
+        if isRunning { return label }
+        return "\(label), \(isExpanded ? "expanded" : "collapsed")"
     }
 
     var body: some View {
@@ -820,7 +836,14 @@ struct ActivityLine: View {
                         .foregroundStyle(Theme.tertiaryText.opacity(isHovering ? 0.9 : 0))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
+                // Without this the HStack sized to icon + label + chevron,
+                // so `contentShape` covered only that: clicking anywhere to
+                // the right of the text — most of the row — did nothing at
+                // all, which read as a dead disclosure. The vertical padding
+                // goes with it; a 16pt strip is not a comfortable target.
+                Spacer(minLength: 0)
             }
+            .padding(.vertical, 4)
             .contentShape(Rectangle())
             .onTapGesture {
                 guard !isRunning else { return }
@@ -828,6 +851,9 @@ struct ActivityLine: View {
             }
             .onHover { isHovering = $0 }
             .animation(.easeOut(duration: 0.12), value: isHovering)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityDescription)
+            .accessibilityAddTraits(isRunning ? [] : .isButton)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 8) {
@@ -851,6 +877,15 @@ struct ActivityLine: View {
                                         }
                                         .buttonStyle(.plain)
                                         .foregroundStyle(Theme.accent)
+                                    }
+                                    // Only when both ends were observed.
+                                    // A record from a transcript saved
+                                    // before timestamps existed prints no
+                                    // duration rather than "0.0s".
+                                    if let duration = record.durationLabel {
+                                        Text("· \(duration)")
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(Theme.tertiaryText)
                                     }
                                 }
                             }

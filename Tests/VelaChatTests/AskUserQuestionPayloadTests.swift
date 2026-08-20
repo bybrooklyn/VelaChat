@@ -183,6 +183,58 @@ final class AskUserQuestionPayloadTests: XCTestCase {
         let content = "```ask-user\n\(baseSingleLine)\n```"
         XCTAssertFalse(AskUserQuestionPayload.hasUnterminatedFence(in: content))
     }
+
+    // MARK: - Next, then Send
+
+    /// Every question used to share one `Send` button, so answering the
+    /// first question of a multi-question card and pressing the only
+    /// obvious control fired the whole thing off with the rest blank —
+    /// nothing on screen said the other tabs were still waiting. The
+    /// button now advances until the last question and only offers `Send`
+    /// there. These pin the progression itself; free navigation via the tab
+    /// strip is separate and untouched.
+
+    func testSingleQuestionCardSendsImmediately() {
+        XCTAssertEqual(AskUserQuestionPayload.primaryAction(activeIndex: 0, questionCount: 1), .send)
+        XCTAssertEqual(AskUserQuestionPayload.primaryAction(activeIndex: 0, questionCount: 1).title, "Send")
+    }
+
+    func testMultiQuestionCardAdvancesUntilTheLastQuestion() {
+        XCTAssertEqual(AskUserQuestionPayload.primaryAction(activeIndex: 0, questionCount: 3), .next(index: 1))
+        XCTAssertEqual(AskUserQuestionPayload.primaryAction(activeIndex: 1, questionCount: 3), .next(index: 2))
+        XCTAssertEqual(AskUserQuestionPayload.primaryAction(activeIndex: 2, questionCount: 3), .send)
+    }
+
+    func testTitleTracksTheAction() {
+        XCTAssertEqual(AskUserQuestionPayload.primaryAction(activeIndex: 0, questionCount: 4).title, "Next")
+        XCTAssertEqual(AskUserQuestionPayload.primaryAction(activeIndex: 3, questionCount: 4).title, "Send")
+    }
+
+    /// Walking the card from the first question must reach `Send` after
+    /// exactly one press per remaining question, visiting each in order —
+    /// no skipping, no early submit, no getting stuck.
+    func testWalkingForwardVisitsEveryQuestionExactlyOnceBeforeSending() {
+        let count = 4
+        var index = 0
+        var visited = [0]
+        var presses = 0
+        while case .next(let nextIndex) = AskUserQuestionPayload.primaryAction(activeIndex: index, questionCount: count) {
+            index = nextIndex
+            visited.append(index)
+            presses += 1
+            XCTAssertLessThanOrEqual(presses, count, "the progression never reached Send")
+        }
+        XCTAssertEqual(visited, [0, 1, 2, 3])
+        XCTAssertEqual(presses, count - 1)
+        XCTAssertEqual(AskUserQuestionPayload.primaryAction(activeIndex: index, questionCount: count), .send)
+    }
+
+    /// Jumping straight to the last tab via the tab strip must offer `Send`
+    /// — the point is to stop an accidental early submit, not to force the
+    /// reader through every tab in order.
+    func testJumpingToTheLastTabOffersSendRegardlessOfHowItWasReached() {
+        XCTAssertEqual(AskUserQuestionPayload.primaryAction(activeIndex: 2, questionCount: 3), .send)
+    }
 }
 
 /// There are two ways to ask: the real `ask_user` tool, and the fenced
