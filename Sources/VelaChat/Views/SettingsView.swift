@@ -76,6 +76,38 @@ private struct SettingsCard<Content: View>: View {
     }
 }
 
+/// The `run_command` prefix rules remembered for the attached folder, and
+/// the only way to take them back. Read into `@State` rather than off
+/// `CommandTrust` on every body pass, so forgetting them redraws.
+private struct CommandTrustRow: View {
+    let folderPath: String
+    @State private var rules: [String] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if rules.isEmpty {
+                Text("No always-allowed commands remembered for \((folderPath as NSString).lastPathComponent).")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+            } else {
+                Text("Always allowed in \((folderPath as NSString).lastPathComponent): \(rules.map { "\($0)…" }.joined(separator: ", "))")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Forget These Command Rules") {
+                    CommandTrust.forget(folderPath: folderPath)
+                    rules = []
+                }
+                .buttonStyle(VelaIconButtonStyle())
+                .foregroundStyle(Theme.warning)
+                .accessibilityLabel("Forget the remembered always-allowed commands for this folder")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { rules = CommandTrust.rules(for: folderPath) }
+    }
+}
+
 /// Where Settings currently is. Deliberately *not* a `NavigationStack`
 /// path: a `NavigationStack` nested in `NavigationSplitView`'s detail
 /// column caused two verified bugs. (1) While a destination was pushed it
@@ -531,9 +563,31 @@ struct SettingsView: View {
                 }
                     }
 
-                    SettingsCard(section: .agentAbilities, footer: Text("Agent abilities let the model plan visible multi-step work and edit/search files in the workspace. Running commands is separate and off by default: read-only commands (ls, cat, rg, git status…) run immediately, and anything else pauses for your approval in the chat, showing the exact command and folder first.")) {
+                    SettingsCard(section: .agentAbilities, footer: Text("Agent abilities let the model plan visible multi-step work and edit/search files in the workspace. Read-only commands (ls, cat, rg, git status…) run immediately; anything else pauses for your approval in the chat, showing the exact command and folder first. Commands you always-allow run unsandboxed as you — a build or test command executes project code, including code the model just wrote.")) {
                 Toggle("Planning, file editing & search", isOn: $appModel.isAgentToolsEnabled)
-                Toggle("Run shell commands (with approval)", isOn: $appModel.isCommandToolEnabled)
+                // Bound to the EFFECTIVE state, not the raw stored bool: a
+                // chat with a project folder attached has commands on
+                // whether or not this switch was ever touched (see
+                // `AppModel.isCommandToolAvailable`), and a switch reading
+                // "off" beside a model that is running commands is the kind
+                // of quiet disagreement nobody forgives. Writing either
+                // value makes the choice explicit and it wins from then on.
+                Toggle("Run shell commands (with approval)", isOn: Binding(
+                    get: {
+                        appModel.activeConversation.map { appModel.isCommandToolAvailable(for: $0) }
+                            ?? appModel.isCommandToolEnabled
+                    },
+                    set: { appModel.isCommandToolEnabled = $0 }
+                ))
+                if !Defaults.has(DefaultsKey.commandToolEnabled),
+                   let conversation = appModel.activeConversation,
+                   conversation.commandTrustFolderPath != nil {
+                    Text("On because this chat has a project folder attached. Switch it off here to keep commands off everywhere.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.tertiaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Toggle("Offer planning mode for big requests", isOn: $appModel.isPlanningSuggestionEnabled)
                 Toggle("Parallel subagents", isOn: $appModel.isSubagentsEnabled)
                 if appModel.isSubagentsEnabled {
                     Toggle("Ask before each fan-out", isOn: $appModel.isSubagentApprovalRequired)
@@ -543,6 +597,10 @@ struct SettingsView: View {
                             .flatFieldStyle()
                             .frame(maxWidth: 240)
                     }
+                }
+                if let conversation = appModel.activeConversation,
+                   let folder = conversation.commandTrustFolderPath {
+                    CommandTrustRow(folderPath: folder)
                 }
                 if let conversation = appModel.activeConversation, conversation.allowAllCommands {
                     Button("Revoke \u{201C}allow all commands\u{201D} for this chat") {

@@ -113,6 +113,49 @@ Add a custom endpoint from Settings and provide a URL such as:
 
 Perplexity and OpenRouter search the live web with no setup. Every other provider falls back to a SearXNG instance — free and keyless, no account needed — configured once in Settings and toggled per-message in the composer.
 
+## Running commands: what is and isn't protected
+
+The model can run shell commands in the conversation's workspace. Read-only
+commands (`ls`, `cat`, `rg`, `git status`, `git log`…) run immediately;
+everything else stops and shows you the exact command and folder before
+anything happens, and you can edit or deny it. Commands are enabled by
+default only for a chat where you attached a real project folder yourself —
+with just the private per-conversation workspace, shell execution stays off
+until you turn it on in Settings.
+
+On the approval card you can also press **Always allow "`cargo test`…" in
+&lt;folder&gt;**. That stores a *prefix rule* against that folder's path, so
+`cargo test`, `cargo test --lib`, and `cargo test -p core` stop asking, in
+that folder, across restarts. Rules are listed in Settings with a button to
+forget them. Three deliberate limits: a rule never matches a command
+carrying a shell operator (`cargo test; rm -rf ~` is not a `cargo test`), a
+command you denied is never auto-approved by a rule added later, and the
+synthetic per-conversation workspace can never hold rules at all — only a
+folder you chose.
+
+**There is no sandbox.** An approved command runs as you, with your
+environment, your credentials, and your filesystem. `sandbox-exec` was
+tried before any of this shipped and could not reliably confine even
+`/bin/echo`; it is undocumented and Apple-deprecated, and shipping
+something that *looks* sandboxed and isn't would be worse than being
+plain about it (see the comment in `Sources/VelaChat/Sandbox.swift`). For
+file reads and writes the real boundary is path validation — a path either
+resolves inside the workspace or the call is refused. A command has no
+such boundary: `cargo test` executes `build.rs`, proc macros, and test
+bodies, `npm test` runs whatever `package.json` says, and that includes
+code the model itself wrote thirty seconds earlier. Grant a build rule the
+way you would hand someone your unlocked laptop for that project.
+
+**Planning mode** is the other side of the same trade. Turned on from the
+`+` menu, ⇧⌘P, or the one-time offer above the composer, it removes the
+file-writing and memory-writing tools from the request entirely and refuses
+any command that is not read-only — enforced in the tool layer, not
+requested in the prompt, so it holds whatever the model decides to do. The
+model explores and posts a plan; you get Approve and Reject buttons on it.
+Approving leaves planning mode and starts a fresh turn with the full
+toolset; rejecting keeps the mode and sends your feedback back for a
+revision.
+
 ## Architecture
 
 ```text
@@ -123,6 +166,9 @@ Sources/VelaChat/
   ProviderStore.swift       profiles, cached model catalogs, Keychain-backed key cache
   Credentials.swift         Keychain + Codex auth discovery
   ChatAPI.swift              HTTP/SSE clients: OpenAI-shaped, Anthropic Messages, Codex Responses
+  CommandRunner.swift    run_command classification and execution
+  CommandTrust.swift      remembered per-folder allow rules for run_command
+  PlanMode.swift             planning mode: which tools are withheld, and when
   Theme.swift                 semantic macOS colors
   Materials.swift            native material + Liquid Glass helpers
   MarkdownTheme.swift    swift-markdown-ui theme mapped onto Theme

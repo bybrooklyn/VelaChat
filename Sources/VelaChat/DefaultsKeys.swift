@@ -61,6 +61,11 @@ enum DefaultsKey {
     static let clipboardToolEnabled = "velachat.clipboard-tool-enabled"
     static let agentToolsEnabled = "velachat.agent-tools-enabled"
     static let commandToolEnabled = "velachat.command-tool-enabled"
+    /// Per-attached-folder run_command allow rules (see `CommandTrust`).
+    /// Small prefix strings keyed by folder path — never command output.
+    static let commandAllowRules = "velachat.command-allow-rules"
+    /// Whether a substantial-looking draft is offered planning mode.
+    static let planningSuggestion = "velachat.planning-suggestion"
     static let subagentsEnabled = "velachat.subagents-enabled"
     static let subagentApproval = "velachat.subagent-approval"
     static let subagentModel = "velachat.subagent-model"

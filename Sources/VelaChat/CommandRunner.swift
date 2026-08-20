@@ -54,15 +54,17 @@ enum CommandRunner {
     /// of which binary it names.
     private static let dangerousShellTokens = ["`", "$(", ">", ">>", "|", "&", ";", "&&", "||", "<"]
 
-    static func classify(_ command: String) -> Classification {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return .needsApproval(reason: "empty command") }
-
+    /// Why this command cannot be reasoned about token by token, or nil
+    /// when it can. Split out of `classify` because `CommandTrust` needs
+    /// exactly the same judgement: a prefix rule must never match a
+    /// command carrying a `;` or a newline, since the tokens after the
+    /// operator are a different command entirely.
+    private static func unanalyzableReason(_ trimmed: String) -> String? {
         for token in dangerousShellTokens where trimmed.contains(token) {
             // A pipe between two read-only commands is common and safe, but
             // proving that statically is exactly the kind of cleverness that
             // gets this wrong — ask instead.
-            return .needsApproval(reason: "uses shell operators (\(token))")
+            return "uses shell operators (\(token))"
         }
         // A newline separates commands in `zsh -lc` exactly like `;` does,
         // and splitting on " " alone did not see it: "cat notes.txt\nrm -rf
@@ -70,7 +72,25 @@ enum CommandRunner {
         // whitespace other than a plain space is treated as a separator we
         // cannot reason about.
         if trimmed.contains(where: { $0.isWhitespace && $0 != " " }) {
-            return .needsApproval(reason: "spans more than one line")
+            return "spans more than one line"
+        }
+        return nil
+    }
+
+    /// Whether this is one simple command whose leading tokens mean what
+    /// they look like. False for anything empty, multi-line, or containing
+    /// a shell operator.
+    static func isSingleSimpleCommand(_ command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && unanalyzableReason(trimmed) == nil
+    }
+
+    static func classify(_ command: String) -> Classification {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .needsApproval(reason: "empty command") }
+
+        if let reason = unanalyzableReason(trimmed) {
+            return .needsApproval(reason: reason)
         }
         let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         guard let binary = parts.first else { return .needsApproval(reason: "empty command") }

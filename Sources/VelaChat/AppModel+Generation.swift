@@ -175,13 +175,16 @@ extension AppModel {
                     tools.append(contentsOf: [ToolCatalog.editFile, ToolCatalog.searchFiles])
                 }
             }
-            if isAgentToolsEnabled {
+            // Also attached while planning even with the agent abilities
+            // off: update_plan is how a plan gets posted, and the plan card
+            // is the only way out of planning mode.
+            if isAgentToolsEnabled || conversation.isPlanning {
                 tools.append(ToolCatalog.updatePlan)
             }
             // Always available on a tool-capable model: asking is not an
             // "agent ability", it's how the model avoids guessing.
             tools.append(ToolCatalog.askUser)
-            if isCommandToolEnabled {
+            if isCommandToolAvailable(for: conversation) {
                 tools.append(ToolCatalog.runCommand)
             }
             if isSubagentsEnabled {
@@ -205,6 +208,15 @@ extension AppModel {
            !(modelInfo?.supportsVision ?? false),
            conversation.realMessages.contains(where: { !$0.imageAttachments.isEmpty }) {
             tools.append(ToolCatalog.analyzeImage)
+        }
+        // Planning mode, enforced. Not a line in the system prompt asking
+        // the model to hold off: the tools that could change anything are
+        // simply not on the wire, so there is nothing to ignore under
+        // pressure and nothing to take on trust afterwards. Reads, search,
+        // update_plan, ask_user and read-only run_command all survive the
+        // filter — see `PlanMode`.
+        if conversation.isPlanning {
+            tools = PlanMode.filter(tools)
         }
         // System stack, top to bottom: the user's own instructions lead,
         // then durable memories and skills, then the app's tool inventory
@@ -286,7 +298,7 @@ extension AppModel {
         toolContext.analyzeImage = { data, filename in
             await SystemTools.analyzeImage(data: data, filename: filename)
         }
-        if isAgentToolsEnabled {
+        if isAgentToolsEnabled || conversation.isPlanning {
             let planAssistantID = assistantID
             toolContext.updatePlan = { [weak self] steps in
                 await MainActor.run { [weak self] in
@@ -299,7 +311,7 @@ extension AppModel {
                 }
             }
         }
-        if isCommandToolEnabled {
+        if isCommandToolAvailable(for: conversation) {
             let workspaceRoot = conversation.workspaceRoot
             let conversationID = conversation.id
             toolContext.runCommand = { [weak self] command in
@@ -402,6 +414,11 @@ extension AppModel {
                     self.skills.skills.first(where: { $0.folderPath == path })?.name
                 }
                 promptContext.hasAttachedFolder = conversation.workspaceRootPath != nil
+                // Gated on tool support for the same reason every other
+                // section is: a model with no tool calling has nothing
+                // withheld from it, so telling it about a mode it cannot
+                // participate in is pure confusion.
+                promptContext.isPlanning = conversation.isPlanning && modelSupportsTools
                 promptContext.memoryCount = self.memories.count
                 promptContext.attachmentNames = conversation.realMessages.flatMap { $0.attachments.map(\.filename) }
             }

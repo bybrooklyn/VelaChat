@@ -213,6 +213,13 @@ final class AppModel {
     var isCommandToolEnabled = false {
         didSet { UserDefaults.standard.set(isCommandToolEnabled, forKey: DefaultsKey.commandToolEnabled) }
     }
+    /// Whether a substantial-looking draft gets the one-time offer of
+    /// planning mode. On by default; the offer itself is capped at once
+    /// per conversation, and this switch turns the heuristic off for
+    /// people who would rather decide for themselves every time.
+    var isPlanningSuggestionEnabled = true {
+        didSet { Defaults.set(isPlanningSuggestionEnabled, DefaultsKey.planningSuggestion) }
+    }
     /// spawn_agents — off by default: each subagent is a real billed
     /// request, and several run at once.
     var isSubagentsEnabled = false {
@@ -238,12 +245,20 @@ final class AppModel {
         /// Subagent fan-out reuses this card, but must not offer command
         /// editing or the always-allow paths.
         var isSubagentRequest = false
+        /// The attached folder that may remember a prefix rule for this
+        /// command, or nil for a sandbox workspace — which is also how the
+        /// card knows whether to offer the "Always allow …" button at all.
+        var trustFolderPath: String? = nil
         let decide: @Sendable (Decision) -> Void
 
         enum Decision: Sendable {
             case approveOnce(String)
             case approveAlways(String)
             case approveAll(String)
+            /// Approve, and remember `rule` as a prefix rule for this
+            /// conversation's attached folder — across relaunches, unlike
+            /// every other case here.
+            case approveRule(command: String, rule: String)
             case deny
         }
     }
@@ -554,6 +569,7 @@ final class AppModel {
         restoreQuotaSnapshots()
         isAgentToolsEnabled = Defaults.bool(DefaultsKey.agentToolsEnabled, default: isAgentToolsEnabled)
         isCommandToolEnabled = Defaults.bool(DefaultsKey.commandToolEnabled, default: false)
+        isPlanningSuggestionEnabled = Defaults.bool(DefaultsKey.planningSuggestion, default: true)
         isSubagentsEnabled = Defaults.bool(DefaultsKey.subagentsEnabled, default: false)
         isSubagentApprovalRequired = Defaults.bool(DefaultsKey.subagentApproval, default: isSubagentApprovalRequired)
         subagentModelOverride = UserDefaults.standard.string(forKey: DefaultsKey.subagentModel) ?? ""
@@ -1784,6 +1800,94 @@ final class AppModel {
         saveHistory()
     }
 
+    /// Whether `run_command` goes on the wire for this conversation.
+    ///
+    /// The Settings switch is the user's explicit answer and always wins,
+    /// in either direction. Untouched, the default depends on where the
+    /// commands would run: attaching a real project folder is already the
+    /// user saying "work in here", and a chat with a checkout attached and
+    /// no way to run its build is the state that produced the actual
+    /// complaint this addresses ("I can't invoke rustc, cargo build, or
+    /// cargo test from this chat"). With only the synthetic per-conversation
+    /// sandbox, shell execution stays off.
+    func isCommandToolAvailable(for conversation: Conversation) -> Bool {
+        if Defaults.has(DefaultsKey.commandToolEnabled) { return isCommandToolEnabled }
+        return conversation.commandTrustFolderPath != nil
+    }
+
+    /// Whether the active conversation is planning — what the menu item,
+    /// the composer chip, and the shortcut all read.
+    var isPlanningActive: Bool { activeConversation?.isPlanning ?? false }
+
+    /// Turns planning mode on or off, with a visible notice: which tools a
+    /// reply had is not something the user should have to infer from the
+    /// model's behaviour.
+    func setPlanning(_ planning: Bool, for conversation: Conversation) {
+        guard conversation.isPlanning != planning else { return }
+        conversation.isPlanning = planning
+        // Answering the question either way retires the offer — it exists
+        // to introduce the mode, not to keep asking about it.
+        conversation.didOfferPlanning = true
+        if planning {
+            postNotice("Planning mode on — this chat can read, search, and run read-only commands, but cannot write files, change memory, or run anything else until you approve a plan.", kind: "info", to: conversation)
+        } else {
+            postNotice("Planning mode off — file edits, memory writes, and approved commands are available again.", kind: "info", to: conversation)
+        }
+        saveHistory()
+    }
+
+    func togglePlanningMode() {
+        let conversation = activeConversation ?? newConversation()
+        setPlanning(!conversation.isPlanning, for: conversation)
+    }
+
+    /// Whether to show the one-time planning offer above the composer for
+    /// what is currently typed. Cheap enough to ask on every keystroke.
+    func shouldOfferPlanning(for conversation: Conversation, draft: String) -> Bool {
+        guard isPlanningSuggestionEnabled, !conversation.isPlanning, !conversation.didOfferPlanning else { return false }
+        // Nothing to withhold means nothing to offer: with no file or
+        // command tools attached, planning mode would change nothing about
+        // what the model can do.
+        guard isAgentToolsEnabled || isWorkspaceEnabled || isCommandToolAvailable(for: conversation) else { return false }
+        return PlanMode.looksSubstantial(draft)
+    }
+
+    /// "Not now" on the offer — declining is an answer, so it never comes
+    /// back for this conversation.
+    func declinePlanningOffer(for conversation: Conversation) {
+        conversation.didOfferPlanning = true
+        saveHistory()
+    }
+
+    /// The user approved a posted plan. Planning mode ends, the withheld
+    /// tools come back, and the plan is carried into a FRESH turn as a
+    /// real user message rather than the tools quietly unlocking mid-reply
+    /// — the transcript should say, in the user's own turn, what was
+    /// approved and when.
+    func approvePlan(_ steps: [ToolCatalog.PlanStep], for conversation: Conversation) {
+        guard conversation.isPlanning, !conversation.isGenerating else { return }
+        conversation.isPlanning = false
+        saveHistory()
+        let list = steps.map { "- \($0.step)" }.joined(separator: "\n")
+        send("""
+        Plan approved — carry it out now, in order:
+
+        \(list)
+
+        Report what you actually did as you go, and stop and ask if a step turns out to be wrong.
+        """)
+    }
+
+    /// The user rejected a posted plan. The mode stays on (the point of
+    /// rejecting is that the plan isn't right yet) and their feedback
+    /// becomes the next message, so revision happens in the open.
+    func rejectPlan(feedback: String, for conversation: Conversation) {
+        guard conversation.isPlanning, !conversation.isGenerating else { return }
+        let trimmed = feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        send("Not that plan. \(trimmed)\n\nStay in planning mode: revise the plan and post it again with update_plan.")
+    }
+
     /// One-shot latch for an approval card's answer (see `executeCommand`).
     final class DecisionGuard: @unchecked Sendable {
         var answered = false
@@ -1795,6 +1899,14 @@ final class AppModel {
     /// result so it can adapt instead of failing.
     func executeCommand(_ command: String, in directory: URL, conversationID: UUID) async -> String {
         let conversation = conversations.first { $0.id == conversationID }
+        // Planning mode is enforced here rather than by asking the model to
+        // behave: it keeps `run_command` attached (exploration is most of
+        // what a plan is made of) and refuses everything that isn't
+        // read-only, whatever the user has previously trusted.
+        if conversation?.isPlanning == true, let refusal = PlanMode.commandRefusal(for: command) {
+            return refusal
+        }
+        let trustFolderPath = conversation?.commandTrustFolderPath
         let classification = CommandRunner.classify(command)
         var approvedCommand = command
         var needsPrompt = false
@@ -1805,6 +1917,12 @@ final class AppModel {
             break
         case .needsApproval(let why):
             if conversation?.allowAllCommands == true || conversation?.alwaysAllowedCommands.contains(command) == true {
+                break
+            }
+            // Rules remembered for the attached folder — the only trust
+            // here that survives a relaunch, and never consulted for a
+            // sandbox workspace (`trustFolderPath` is nil for one).
+            if case .allowed = CommandTrust.decision(for: command, folderPath: trustFolderPath) {
                 break
             }
             needsPrompt = true
@@ -1821,7 +1939,8 @@ final class AppModel {
                     conversationID: conversationID,
                     command: command,
                     directory: directory,
-                    reason: reason
+                    reason: reason,
+                    trustFolderPath: trustFolderPath
                 ) { decision in
                     guard !box.answered else { return }
                     box.answered = true
@@ -1832,6 +1951,9 @@ final class AppModel {
             pendingApproval = nil
             switch decision {
             case .deny:
+                // Remembered so a rule added later can never quietly
+                // auto-approve the exact command they refused.
+                CommandTrust.noteDenied(command, for: trustFolderPath)
                 return "The user denied this command. Do not retry it — ask what they'd prefer, or take a different approach."
             case .approveOnce(let edited):
                 approvedCommand = edited
@@ -1841,6 +1963,9 @@ final class AppModel {
             case .approveAll(let edited):
                 approvedCommand = edited
                 conversation?.allowAllCommands = true
+            case .approveRule(let edited, let rule):
+                approvedCommand = edited
+                CommandTrust.allow(rule: rule, for: trustFolderPath)
             }
         }
 
@@ -1983,7 +2108,7 @@ final class AppModel {
 
     func writeHistoryNow(synchronously: Bool = false) {
         let snapshots = conversations.map {
-            SavedConversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, workspaceRootPath: $0.workspaceRootPath)
+            SavedConversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, workspaceRootPath: $0.workspaceRootPath, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning)
         }
         let key = historyKey
         if synchronously {
@@ -2009,7 +2134,7 @@ final class AppModel {
             return "Saved conversations could not be read; a backup was kept."
         }
         conversations = snapshots.map {
-            Conversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, workspaceRootPath: $0.workspaceRootPath)
+            Conversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, workspaceRootPath: $0.workspaceRootPath, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning)
         }
         reconcileInterruptedMessages()
         activeConversationID = conversations.first?.id

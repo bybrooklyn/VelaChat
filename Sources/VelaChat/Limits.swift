@@ -23,6 +23,11 @@ enum Limits {
     static let skillTotalBytes = 20_000
     /// Command output surfaced to the model.
     static let commandOutputBytes = 20_000
+    /// Remembered run_command prefix rules (and denials) kept per attached
+    /// folder. A ceiling, not a target: this list is written one deliberate
+    /// button press at a time, and an unbounded one would grow forever in
+    /// preferences.
+    static let commandRulesPerFolder = 50
     /// Conversation titles, and exported filenames derived from them.
     static let titleCharacters = 60
 

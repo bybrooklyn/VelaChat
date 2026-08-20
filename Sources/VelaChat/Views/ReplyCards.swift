@@ -133,6 +133,26 @@ struct CommandApprovalCard: View {
                     .keyboardShortcut(.cancelAction)
             }
             if !approval.isSubagentRequest {
+                if let rule = alwaysAllowRule, let folder = approval.trustFolderPath {
+                    let folderName = (folder as NSString).lastPathComponent
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button {
+                            approval.decide(.approveRule(command: trimmed, rule: rule))
+                        } label: {
+                            Label("Always allow \u{201C}\(rule)…\u{201D} in \(folderName)", systemImage: "checkmark.seal")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Always allow commands starting with \(rule) in the folder \(folderName), remembered after you quit")
+                        // The one piece of trust here that outlives the app,
+                        // so it says so — and says what it really means:
+                        // there is no sandbox behind any of this.
+                        Text("Remembered for this folder until you forget it in Settings. Build commands run as you, unsandboxed.")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.tertiaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 Button {
                     approval.decide(.approveAll(trimmed))
                 } label: {
@@ -163,6 +183,71 @@ struct CommandApprovalCard: View {
             ? approval.command
             : editedCommand.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// The prefix rule this command would be remembered as — nil when the
+    /// conversation has no folder of the user's attached (a sandbox
+    /// workspace never holds rules) or the command is too shell-shaped to
+    /// summarize into one. Derived from the *edited* text, so the offer
+    /// always matches what the button above it would actually run.
+    private var alwaysAllowRule: String? {
+        guard approval.trustFolderPath != nil else { return nil }
+        return CommandTrust.suggestedRule(for: trimmed)
+    }
+}
+
+/// The Approve/Reject decision a `PlanCard` carries while the conversation
+/// is in planning mode — the plan is a proposal waiting on an answer then,
+/// not a progress checklist.
+struct PlanDecision {
+    let approve: () -> Void
+    let reject: (String) -> Void
+}
+
+/// Offered above the composer, once per conversation, when what is being
+/// typed looks like real multi-step work.
+///
+/// Deliberately not a blocking sheet: it sits in the composer stack and
+/// the user can ignore it and press Send. Interrupting someone mid-thought
+/// to ask a process question is how a good default becomes an annoyance.
+struct PlanModeSuggestionCard: View {
+    let onAccept: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "list.bullet.rectangle")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.accent)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Plan this one first?")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.text)
+                Text("Planning mode reads and explores but cannot edit files, change memory, or run build commands until you approve a plan.")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Plan first") { onAccept() }
+                .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                .accessibilityLabel("Turn on planning mode for this conversation")
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.tertiaryText)
+            .help("Not now")
+            .accessibilityLabel("Dismiss the planning mode suggestion for this conversation")
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+        .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous), emphasis: 0.4)
+    }
 }
 
 /// The model's live task plan (`update_plan`) — a compact checklist that
@@ -172,7 +257,13 @@ struct CommandApprovalCard: View {
 struct PlanCard: View {
     let steps: [ToolCatalog.PlanStep]
     let isWorking: Bool
+    /// Non-nil only while the conversation is in planning mode and this is
+    /// the plan awaiting an answer — the deliberate way out of the mode,
+    /// rather than the tools silently unlocking themselves.
+    var decision: PlanDecision? = nil
     @State private var isExpanded = true
+    @State private var isRejecting = false
+    @State private var feedback = ""
 
     private var completed: Int { steps.filter { $0.status == "completed" }.count }
 
@@ -218,6 +309,51 @@ struct PlanCard: View {
                     }
                 }
                 .transition(.opacity)
+            }
+
+            if let decision {
+                Divider()
+                    .padding(.vertical, 1)
+                if isRejecting {
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("What should change?", text: $feedback, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .font(.caption)
+                            .flatFieldStyle()
+                            .lineLimit(1...4)
+                            .accessibilityLabel("What should change about this plan")
+                        HStack(spacing: 7) {
+                            Button("Send Feedback") {
+                                let note = feedback
+                                feedback = ""
+                                isRejecting = false
+                                decision.reject(note)
+                            }
+                            .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                            .disabled(feedback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityLabel("Send this feedback and stay in planning mode")
+                            Button("Cancel") { isRejecting = false }
+                                .buttonStyle(.plain)
+                                .font(.caption)
+                                .foregroundStyle(Theme.tertiaryText)
+                        }
+                    }
+                } else {
+                    HStack(spacing: 7) {
+                        Button("Approve & Start") { decision.approve() }
+                            .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                            .accessibilityLabel("Approve this plan, leave planning mode, and start the work")
+                        Button("Request Changes") {
+                            withAnimation(.easeOut(duration: 0.16)) { isRejecting = true }
+                        }
+                        .buttonStyle(VelaControlButtonStyle(tint: Theme.secondaryText))
+                        .accessibilityLabel("Reject this plan and say what should change, staying in planning mode")
+                        Spacer(minLength: 0)
+                        Text("Planning mode")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
+                }
             }
         }
         .padding(11)

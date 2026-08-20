@@ -366,6 +366,35 @@ struct ChatView: View {
         }
     }
 
+    /// The composer's planning-mode chip — same shape as the active-skills
+    /// row, and the quickest way back out of the mode.
+    private func planningRow(_ conversation: Conversation) -> some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.caption2)
+                Text("Planning — reads and read-only commands only")
+                    .font(.caption)
+                Button {
+                    appModel.setPlanning(false, for: conversation)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .help("Leave planning mode")
+                .accessibilityLabel("Leave planning mode")
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Theme.accentSoft.opacity(0.7), in: Capsule())
+            .foregroundStyle(Theme.accent)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: contentWidth, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+
     private var composer: some View {
         VStack(spacing: 6) {
             pendingQuestionCard
@@ -398,6 +427,24 @@ struct ChatView: View {
             if let conversation = appModel.activeConversation, !conversation.activeSkillPaths.isEmpty {
                 activeSkillsRow(conversation)
                     .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            // A mode that changes which tools the next reply gets must be
+            // visible while you type into it, not only in the menu that
+            // turned it on.
+            if let conversation = appModel.activeConversation, conversation.isPlanning {
+                planningRow(conversation)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            if let conversation = appModel.activeConversation,
+               appModel.shouldOfferPlanning(for: conversation, draft: input.wrappedValue) {
+                PlanModeSuggestionCard(
+                    onAccept: { appModel.setPlanning(true, for: conversation) },
+                    onDismiss: { appModel.declinePlanningOffer(for: conversation) }
+                )
+                .frame(maxWidth: contentWidth)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             if let query = slashQuery {
@@ -466,6 +513,11 @@ struct ChatView: View {
                                 onRepo: { repo in
                                     isAttachMenuShown = false
                                     appModel.cloneGitHubRepo(repo)
+                                },
+                                isPlanning: appModel.isPlanningActive,
+                                onPlanMode: {
+                                    isAttachMenuShown = false
+                                    appModel.togglePlanningMode()
                                 }
                             )
                         }
@@ -556,6 +608,7 @@ struct ChatView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: appModel.pendingQuestion?.id)
         .animation(.easeOut(duration: 0.16), value: appModel.statusMessage != nil)
         .animation(.easeOut(duration: 0.16), value: appModel.activeConversation?.activeSkillPaths.isEmpty ?? true)
+        .animation(.easeOut(duration: 0.16), value: appModel.activeConversation?.isPlanning ?? false)
         .animation(.easeOut(duration: 0.16), value: slashQuery != nil)
         .animation(.easeOut(duration: 0.16), value: appModel.availableThinkingLevels.count)
         .animation(.easeOut(duration: 0.16), value: appModel.canUseWebSearch)
