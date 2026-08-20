@@ -37,6 +37,57 @@ final class ToolArgumentRepairTests: XCTestCase {
     }
 }
 
+/// `ToolCatalog.execute` races every tool against `Limits.toolTimeout` so
+/// one hung tool can't wedge a whole reply — except `ask_user`, which is
+/// waiting on a person reading a card, not on a machine. Answering three
+/// questions routinely takes more than two minutes, and when it did the
+/// model was handed "Error: the ask_user tool timed out after 120 seconds"
+/// and carried on without the answer it had just asked for. Tested through
+/// the policy predicate rather than by actually waiting 120 seconds.
+final class ToolTimeoutPolicyTests: XCTestCase {
+    func testAskUserIsExemptFromTheMachineTimeout() {
+        XCTAssertFalse(ToolCatalog.isBoundedByTimeout(ToolCatalog.askUser.name))
+    }
+
+    func testEveryOtherToolStaysBounded() {
+        let bounded = [
+            ToolCatalog.webSearch, ToolCatalog.fetchURL, ToolCatalog.runCommand,
+            ToolCatalog.calculator, ToolCatalog.searchConversations, ToolCatalog.writeFile,
+            ToolCatalog.editFile, ToolCatalog.searchFiles, ToolCatalog.updatePlan,
+            ToolCatalog.getSchedule, ToolCatalog.saveMemory, Subagents.definition,
+        ]
+        for tool in bounded {
+            XCTAssertTrue(ToolCatalog.isBoundedByTimeout(tool.name), "\(tool.name) must stay bounded")
+        }
+        // Unknown names — MCP tools, anything a future provider invents —
+        // are bounded too. The exemption is a named allowance, not a default.
+        XCTAssertTrue(ToolCatalog.isBoundedByTimeout("mcp_something_slow"))
+        XCTAssertTrue(ToolCatalog.isBoundedByTimeout(""))
+    }
+}
+
+/// Guidance used to be pasted into the system prompt as well as shipped in
+/// the tool definition. It ships once now, inside the description.
+final class ToolWireDescriptionTests: XCTestCase {
+    func testGuidanceTravelsWithTheDescription() {
+        let tool = ToolCatalog.editFile
+        XCTAssertTrue(tool.wireDescription.hasPrefix(tool.description))
+        XCTAssertTrue(tool.wireDescription.contains(tool.guidance))
+    }
+
+    /// An MCP server can hand us a tool with no guidance of our own to add;
+    /// that must not produce a description with a trailing space.
+    func testEmptyGuidanceLeavesTheDescriptionAlone() {
+        let tool = ToolCatalog.Definition(
+            name: "mcp_example_thing",
+            description: "Does a thing.",
+            parametersJSON: #"{"type":"object","properties":{}}"#,
+            guidance: ""
+        )
+        XCTAssertEqual(tool.wireDescription, "Does a thing.")
+    }
+}
+
 /// A five-round tool reply once recorded only its final hop, undercounting
 /// usage roughly fivefold.
 final class ToolLoopUsageTests: XCTestCase {

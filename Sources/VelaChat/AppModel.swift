@@ -29,8 +29,12 @@ final class AppModel {
     static let askUserQuestionInstruction = """
         # Asking the user
         When a real decision or ambiguity is worth pausing on — not for \
-        routine replies — ask with a fenced block in exactly this shape, \
-        nothing before or after it:
+        routine replies — write first and ask at the end. Give a short, \
+        genuinely useful reply: what you already know, or the part of the \
+        work you can do without the answer. Finish the thought, and only \
+        then put the question block last, so the user is never left \
+        staring at half a paragraph above a question card. Nothing may \
+        follow the block. It takes exactly this shape:
 
         ```ask-user
         {"questions": [{"header": "Approach", "question": "Which approach should I take?", "multiSelect": false, "options": [{"label": "Short option name", "description": "One-sentence explanation", "recommended": true}, {"label": "Another option", "description": "One-sentence explanation"}]}], "allowNotes": true}

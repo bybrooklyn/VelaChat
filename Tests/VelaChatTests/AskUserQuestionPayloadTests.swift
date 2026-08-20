@@ -184,3 +184,26 @@ final class AskUserQuestionPayloadTests: XCTestCase {
         XCTAssertFalse(AskUserQuestionPayload.hasUnterminatedFence(in: content))
     }
 }
+
+/// There are two ways to ask: the real `ask_user` tool, and the fenced
+/// ````ask-user` block for providers without tool calling. Only one is ever
+/// advertised, so they must teach the same behaviour — and the behaviour
+/// that matters is *write first*. Both used to imply the opposite (the
+/// fenced instruction literally said "nothing before or after it"), and the
+/// model would cut itself off mid-paragraph to ask, leaving the user
+/// looking at half a sentence above a question card.
+@MainActor
+final class AskUserWriteFirstTests: XCTestCase {
+    func testToolGuidanceSaysWriteFirst() {
+        let guidance = ToolCatalog.askUser.guidance
+        XCTAssertTrue(guidance.contains("Write first, then ask"))
+        XCTAssertTrue(guidance.lowercased().contains("mid-sentence"))
+    }
+
+    func testFencedFallbackSaysTheSameThing() {
+        let instruction = AppModel.askUserQuestionInstruction
+        XCTAssertTrue(instruction.contains("write first and ask at the end"))
+        // The old wording forbade any prose at all around the block.
+        XCTAssertFalse(instruction.contains("nothing before or after it"))
+    }
+}

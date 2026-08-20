@@ -21,11 +21,61 @@ final class SystemPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("TestProvider"))
     }
 
+    /// The "# Tools" section body, so an assertion about it can't be
+    /// satisfied (or broken) by wording that lives in another section.
+    private func toolSection(_ prompt: String) -> String? {
+        guard let start = prompt.range(of: "# Tools") else { return nil }
+        let rest = prompt[start.lowerBound...]
+        guard let next = rest.range(of: "\n\n# ") else { return String(rest) }
+        return String(rest[..<next.lowerBound])
+    }
+
     func testToolSectionOnlyWithTools() {
-        XCTAssertFalse(compose { _ in }.contains("# Tools"))
-        let withTools = compose { $0.tools = [ToolCatalog.calculator] }
-        XCTAssertTrue(withTools.contains("# Tools"))
-        XCTAssertTrue(withTools.contains(ToolCatalog.calculator.name))
+        XCTAssertNil(toolSection(compose { _ in }))
+        let section = toolSection(compose { $0.tools = [ToolCatalog.calculator] })
+        XCTAssertNotNil(section)
+        // The directive half is the load-bearing part: it names *when* to
+        // reach for a tool, which is what stopped the model answering from
+        // training data with tools sitting attached and unused.
+        XCTAssertTrue(section?.contains("Reach for a tool on your own initiative") == true)
+        XCTAssertTrue(section?.contains("never fake a call in plain text") == true)
+    }
+
+    /// The section used to list every attached tool as
+    /// "- name: summary. guidance" — the same information the real tool
+    /// schemas already carry, in a form the model could read back. It did:
+    /// asked "what can you do?", it recited its own tooling as a
+    /// categorized brochure. Descriptions live in the tool definitions
+    /// (`ToolCatalog.Definition.wireDescription`) now, and nothing in the
+    /// prompt enumerates them.
+    func testToolSectionDoesNotListIndividualTools() {
+        // Tools no other section mentions by name, so a hit here can only
+        // have come from an inventory.
+        let tools = [ToolCatalog.calculator, ToolCatalog.webSearch, ToolCatalog.getSchedule]
+        let section = toolSection(compose { $0.tools = tools })
+        XCTAssertNotNil(section)
+        for tool in tools {
+            XCTAssertFalse(section?.contains(tool.name) == true, "\(tool.name) is listed in the prompt")
+            XCTAssertFalse(section?.contains(tool.guidance) == true, "\(tool.name)'s guidance is duplicated into the prompt")
+        }
+    }
+
+    /// "What are you?" must get prose about outcomes, not a capability
+    /// inventory — the replacement for the deleted list.
+    func testToolSectionAnswersCapabilityQuestionsInProse() {
+        let section = toolSection(compose { $0.tools = [ToolCatalog.calculator] })
+        XCTAssertTrue(section?.contains("Asked what you are or what you can do") == true)
+        XCTAssertTrue(section?.contains("never a list of tool names") == true)
+    }
+
+    func testNativeSearchIsAnnouncedOnlyWhenPresent() {
+        let without = toolSection(compose { $0.tools = [ToolCatalog.calculator] })
+        XCTAssertFalse(without?.contains("natively") == true)
+        let with = toolSection(compose {
+            $0.tools = [ToolCatalog.calculator]
+            $0.nativeSearch = true
+        })
+        XCTAssertTrue(with?.contains("natively") == true)
     }
 
     func testAgentGuidanceOnlyWithAgentTools() {
@@ -89,8 +139,11 @@ final class SystemPromptTests: XCTestCase {
             $0.contextWindow = 1
         }
         XCTAssertTrue(squeezed.contains("# Environment"), "environment is not droppable")
-        XCTAssertTrue(squeezed.contains("# Tools"), "the tool inventory is not droppable")
-        XCTAssertTrue(squeezed.contains(ToolCatalog.runCommand.name), "a listed tool must survive with its section")
+        XCTAssertTrue(squeezed.contains("# Tools"), "the tool guidance is not droppable")
+        // It used to be enough to look for a listed tool name here. The
+        // section no longer lists them, so pin the rule that actually has
+        // to survive: when to reach for a tool at all.
+        XCTAssertTrue(squeezed.contains("Reach for a tool on your own initiative"), "the when-to-use rule must survive with its section")
     }
 
     func testNothingLeapfrogsADroppedSection() {
