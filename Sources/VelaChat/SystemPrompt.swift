@@ -37,7 +37,7 @@ enum SystemPrompt {
     }
 
     /// Lower numbers survive trimming; the environment and the tool
-    /// inventory are the two things a model genuinely cannot work without.
+    /// guidance are the two things a model genuinely cannot work without.
     private struct Section {
         let priority: Int
         let body: String
@@ -77,10 +77,12 @@ enum SystemPrompt {
         // instruction is worse than none.
         let budgetCharacters = context.contextWindow.map { max(2_000, $0 / 8 * 4) } ?? .max
 
-        // Environment and the tool inventory are mandatory. This file
+        // Environment and the tool guidance are mandatory. This file
         // already says they are "the two things a model genuinely cannot
-        // work without", and a model that doesn't know which tools it has
-        // cannot use them at all — so they are never dropped, and the
+        // work without": the attached schemas tell the model *which* tools
+        // exist, but nothing except this section tells it when to reach for
+        // one, and without that it answers from training data with tools
+        // sitting attached and unused. So they are never dropped, and the
         // budget governs only what sits below them.
         let required = sections.filter { $0.priority <= Section.lastRequiredPriority }
         let optional = sections.filter { $0.priority > Section.lastRequiredPriority }
@@ -157,6 +159,16 @@ enum SystemPrompt {
     /// happened: real research only occurred when the user explicitly asked
     /// for it. Permission to use a tool is not the same instruction as
     /// when to use one, so this now names the triggers.
+    ///
+    /// What it deliberately does NOT do any more is *list the tools*. Every
+    /// request already carries the real schemas — name, description,
+    /// parameters — so a prose inventory here was the same information a
+    /// second time, in a form the model could read out loud. It did:
+    /// asked "what are you and what can you do?", it recited a categorized
+    /// catalogue of its own tooling like a product brochure, because a
+    /// human-readable list of it was sitting in its context. Per-tool
+    /// wording belongs in `ToolCatalog.Definition` (see `wireDescription`),
+    /// and the last rule below is what a capability question gets instead.
     private static func toolInventory(_ context: Context) -> String? {
         guard !context.tools.isEmpty else { return nil }
         var lines = [
@@ -182,13 +194,16 @@ enum SystemPrompt {
             tool call.
             """,
         ]
-        for tool in context.tools {
-            lines.append("- \(tool.name): \(tool.summary). \(tool.guidance)")
-        }
         if context.nativeSearch {
-            lines.append("- (Your provider also performs live web search natively on this request.)")
+            lines.append("(Your provider also performs live web search natively on this request.)")
         }
         lines.append("When a call errors, read the error and retry with corrected input — errors are feedback, not stop signs. If a page fetch fails or is blocked, try at most ~3 alternative pages, then answer from the search snippets you already have, saying briefly which sources were unreachable.")
+        lines.append("""
+        Asked what you are or what you can do, answer in two or three \
+        sentences of ordinary prose, in terms of what you can get done for \
+        this person — never a list of tool names, never a categorized \
+        inventory of capabilities. Then just do the thing they came for.
+        """)
         return lines.joined(separator: "\n")
     }
 

@@ -473,7 +473,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             return [
                 "type": "function",
                 "name": tool.name,
-                "description": tool.description,
+                "description": tool.wireDescription,
                 "parameters": parameters
             ]
         }
@@ -486,7 +486,7 @@ final class CompatibleChatClient: @unchecked Sendable {
             "type": "function",
             "function": [
                 "name": tool.name,
-                "description": tool.description,
+                "description": tool.wireDescription,
                 "parameters": parameters
             ]
         ]
@@ -1051,7 +1051,7 @@ final class CompatibleChatClient: @unchecked Sendable {
 
     private static func anthropicToolWireObject(_ tool: ToolCatalog.Definition) -> [String: Any] {
         let schema = (try? JSONSerialization.jsonObject(with: Data(tool.parametersJSON.utf8))) as? [String: Any] ?? [:]
-        return ["name": tool.name, "description": tool.description, "input_schema": schema]
+        return ["name": tool.name, "description": tool.wireDescription, "input_schema": schema]
     }
 
     /// Extended thinking is opt-in on Anthropic's API (unlike the reasoning

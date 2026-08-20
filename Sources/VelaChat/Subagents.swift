@@ -8,10 +8,9 @@ import Foundation
 enum Subagents {
     static let definition = ToolCatalog.Definition(
         name: "spawn_agents",
-        description: "Run 1-3 independent sub-tasks in parallel, each handled by a fresh assistant with the read-only tools (search, fetch, file reading). Returns each one's finished answer. Use for genuinely parallel work — researching several angles, reviewing several files — not for steps that depend on each other.",
+        description: "Run 1-3 independent sub-tasks at the same time, each handled by a fresh assistant that starts with an empty context and only the read-only tools (search, fetch, file reading — no writing, no shell). Returns their finished answers together, one \"## name\" section each, truncated at about 8,000 characters apiece. They run concurrently and cannot talk to each other or to you until they finish.",
         parametersJSON: #"{"type":"object","properties":{"tasks":{"type":"array","maxItems":3,"items":{"type":"object","properties":{"name":{"type":"string","description":"Very short label, e.g. \"pricing research\""},"prompt":{"type":"string","description":"The complete, self-contained instruction — the subagent sees none of this conversation"}},"required":["name","prompt"]}}},"required":["tasks"]}"#,
-        summary: "run up to 3 sub-tasks in parallel",
-        guidance: "Each prompt must stand alone: state all context it needs, since the subagent cannot see this conversation. Prefer one subagent per genuinely separate question."
+        guidance: "Each prompt must stand alone: state all the context it needs, since the subagent cannot see this conversation, your files, or the user's earlier messages. Prefer one subagent per genuinely separate question, and never use them for steps that must happen in order."
     )
 
     struct Task: Sendable {

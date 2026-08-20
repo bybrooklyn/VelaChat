@@ -11,42 +11,58 @@ import Foundation
 enum ToolCatalog {
     struct Definition {
         let name: String
-        /// Goes on the wire as the tool's description — written for the
-        /// model, rich enough that it knows when and how to use the tool.
+        /// The "what it does" half of the tool description that goes on the
+        /// wire: what the tool actually does, what it returns, and what it
+        /// cannot do.
         let description: String
         /// A JSON Schema `properties` object, hand-built per tool rather
         /// than reflected from Swift types — a tiny hand-written schema is
         /// far less risk than a general schema generator for this scope.
         let parametersJSON: String
-        /// One line for the system-prompt tool inventory.
-        let summary: String
-        /// Usage guidance for the inventory — when to reach for it, when
-        /// not to, what comes back.
+        /// The "how to behave" half: when to reach for the tool, when not
+        /// to, and what to do when the result isn't what was expected.
+        ///
+        /// Kept as its own field so the two halves stay separately
+        /// editable, but it ships appended to `description` (see
+        /// `wireDescription`) — i.e. inside the tool definition, where the
+        /// model reads it as part of the tool. It used to be pasted into
+        /// the system prompt instead, as a prose "# Tools" list of every
+        /// attached tool, and that list is exactly what the model read back
+        /// when asked "what can you do?": a categorized brochure of tool
+        /// names. Descriptions belong in the tool definitions, once.
         let guidance: String
+
+        /// What actually goes on the wire as the tool's description.
+        var wireDescription: String {
+            guidance.isEmpty ? description : description + " " + guidance
+        }
+    }
+
+    /// `ask_user` is the one tool `execute` does not race against
+    /// `Limits.toolTimeout`. See the comment there.
+    static func isBoundedByTimeout(_ name: String) -> Bool {
+        name != askUser.name
     }
 
     static let searchConversations = Definition(
         name: "search_conversations",
-        description: "Search the user's past conversations in this app for relevant context — names, decisions, preferences, or details mentioned before. Returns only matching excerpts with conversation titles, never whole transcripts. Case-insensitive substring match.",
-        parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"A short, specific phrase to search for — a name, project, or keyword. Prefer several narrow searches over one broad one."}},"required":["query"]}"#,
-        summary: "search the user's past conversations in this app",
-        guidance: "Use when the user references something from before (\"like we discussed\", a name or project you don't know). Prefer several narrow queries over one broad one. Returns up to 8 excerpts."
+        description: "Search the text of the user's earlier conversations in this app. Returns up to 8 excerpts — roughly 80 characters either side of the hit — each labelled with the conversation's title and the role that said it, never a whole transcript. Matching is a plain case-insensitive substring test, not semantic or fuzzy search: a multi-word query only matches that exact phrase.",
+        parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"One distinctive literal substring — a name, project, filename, or single keyword. Not a question and not several terms at once: \"Helsinki\", not \"what did we decide about the Helsinki trip\"."}},"required":["query"]}"#,
+        guidance: "Reach for this whenever the user points at something outside this conversation (\"like we discussed\", \"the project I mentioned\", a name you don't recognise). Run several narrow searches rather than one broad one, and if a query returns nothing, try a different single word before concluding it was never discussed."
     )
 
     static let webSearch = Definition(
         name: "web_search",
-        description: "Search the live web. Returns real results with titles, URLs, and snippets. Use for anything after your knowledge cutoff: current events, prices, versions, releases, weather, scores. Issue multiple targeted searches rather than one broad one, and cite result URLs in your answer.",
-        parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"The search query — specific and keyword-focused, like a good search-engine query"}},"required":["query"]}"#,
-        summary: "search the live web",
-        guidance: "You DO have live web access through this tool. Use it for anything recent or uncertain instead of claiming you cannot browse. Follow up promising results with fetch_url to read the page."
+        description: "Search the live web and return the top results as title, URL, and a one- or two-line snippet each. This is real, current web access. The snippets are search-engine summaries, not the pages themselves — use fetch_url to read anything you intend to rely on.",
+        parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"A keyword-style query as you would type it into a search engine — not a full sentence or question. Include a year or version when recency matters, e.g. \"swift 6 strict concurrency migration 2026\"."}},"required":["query"]}"#,
+        guidance: "Use it for anything training data can't answer reliably: current events, prices, availability, hours, versions, release status, scores, weather, \"latest/best X\". Two or three targeted searches from different angles beat one broad one. Cite the URLs you actually used, and never tell the user you cannot browse the web — here, you can."
     )
 
     static let fetchURL = Definition(
         name: "fetch_url",
-        description: "Fetch a web page and return its readable text content (HTML stripped, truncated if very long). Use after web_search to actually read a promising result, or when the user gives you a URL.",
-        parametersJSON: #"{"type":"object","properties":{"url":{"type":"string","description":"The full http(s) URL to fetch"}},"required":["url"]}"#,
-        summary: "read the text content of a web page",
-        guidance: "Search results only give snippets — fetch the page when you need the substance. Quote or summarize what you actually read, citing the URL."
+        description: "Fetch one http(s) page and return its readable text with markup, scripts, and styling stripped out, truncated at about 12,000 characters (marked \"[Truncated — page continues.]\" when that happens). Text only: it cannot run JavaScript, sign in, or read images or PDFs, and sites that block automated readers come back as an HTTP 403 or 429 error.",
+        parametersJSON: #"{"type":"object","properties":{"url":{"type":"string","description":"The full absolute URL including the scheme, e.g. \"https://example.com/docs/page\". A bare domain without \"https://\" is rejected."}},"required":["url"]}"#,
+        guidance: "A search snippet is not evidence — fetch the page before quoting it or resting a claim on it, and summarize what you actually read. When a fetch is blocked, switch sources rather than retrying the same URL; after about three failures, answer from the snippets you already have and say briefly which sources were unreachable."
     )
 
     // current_datetime was retired: the system prompt's Environment
@@ -56,18 +72,16 @@ enum ToolCatalog {
 
     static let calculator = Definition(
         name: "calculator",
-        description: "Evaluate an arithmetic expression exactly: + - * / ^ %, parentheses, decimal numbers. Use for any nontrivial arithmetic instead of computing it in your head.",
-        parametersJSON: #"{"type":"object","properties":{"expression":{"type":"string","description":"The expression, e.g. \"(1234.5 * 12) / 7\""}},"required":["expression"]}"#,
-        summary: "evaluate arithmetic exactly",
-        guidance: "Mental arithmetic on large or precise numbers is error-prone — use this instead. Numbers only; no variables or units."
+        description: "Evaluate one arithmetic expression exactly and return it as \"expression = result\". Supports + - * / % and ^ (exponentiation, right-associative), parentheses, unary minus, and decimals. Numbers only: no variables, units, currency symbols, percentages, or named functions — write a square root as x^0.5.",
+        parametersJSON: #"{"type":"object","properties":{"expression":{"type":"string","description":"The whole expression as one string, e.g. \"(1234.5 * 12) / 7\". Strip currency symbols and units first; thousands separators are ignored."}},"required":["expression"]}"#,
+        guidance: "Mental arithmetic on long or precise numbers is where confident wrong answers come from — evaluate it here instead, including the intermediate steps of a multi-step calculation."
     )
 
     static let readAttachment = Definition(
         name: "read_attachment",
-        description: "Read the full text of a file the user attached to this conversation, by filename. Attached files may have been truncated in the prompt — this returns the complete content.",
-        parametersJSON: #"{"type":"object","properties":{"filename":{"type":"string","description":"The attachment's filename as shown in the conversation"}},"required":["filename"]}"#,
-        summary: "read the full content of an attached file",
-        guidance: "If an attachment looks cut off in the prompt, fetch the whole thing here before answering questions about it."
+        description: "Return the complete text of a file the user attached to this conversation. Attachments are truncated when they are inlined into the prompt, so this is the only way to see the rest of a long one. Text-bearing files only; when the name doesn't match, the error lists the filenames that are available.",
+        parametersJSON: #"{"type":"object","properties":{"filename":{"type":"string","description":"The attachment's filename as it appears in the conversation, e.g. \"report.md\". Case-insensitive, and a distinctive part of the name is enough."}},"required":["filename"]}"#,
+        guidance: "If an attachment looks cut off, or the user asks about a part of it you cannot see, read the whole file here before answering rather than reasoning from the visible fragment."
     )
 
     /// A real, private, per-conversation folder on disk — not a general
@@ -76,46 +90,40 @@ enum ToolCatalog {
     /// tool isn't offered alongside these.
     static let writeFile = Definition(
         name: "write_file",
-        description: "Write a text file into this conversation's private workspace folder (a real, isolated folder on disk, separate for every conversation). Overwrites the file if it already exists. Use relative paths only.",
-        parametersJSON: #"{"type":"object","properties":{"path":{"type":"string","description":"Relative path within the workspace, e.g. \"notes.txt\" or \"src/main.py\""},"content":{"type":"string","description":"The full file content to write"}},"required":["path","content"]}"#,
-        summary: "write a file in this conversation's private workspace",
-        guidance: "Good for drafts, code, and notes the user may want to keep — the user can reveal the folder in Finder. Relative paths only; writes overwrite."
+        description: "Create or overwrite a UTF-8 text file in this conversation's workspace — a real folder on disk, private to this conversation, which the user can open in Finder. Missing parent directories are created. Writing an existing file replaces it entirely. Returns the number of bytes written.",
+        parametersJSON: #"{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root, e.g. \"notes.txt\" or \"src/main.py\". Absolute paths and \"..\" are rejected."},"content":{"type":"string","description":"The complete new contents of the file — the whole thing, never a fragment or a diff."}},"required":["path","content"]}"#,
+        guidance: "Right for drafts, code, and notes the user will keep or run; for a change to an existing file use edit_file instead of rewriting it whole. Never paste the file's contents back into your reply afterwards — the user can already see the file."
     )
     static let readFile = Definition(
         name: "read_file",
-        description: "Read a text file from this conversation's private workspace folder.",
-        parametersJSON: #"{"type":"object","properties":{"path":{"type":"string","description":"Relative path within the workspace"}},"required":["path"]}"#,
-        summary: "read a file from the private workspace",
-        guidance: "Use list_workspace_files first if unsure what exists."
+        description: "Return the full UTF-8 text of one file in this conversation's workspace folder. Errors if the file doesn't exist yet or isn't text.",
+        parametersJSON: #"{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root, exactly as list_workspace_files or search_files reported it"}},"required":["path"]}"#,
+        guidance: "Read a file before editing it: edit_file needs its exact existing text, whitespace included. If you aren't sure what exists, call list_workspace_files rather than guessing a filename."
     )
     static let listWorkspaceFiles = Definition(
         name: "list_workspace_files",
-        description: "List the files currently in this conversation's private workspace folder.",
+        description: "List the entries at the top level of this conversation's workspace folder, sorted, one name per line. Says so plainly when the folder is empty.",
         parametersJSON: #"{"type":"object","properties":{}}"#,
-        summary: "list the private workspace's files",
-        guidance: "Cheap — call it rather than guessing filenames."
+        guidance: "It costs nothing — call it rather than guessing filenames or assuming the workspace is empty. Use search_files when you need to look inside subfolders or file contents."
     )
 
     static let editFile = Definition(
         name: "edit_file",
-        description: "Replace an exact substring in a workspace file with new text — the surgical way to iterate on a file instead of rewriting it whole. The old_string must match the file exactly once (include enough surrounding context to be unique), unless replace_all is true.",
-        parametersJSON: #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative file path"},"old_string":{"type":"string","description":"Exact text to find"},"new_string":{"type":"string","description":"Replacement text"},"replace_all":{"type":"boolean","description":"Replace every occurrence (default false)"}},"required":["path","old_string","new_string"]}"#,
-        summary: "make a surgical find/replace edit in a workspace file",
-        guidance: "Prefer this over write_file when changing part of an existing file. If old_string isn't unique, add surrounding lines until it is."
+        description: "Replace an exact substring of a workspace file with new text — the surgical way to change a file instead of rewriting it whole. old_string is matched literally (no regular expressions, no whitespace normalisation) and must occur exactly once unless replace_all is true. Returns how many occurrences were replaced.",
+        parametersJSON: #"{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root"},"old_string":{"type":"string","description":"The exact text to find, copied verbatim out of the file including indentation and line breaks. Include enough surrounding lines to make it unique."},"new_string":{"type":"string","description":"The exact text to put in its place. An empty string deletes the match."},"replace_all":{"type":"boolean","description":"Replace every occurrence instead of requiring a unique match (default false)"}},"required":["path","old_string","new_string"]}"#,
+        guidance: "Prefer this over write_file for any change to a file that already exists. If the result says old_string wasn't found, re-read the file rather than guessing again — what you remembered isn't what's on disk. If it says the match wasn't unique, add surrounding lines until it is."
     )
     static let searchFiles = Definition(
         name: "search_files",
-        description: "Search the workspace for files by name pattern and/or content. glob filters filenames (e.g. \"*.swift\"); query is a regular expression matched against file contents. Returns matching paths with line numbers for content matches.",
-        parametersJSON: #"{"type":"object","properties":{"glob":{"type":"string","description":"Filename glob, e.g. \"*.md\" or \"src/*.ts\""},"query":{"type":"string","description":"Regex to search file contents for"}}}"#,
-        summary: "find workspace files by name pattern and/or content",
-        guidance: "Use before editing a codebase you didn't create — locate the right file instead of guessing paths."
+        description: "Find files in this conversation's workspace by filename pattern, by content, or both. glob filters filenames (\"*\" and \"?\" wildcards, matched against the workspace-relative path and against the bare filename); query is a case-insensitive regular expression matched line by line against file contents. With query the result is \"path:line: text\" per match, with glob alone it is a list of paths. Capped at 100 results, which it says when it hits.",
+        parametersJSON: #"{"type":"object","properties":{"glob":{"type":"string","description":"Filename pattern, e.g. \"*.md\" or \"src/*.ts\". Omit to consider every file."},"query":{"type":"string","description":"Regular expression matched against file contents, e.g. \"func handle[A-Z]\". Omit to list files by name only."}}}"#,
+        guidance: "Use it to locate code in a folder you didn't create instead of guessing paths, and read the file before editing it. If a content search returns the 100-result cap, narrow it with glob rather than working from a truncated list."
     )
     static let runCommand = Definition(
         name: "run_command",
-        description: "Run a shell command in the conversation's workspace directory and get its stdout/stderr and exit code. Read-only commands run immediately; anything that could modify the system pauses for the user's approval. Use for building, testing, git, and inspecting a real project.",
-        parametersJSON: #"{"type":"object","properties":{"command":{"type":"string","description":"The exact shell command to run"}},"required":["command"]}"#,
-        summary: "run a shell command in the workspace",
-        guidance: "Prefer rg over grep and small, composable commands. The user may deny a command — if so, read their reason and adapt. Never assume a command ran; check the exit code in the result."
+        description: "Run one shell command (via zsh) with this conversation's workspace as the working directory, and get back its combined stdout and stderr prefixed by the exit status. Read-only commands run immediately; anything that could modify the system or reach the network pauses for the user's explicit approval, and they may edit or deny it. Each call is a fresh shell, so `cd` and exported variables do not carry over between calls. Output is capped at 20 KB.",
+        parametersJSON: #"{"type":"object","properties":{"command":{"type":"string","description":"The exact command line to run, e.g. \"git status --short\". One command per call; chain with && only when the steps are genuinely inseparable."}},"required":["command"]}"#,
+        guidance: "Keep commands small, explicit, and approvable at a glance — a wall of chained shell is a command the user will deny. Prefer rg over grep. Never assume a command worked: read the exit status in the result. If the user denies one, read their reason and adapt instead of reissuing it."
     )
     /// The real-tool half of asking the user a question. The fenced
     /// ```ask-user block still exists for providers without tool calling
@@ -125,79 +133,67 @@ enum ToolCatalog {
     /// reply. Only one of the two is ever advertised at a time.
     static let askUser = Definition(
         name: "ask_user",
-        description: "Ask the user one to four multiple-choice questions and wait for their answer before continuing. The generation pauses on an interactive card and their selections come back as the tool result, so you can keep working in the same reply. Use it for a real decision or genuine ambiguity about what they want — never for something a tool or the conversation itself can answer, and never to ask permission to use a tool.",
-        parametersJSON: #"{"type":"object","properties":{"questions":{"type":"array","description":"1-4 questions, each with 2-4 mutually distinct options","items":{"type":"object","properties":{"header":{"type":"string","description":"Very short chip label, max ~12 chars (e.g. \"Scope\", \"Auth\")"},"question":{"type":"string","description":"The full question"},"multiSelect":{"type":"boolean","description":"true only when several options genuinely combine"},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string","description":"Short option name"},"description":{"type":"string","description":"One-sentence explanation"},"recommended":{"type":"boolean","description":"At most ONE per question, listed first"}},"required":["label","description"]}}},"required":["question","options"]}},"allowNotes":{"type":"boolean","description":"Let the user attach a free-text note"}},"required":["questions"]}"#,
-        summary: "ask the user a multiple-choice question and wait for the answer",
-        guidance: "Batch related decisions into ONE call rather than asking across several replies. Mark at most one option per question as recommended and list it first. Reserve this for choices that genuinely change what you do next — routine work should just proceed."
+        description: "Put one to four multiple-choice questions to the user on an interactive card and wait for the answer. Everything you have written so far stays on screen, generation pauses, and their selections — plus any free-text note — come back as this tool's result, so you continue in the same reply. A human is answering, so there is no time limit; if they dismiss the card you are told so, and should continue on your best judgement.",
+        parametersJSON: #"{"type":"object","properties":{"questions":{"type":"array","description":"1-4 questions, each with 2-4 mutually distinct options","items":{"type":"object","properties":{"header":{"type":"string","description":"Very short chip label, max ~12 characters (e.g. \"Scope\", \"Auth\")"},"question":{"type":"string","description":"The full question, as one sentence"},"multiSelect":{"type":"boolean","description":"true only when several options genuinely combine; default false"},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string","description":"Short option name, a few words"},"description":{"type":"string","description":"One sentence saying what choosing this means"},"recommended":{"type":"boolean","description":"At most ONE per question, and list that option first"}},"required":["label","description"]}}},"required":["question","options"]}},"allowNotes":{"type":"boolean","description":"Let the user attach a free-text note alongside their selections"}},"required":["questions"]}"#,
+        guidance: "Write first, then ask. Give the user a short, genuinely useful reply — what you already know, or the part of the work you can do without the answer — finish the thought, and put the question at the end of it; calling this mid-sentence leaves them staring at half a paragraph behind a question card. Batch every related decision into ONE call rather than asking again next reply. Reserve it for choices that actually change what you do next: never to ask permission to use a tool, and never for something a tool or the conversation itself already answers."
     )
 
     static let updatePlan = Definition(
         name: "update_plan",
-        description: "Maintain a visible step-by-step plan for a multi-step task. Each step is a short phrase (5-7 words) with a status: pending, in_progress, or completed. Keep exactly one step in_progress until everything is done. Call again to advance the plan as you work.",
-        parametersJSON: #"{"type":"object","properties":{"steps":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"]}}},"required":["steps"]}"#,
-        summary: "post or update the task plan",
-        guidance: "Only for genuinely multi-step work — never pad a simple task with a plan. Update it as steps complete so the user can follow along."
+        description: "Post or replace the visible step-by-step plan shown to the user for this reply. Each call sends the whole plan, not a delta: repeat every step with its current status. Steps are short phrases (5-7 words) with a status of pending, in_progress, or completed, and exactly one step should be in_progress until the work is done.",
+        parametersJSON: #"{"type":"object","properties":{"steps":{"type":"array","description":"The complete plan in order — every step, every time","items":{"type":"object","properties":{"step":{"type":"string","description":"Short imperative phrase, 5-7 words"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"pending, in_progress (exactly one), or completed"}},"required":["step","status"]}}},"required":["steps"]}"#,
+        guidance: "Only for genuinely multi-step work — padding a simple task with a plan is noise. Call it again as each step finishes so the user can follow along, rather than posting it once and going quiet."
     )
 
     static let getSchedule = Definition(
         name: "get_schedule",
-        description: "Read the user's upcoming calendar events and open reminders (read-only, from the system Calendar and Reminders). The first call may trigger a one-time system permission prompt.",
-        parametersJSON: #"{"type":"object","properties":{"days":{"type":"integer","description":"How many days ahead to look, 1-7 (default 7)"}}}"#,
-        summary: "read the user's upcoming calendar events and reminders",
-        guidance: "Use for anything about the user's schedule, availability, or todos. If access was denied, relay that honestly instead of guessing."
+        description: "Read the user's upcoming calendar events and open (incomplete) reminders from the system Calendar and Reminders apps. Read-only. Returns events with their start time, end time, and calendar name, then reminders with their due dates. The first call may raise a one-time macOS permission prompt, and a denial comes back as an explicit error.",
+        parametersJSON: #"{"type":"object","properties":{"days":{"type":"integer","description":"How many days ahead to look, 1-7 (default 7). Values outside that range are clamped."}}}"#,
+        guidance: "Use it for anything about the user's schedule, availability, or todos rather than asking them to tell you what's on their calendar. If access was denied, relay that plainly instead of guessing or pretending the calendar is empty."
     )
     static let createScheduleItem = Definition(
         name: "create_schedule_item",
-        description: "Create a reminder or a calendar event in the user's own Reminders/Calendar. Use when they ask to be reminded of something or to put something on their calendar.",
-        parametersJSON: #"{"type":"object","properties":{"kind":{"type":"string","enum":["reminder","event"],"description":"reminder (todo, optional due date) or event (needs a start time)"},"title":{"type":"string"},"start":{"type":"string","description":"ISO 8601 local time, e.g. 2026-08-20T15:00:00 — required for events, optional due date for reminders"},"duration_minutes":{"type":"integer","description":"Event length, default 60"},"notes":{"type":"string"}},"required":["kind","title"]}"#,
-        summary: "create a reminder or calendar event",
-        guidance: "Resolve relative times against the current date in your Environment section before calling — pass a concrete ISO timestamp, never \"tomorrow\". Confirm back what you created, including the time."
+        description: "Create a reminder or a calendar event in the user's own Reminders/Calendar app, in their default list or calendar. Events need a start time; reminders may have one as an optional due date. Confirms back what was created, with the resolved date and the list or calendar it landed in.",
+        parametersJSON: #"{"type":"object","properties":{"kind":{"type":"string","enum":["reminder","event"],"description":"\"reminder\" for a todo (due date optional) or \"event\" for a calendar entry (start time required)"},"title":{"type":"string","description":"The title as it should read in Reminders or Calendar"},"start":{"type":"string","description":"Local wall-clock time in ISO 8601, e.g. \"2026-08-20T15:00:00\" — an already-resolved absolute timestamp, never a relative phrase"},"duration_minutes":{"type":"integer","description":"Event length in minutes (default 60); ignored for reminders"},"notes":{"type":"string","description":"Optional body text stored with the item"}},"required":["kind","title"]}"#,
+        guidance: "Resolve relative times (\"tomorrow at 3\", \"next Friday\") against the current date in your Environment section yourself and pass the concrete timestamp — the tool does no relative-date parsing. Repeat the time back to the user so they can catch a misreading."
     )
     static let systemStatus = Definition(
         name: "system_status",
-        description: "Read this Mac's current state: battery level and charging status, free disk space, installed memory, uptime, macOS version, and which media apps are running.",
+        description: "Read this Mac's current state in one call: battery percentage and whether it's charging, free and total disk space, installed memory, uptime, macOS version, and which media apps are currently running. A snapshot at call time, not a history.",
         parametersJSON: #"{"type":"object","properties":{}}"#,
-        summary: "read this Mac's battery, disk, memory, and uptime",
-        guidance: "Use when the user asks about their machine (\"is my battery ok\", \"am I low on space\") instead of guessing or asking them to check."
+        guidance: "Use it when the user asks about their machine (\"is my battery ok\", \"am I low on space\", \"what's playing\") instead of guessing or asking them to go and check."
     )
     static let analyzeImage = Definition(
         name: "analyze_image",
-        description: "Extract text (OCR) and scene labels from an image attachment in this conversation, on-device. Use when you cannot see images directly but the user attached one.",
-        parametersJSON: #"{"type":"object","properties":{"filename":{"type":"string","description":"The attachment's filename"}},"required":["filename"]}"#,
-        summary: "read text and content from an attached image",
-        guidance: "This returns OCR text and rough scene labels, not a full visual description — say so if the user asks for something the analysis can't support."
+        description: "Run on-device Vision analysis over an image attached to this conversation: returns the image's pixel dimensions, the text found in it by OCR, and a short list of scene labels. It is not a visual description — it cannot tell you layout, colours, style, or who is in a photo.",
+        parametersJSON: #"{"type":"object","properties":{"filename":{"type":"string","description":"The image attachment's filename as it appears in the conversation; the error lists the available images if it doesn't match"}},"required":["filename"]}"#,
+        guidance: "Use it when you cannot see images yourself but the user attached one — screenshots of text and error messages are what it's best at. If they ask for something OCR and scene labels can't support, say that plainly rather than inventing a description."
     )
     static let readClipboard = Definition(
         name: "read_clipboard",
-        description: "Read the user's current clipboard (text or file names). Use when they reference what they just copied.",
+        description: "Read what is currently on the user's clipboard — text, or the names of copied files. Reads only at the moment of the call; it cannot see clipboard history or watch for changes.",
         parametersJSON: #"{"type":"object","properties":{}}"#,
-        summary: "read the current clipboard",
-        guidance: "\"What do you think of this?\" right after a copy usually means the clipboard — read it instead of asking them to paste."
+        guidance: "\"What do you think of this?\" right after the user copied something usually means the clipboard — read it instead of asking them to paste it in."
     )
 
     static let saveMemory = Definition(
         name: "save_memory",
-        description: "Save a durable fact about the user to your persistent memory — it will be available in every future conversation. One short, standalone sentence per call, with a topic for grouping (reuse existing topics from search_memory when one fits).",
-        parametersJSON: #"{"type":"object","properties":{"content":{"type":"string","description":"The fact, as one short standalone sentence"},"topic":{"type":"string","description":"A short grouping topic, e.g. a project name, \"Preferences\", \"Work\""}},"required":["content","topic"]}"#,
-        summary: "save a durable fact to your persistent cross-conversation memory",
-        guidance: "Save preferences, recurring projects, and facts the user states about themselves — proactively, without asking. Never save secrets, credentials, or trivia only relevant right now."
+        description: "Save one durable fact about the user to persistent memory, available in every future conversation. One short standalone sentence per call — standalone because it will be read without this conversation around it — filed under a topic used for grouping. Reuse an existing topic from search_memory when one fits rather than inventing a near-duplicate.",
+        parametersJSON: #"{"type":"object","properties":{"content":{"type":"string","description":"The fact as one short sentence that makes sense on its own, e.g. \"Prefers Swift over Objective-C for new work\" — not \"they said yes to that\""},"topic":{"type":"string","description":"Short grouping topic, e.g. a project name, \"Preferences\", or \"Work\""}},"required":["content","topic"]}"#,
+        guidance: "Save preferences, recurring projects, and facts the user states about themselves — do it as you learn them, without asking permission first. Never save secrets, credentials, or something only relevant to today's task."
     )
     static let searchMemory = Definition(
         name: "search_memory",
-        description: "Search your persistent memory for stored facts. Returns matching memories with their ids and topics — the id is what edit_memory needs.",
-        parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"A word or phrase to look for; empty returns the most recent memories"}},"required":["query"]}"#,
-        summary: "search your persistent memory",
-        guidance: "The prompt only carries the memories that look relevant — search before assuming you don't know something about the user."
+        description: "Search persistent memory for stored facts. Returns each match as \"[id] (topic) content\" — the id is what edit_memory needs. Matching is a case-insensitive substring test over content and topic; an empty query returns the 12 most recent memories instead.",
+        parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"A single word or short phrase to look for, matched literally. Pass an empty string to see the most recent memories."}},"required":["query"]}"#,
+        guidance: "The prompt only carries the memories that looked relevant up front, so search here before telling the user you don't know something about them. Search before saving, too — it's how you find the right existing topic and avoid a duplicate."
     )
     static let editMemory = Definition(
         name: "edit_memory",
-        description: "Update or delete one stored memory by id (get ids from search_memory). Use when a stored fact becomes wrong or obsolete.",
-        parametersJSON: #"{"type":"object","properties":{"id":{"type":"string","description":"The memory's id, from search_memory"},"action":{"type":"string","enum":["update","delete"]},"content":{"type":"string","description":"Replacement text (update only)"},"topic":{"type":"string","description":"Replacement topic (update only)"}},"required":["id","action"]}"#,
-        summary: "update or delete a stored memory",
-        guidance: "Keep memory truthful: when the user corrects something you had saved, update it rather than saving a contradicting duplicate."
+        description: "Update or delete one stored memory, identified by the id that search_memory returns. \"update\" replaces the content and/or topic; \"delete\" removes the memory permanently.",
+        parametersJSON: #"{"type":"object","properties":{"id":{"type":"string","description":"The memory's id exactly as search_memory printed it in square brackets"},"action":{"type":"string","enum":["update","delete"],"description":"\"update\" to rewrite it, \"delete\" to remove it"},"content":{"type":"string","description":"Replacement text (update only); omit to keep the existing content"},"topic":{"type":"string","description":"Replacement topic (update only); omit to keep the existing topic"}},"required":["id","action"]}"#,
+        guidance: "Keep memory truthful: when the user corrects something you had saved, look it up and update it rather than saving a contradicting second copy. Delete what has simply stopped being true."
     )
-
-
 
     /// What a tool call actually needs at execution time — read-only
     /// snapshots, not a live reference to `AppModel` (this runs from
@@ -290,8 +286,23 @@ enum ToolCatalog {
     /// Outer wrapper: repairs malformed argument JSON where possible and
     /// bounds every tool at 120s — one hung tool must not wedge the whole
     /// reply. ("Error" prefix remains load-bearing for activity tinting.)
+    ///
+    /// `ask_user` is the single exception (`isBoundedByTimeout`), because
+    /// what it is waiting for is a *person* reading a card and picking
+    /// answers to up to four questions. Two minutes is a perfectly normal
+    /// amount of time for that, and the machine timeout was firing on real
+    /// users: the card would still be on screen when the model was handed
+    /// "Error: the ask_user tool timed out after 120 seconds" and carried
+    /// on without the answer it had just asked for. A stuck ask_user is
+    /// also the one case where a bound isn't needed for safety — the user
+    /// can always press Stop, and `AppModel+Generation.stopGeneration`
+    /// resolves `pendingQuestion` with `nil` *before* cancelling the task
+    /// precisely so the continuation can never be stranded.
     static func execute(name: String, argumentsJSON: String, context: ExecutionContext) async -> String {
-        await withTaskGroup(of: String?.self) { group in
+        guard isBoundedByTimeout(name) else {
+            return await executeInner(name: name, argumentsJSON: argumentsJSON, context: context)
+        }
+        return await withTaskGroup(of: String?.self) { group in
             group.addTask {
                 await executeInner(name: name, argumentsJSON: argumentsJSON, context: context)
             }

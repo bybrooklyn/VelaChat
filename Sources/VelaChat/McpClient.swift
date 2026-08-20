@@ -338,7 +338,6 @@ final class McpManager {
                     name: Self.prefixedName(server: config.name, tool: tool.name),
                     description: tool.description.isEmpty ? "A tool provided by the '\(config.name)' MCP server." : tool.description,
                     parametersJSON: tool.inputSchemaJSON,
-                    summary: tool.description.isEmpty ? "'\(tool.name)' from the \(config.name) MCP server" : String(tool.description.prefix(120)),
                     guidance: "Provided by the '\(config.name)' MCP server."
                 ))
             }
