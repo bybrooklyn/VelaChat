@@ -30,6 +30,11 @@ enum Limits {
     static let commandRulesPerFolder = 50
     /// Conversation titles, and exported filenames derived from them.
     static let titleCharacters = 60
+    /// One stored memory. A durable fact about a person is a sentence;
+    /// anything past this is a summary of a conversation wearing a fact's
+    /// clothes, and `MemoryCapture` refuses it rather than truncating —
+    /// half a fact is worse than none.
+    static let memoryFactCharacters = 240
 
     /// An older round's tool result, as replayed into *later* rounds of
     /// the same reply. Distinct from `toolResultBytes` above, which bounds

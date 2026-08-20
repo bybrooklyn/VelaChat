@@ -682,17 +682,27 @@ struct AskUserQuestionCard: View {
 /// clean; when it does appear, every item can be jumped to or forgotten,
 /// because memory the user can't inspect or correct is memory they can't
 /// trust.
+///
+/// The two kinds of recall are shown as two labelled groups rather than
+/// one list. They are not the same thing and cannot be acted on the same
+/// way: a saved fact is a short standing statement the user can strike
+/// out individually, while an excerpt is a fragment of a real past
+/// message whose only useful action is "show me where that came from".
+/// Merged into one list the whole row read as undifferentiated noise, and
+/// the "Open" button appearing on some rows and not others looked like a
+/// bug rather than a difference in kind.
 struct RecallLine: View {
     @Environment(AppModel.self) private var appModel
     let recalls: [MemoryRecall]
     @State private var isExpanded = false
 
+    private var facts: [MemoryRecall] { recalls.filter(\.isFact) }
+    private var excerpts: [MemoryRecall] { recalls.filter { !$0.isFact } }
+
     private var summary: String {
-        let facts = recalls.filter(\.isFact).count
-        let chats = recalls.count - facts
         var parts: [String] = []
-        if facts > 0 { parts.append("\(facts) memor\(facts == 1 ? "y" : "ies")") }
-        if chats > 0 { parts.append("\(chats) past \(chats == 1 ? "message" : "messages")") }
+        if !facts.isEmpty { parts.append("\(facts.count) saved fact\(facts.count == 1 ? "" : "s")") }
+        if !excerpts.isEmpty { parts.append("\(excerpts.count) past \(excerpts.count == 1 ? "message" : "messages")") }
         return "Drew on " + parts.joined(separator: " and ")
     }
 
@@ -718,37 +728,12 @@ struct RecallLine: View {
             .accessibilityLabel("What this reply drew on")
 
             if isExpanded {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(recalls) { recall in
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: recall.isFact ? "bookmark" : "bubble.left.and.text.bubble.right")
-                                .font(.system(size: 9))
-                                .foregroundStyle(Theme.tertiaryText)
-                                .padding(.top, 2)
-                            Text(recall.text)
-                                .font(.caption)
-                                .foregroundStyle(Theme.secondaryText)
-                                .lineLimit(3)
-                            Spacer(minLength: 0)
-                            if case .conversation(let conversationID, _) = recall.origin {
-                                Button("Open") { appModel.openConversation(id: conversationID) }
-                                    .buttonStyle(.plain)
-                                    .font(.caption2)
-                                    .foregroundStyle(Theme.accent)
-                                    .help("Jump to that conversation")
-                                    .accessibilityLabel("Jump to that conversation")
-                            }
-                            Button {
-                                appModel.forgetRecall(recall)
-                            } label: {
-                                Image(systemName: "xmark.circle")
-                                    .font(.system(size: 10))
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(Theme.tertiaryText)
-                            .help("Don't use this again")
-                            .accessibilityLabel("Don't use this again")
-                        }
+                VStack(alignment: .leading, spacing: 10) {
+                    if !facts.isEmpty {
+                        group(title: "Saved facts", items: facts)
+                    }
+                    if !excerpts.isEmpty {
+                        group(title: "From past conversations", items: excerpts)
                     }
                 }
                 .padding(.leading, 16)
@@ -756,5 +741,51 @@ struct RecallLine: View {
             }
         }
         .padding(.top, 2)
+    }
+
+    private func group(title: String, items: [MemoryRecall]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Theme.tertiaryText)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(items) { recall in
+                row(recall)
+            }
+        }
+    }
+
+    private func row(_ recall: MemoryRecall) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: recall.isFact ? "bookmark" : "bubble.left.and.text.bubble.right")
+                .font(.system(size: 9))
+                .foregroundStyle(Theme.tertiaryText)
+                .padding(.top, 2)
+            Text(recall.text)
+                .font(.caption)
+                .foregroundStyle(Theme.secondaryText)
+                .lineLimit(3)
+            Spacer(minLength: 0)
+            if case .conversation(let conversationID, _) = recall.origin {
+                Button("Open") { appModel.openConversation(id: conversationID) }
+                    .buttonStyle(.plain)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.accent)
+                    .help("Jump to that conversation")
+                    .accessibilityLabel("Jump to that conversation")
+            }
+            Button {
+                // Still a real delete on both paths: a fact is removed
+                // from the store, an excerpt is dropped from the index.
+                appModel.forgetRecall(recall)
+            } label: {
+                Image(systemName: "xmark.circle")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.tertiaryText)
+            .help(recall.isFact ? "Forget this fact" : "Stop using this message")
+            .accessibilityLabel(recall.isFact ? "Forget this fact" : "Stop using this message")
+        }
     }
 }

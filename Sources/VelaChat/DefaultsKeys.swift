@@ -24,9 +24,23 @@ enum DefaultsKey {
     static let autoTitle = "velachat.auto-title-enabled"
     static let customInstructions = "velachat.custom-instructions"
     static let promptSnippets = "velachat.prompt-snippets"
+    /// The pre-`MemoryStore` fact array. Read exactly once, by
+    /// `LegacyMemoryMigration`, and removed the moment every fact is
+    /// verified inside the store — facts have one home now.
     static let memories = "velachat.memories"
+    /// Set once `memories` has been migrated into `MemoryStore` and
+    /// deleted. Unset means the legacy array is still authoritative and
+    /// must not be touched (precedent: `skillsMigrationV1`).
+    static let memoriesMigrationV1 = "velachat.memories-migration-v1"
     /// Per-provider memory permission, suffixed with the provider's UUID.
     static let memoryAllowedPrefix = "velachat.memory-allowed."
+    /// Opt-in hosted embeddings for memory. OFF unless the user turns it
+    /// on: enabling it means memory text leaves this Mac.
+    static let remoteEmbeddingsEnabled = "velachat.remote-embeddings-enabled"
+    static let remoteEmbeddingEndpoint = "velachat.remote-embedding-endpoint"
+    static let remoteEmbeddingModel = "velachat.remote-embedding-model"
+    /// Which provider profile's key authenticates the embedding endpoint.
+    static let remoteEmbeddingProvider = "velachat.remote-embedding-provider"
 
     // Providers
     static let providerProfiles = "velachat.provider-profiles"

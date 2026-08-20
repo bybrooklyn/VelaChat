@@ -140,7 +140,20 @@ actor MemoryStore {
         // summaries are mirrored into `chunks` too (see `upsertRollup`), so
         // this single index is also the "same FTS layer" rollups are found
         // through — `recall` needs no rollup-specific query.
-        execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, content='chunks', content_rowid='id');")
+        //
+        // `porter` stems on both sides of the match, so a question asking
+        // about "preferences" reaches a message that said "prefers". FTS5
+        // is the gate for the whole retrieval design, so a fact that exists
+        // but never comes back is an FTS5 problem, and unstemmed exact
+        // tokens were the biggest source of those.
+        var chunksNeedsRebuild = chunksNeedsFTSRebuild
+        if let existing = tableSQL("chunks_fts"), !existing.contains("porter") {
+            // The shadow index is fully derivable from `chunks`, so
+            // swapping the tokenizer costs a rebuild and loses nothing.
+            execute("DROP TABLE chunks_fts;")
+            chunksNeedsRebuild = true
+        }
+        execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, content='chunks', content_rowid='id', tokenize='porter unicode61');")
         execute("""
         CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
             INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
@@ -157,7 +170,7 @@ actor MemoryStore {
             INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
         END;
         """)
-        if chunksNeedsFTSRebuild {
+        if chunksNeedsRebuild {
             // The external-content table just got new rowids from the copy
             // in migrateChunksSchemaIfNeeded; the shadow index has to be
             // rebuilt from the content table rather than trusting triggers
@@ -173,6 +186,52 @@ actor MemoryStore {
             updated_at REAL NOT NULL
         );
         """)
+
+        migrateFactsFTSIfNeeded()
+    }
+
+    /// Facts get the same FTS5 treatment chunks have always had.
+    ///
+    /// They used to be matched by scanning every row and testing
+    /// `content.contains(term)`, which sounds broader than an index and is
+    /// narrower where it counts: a substring test cannot stem, so the query
+    /// "what are their preferences" never matched "User prefers concise
+    /// answers", and it cannot rank, so the six facts returned were
+    /// whichever six happened to contain the most query words. With an
+    /// index, the same candidates come back ordered by BM25 and stemmed on
+    /// both sides — while keeping the property the whole design rests on,
+    /// that FTS5 can only return text that genuinely matched.
+    ///
+    /// It also gives dedupe (`write`) a way to ask "is this already
+    /// stored?" without scanning the table on every save.
+    private func migrateFactsFTSIfNeeded() {
+        let existing = tableSQL("facts_fts")
+        let needsRebuild = existing == nil || !(existing ?? "").contains("porter")
+        if existing != nil, needsRebuild {
+            execute("DROP TABLE facts_fts;")
+        }
+        execute("CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(content, topic, content='facts', tokenize='porter unicode61');")
+        execute("""
+        CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+            INSERT INTO facts_fts(rowid, content, topic) VALUES (new.rowid, new.content, new.topic);
+        END;
+        """)
+        execute("""
+        CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, content, topic) VALUES('delete', old.rowid, old.content, old.topic);
+        END;
+        """)
+        execute("""
+        CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, content, topic) VALUES('delete', old.rowid, old.content, old.topic);
+            INSERT INTO facts_fts(rowid, content, topic) VALUES (new.rowid, new.content, new.topic);
+        END;
+        """)
+        // Existing facts predate the index (or predate the tokenizer it now
+        // uses); without this they would silently never match again.
+        if needsRebuild {
+            execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild');")
+        }
     }
 
     /// Legacy databases predate passages: one `chunks` row per message,
@@ -236,20 +295,77 @@ actor MemoryStore {
 
     // MARK: - Facts
 
-    func saveFact(content: String, topic: String?, sourceConversationID: UUID?, tier: FactTier = .confirmed) -> UUID? {
+    /// What a write actually did, for the paths that have to tell the user
+    /// (or the model) which of the two things happened.
+    struct WriteResult: Sendable {
+        let id: UUID
+        /// The stored text, after `MemoryPhrasing.normalize` — the caller
+        /// asked to save something, and this is what memory now says.
+        let content: String
+        /// True when a near-identical fact already existed and was updated
+        /// in place rather than twinned.
+        let didMerge: Bool
+    }
+
+    /// The model-facing outcome of `save_memory`.
+    enum CaptureOutcome: Sendable {
+        case saved(String)
+        case merged(String)
+        /// Already carries the reason, phrased for the model.
+        case rejected(String)
+    }
+
+    /// `save_memory`'s real entry point: capture rules first, then the
+    /// normal write.
+    ///
+    /// The rules live behind the write rather than only in the tool's
+    /// description because a description is a request. In practice the
+    /// model saved something on nearly every turn — task state, one-off
+    /// details, its own summaries — and no amount of prose stopped it.
+    /// A refusal with a reason does, and it costs one tool round.
+    func capture(content: String, topic: String?, sourceConversationID: UUID?) -> CaptureOutcome {
+        if let rejection = MemoryCapture.rejection(for: content) {
+            return .rejected(rejection.message)
+        }
+        guard let result = write(content: content, topic: topic, sourceConversationID: sourceConversationID, tier: .confirmed) else {
+            return .rejected("Error: the memory could not be saved.")
+        }
+        return result.didMerge ? .merged(result.content) : .saved(result.content)
+    }
+
+    /// Normalizes the phrasing, folds the fact into a near-identical
+    /// existing one if there is one, and otherwise inserts a row.
+    ///
+    /// Capture rules are deliberately NOT applied here: this is also the
+    /// path a person types on in Settings, and a human writing their own
+    /// fact by hand is not the over-saving problem `MemoryCapture` exists
+    /// to solve. Phrasing and dedupe apply to everything, because both are
+    /// about the shape of the store rather than about who is writing.
+    @discardableResult
+    func write(content: String, topic: String?, sourceConversationID: UUID?, tier: FactTier = .confirmed) -> WriteResult? {
         open()
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        let normalized = MemoryPhrasing.normalize(content)
+        guard !normalized.isEmpty else { return nil }
+
+        if let existing = duplicateFactID(of: normalized) {
+            // Update in place. Deterministic, no model call, no background
+            // pass: a "dreaming" merge that reasons about which of two
+            // facts is truer was considered and deliberately deferred,
+            // because a wrong merge silently destroys a true fact.
+            updateFact(id: existing, content: normalized, topic: topic)
+            return WriteResult(id: existing, content: normalized, didMerge: true)
+        }
+
         let id = UUID()
         let now = Date().timeIntervalSince1970
-        let embedding = MemoryEmbedder.shared.vector(for: trimmed)
+        let embedding = MemoryEmbedder.shared.vector(for: normalized)
         guard let statement = prepare("""
             INSERT INTO facts (id, content, topic, created_at, updated_at, use_count, source_conversation, embedding, tier)
             VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?);
             """) else { return nil }
         defer { sqlite3_finalize(statement) }
         bindText(statement, 1, id.uuidString)
-        bindText(statement, 2, trimmed)
+        bindText(statement, 2, normalized)
         bindText(statement, 3, topic)
         sqlite3_bind_double(statement, 4, now)
         sqlite3_bind_double(statement, 5, now)
@@ -257,7 +373,37 @@ actor MemoryStore {
         bindBlob(statement, 7, embedding.map(Self.encode))
         bindText(statement, 8, tier.rawValue)
         guard sqlite3_step(statement) == SQLITE_DONE else { return nil }
-        return id
+        return WriteResult(id: id, content: normalized, didMerge: false)
+    }
+
+    func saveFact(content: String, topic: String?, sourceConversationID: UUID?, tier: FactTier = .confirmed) -> UUID? {
+        write(content: content, topic: topic, sourceConversationID: sourceConversationID, tier: tier)?.id
+    }
+
+    /// How alike two facts have to be before one replaces the other.
+    ///
+    /// 0.7, with the measured numbers in `MemoryPhrasing.similarity`: the
+    /// pairs that must stay separate ("two cats" vs "two dogs", "works in
+    /// Swift" vs "works in Rust") score 0.5, and the restatements that
+    /// should fold together ("works in Swift" vs "works mainly in Swift",
+    /// "prefers concise answers" vs "strongly prefers concise answers")
+    /// score 0.75. A missed merge costs a duplicate row; a wrong merge
+    /// costs the truth, so the threshold sits nearer the upper pair.
+    private static let duplicateSimilarity = 0.7
+
+    /// FTS5 proposes, token overlap decides. The index narrows thousands
+    /// of facts to the handful that share vocabulary; the merge itself is
+    /// a deterministic comparison, never a similarity score from a model
+    /// or an embedding — the same reason recall is keyword-first.
+    private func duplicateFactID(of normalized: String) -> UUID? {
+        // "user" is in every normalized fact, so it identifies nothing.
+        let terms = Self.searchTerms(normalized).filter { $0 != "user" }
+        guard !terms.isEmpty else { return nil }
+        for candidate in factMatches(terms: terms, limit: 12)
+        where MemoryPhrasing.similarity(normalized, candidate.content) >= Self.duplicateSimilarity {
+            return candidate.id
+        }
+        return nil
     }
 
     /// Convenience for a future background extractor: same write path as
@@ -268,14 +414,20 @@ actor MemoryStore {
         saveFact(content: content, topic: topic, sourceConversationID: sourceConversationID, tier: .inferred)
     }
 
-    /// Insert-or-replace by caller-supplied id, so the fact list the user
-    /// edits in Settings and the searchable copy here can't drift apart.
-    /// Always writes `confirmed`: this is the save_memory / Settings-edit
-    /// path, and editing a fact by hand is itself a confirmation even if
-    /// the row started out some other way.
+    /// Insert-or-replace by caller-supplied id. This is the path
+    /// `LegacyMemoryMigration` uses, where the id has to survive the move
+    /// so a fact keeps its identity across the migration — the ordinary
+    /// save path is `write`, which mints its own id and dedupes.
+    ///
+    /// Always writes `confirmed`: a fact carried over from the user's own
+    /// list, or edited by hand, is confirmed by definition even if the row
+    /// started out some other way.
     func upsertFact(id: UUID, content: String, topic: String?) {
         open()
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Normalized like every other write, so a fact carried in by the
+        // migration reads the same as one saved today — which is also what
+        // lets dedupe ever compare the two.
+        let trimmed = MemoryPhrasing.normalize(content)
         guard !trimmed.isEmpty else { return }
         let now = Date().timeIntervalSince1970
         let embedding = MemoryEmbedder.shared.vector(for: trimmed)
@@ -297,15 +449,19 @@ actor MemoryStore {
 
     func updateFact(id: UUID, content: String?, topic: String?) {
         open()
-        if let content, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let embedding = MemoryEmbedder.shared.vector(for: content)
-            guard let statement = prepare("UPDATE facts SET content = ?, updated_at = ?, embedding = ? WHERE id = ?;") else { return }
-            defer { sqlite3_finalize(statement) }
-            bindText(statement, 1, content)
-            sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
-            bindBlob(statement, 3, embedding.map(Self.encode))
-            bindText(statement, 4, id.uuidString)
-            sqlite3_step(statement)
+        // Normalized here too: an edit is a write, and a fact edited into
+        // a different voice would stop matching its own duplicates.
+        let normalized = content.map(MemoryPhrasing.normalize) ?? ""
+        if !normalized.isEmpty {
+            let embedding = MemoryEmbedder.shared.vector(for: normalized)
+            if let statement = prepare("UPDATE facts SET content = ?, updated_at = ?, embedding = ? WHERE id = ?;") {
+                bindText(statement, 1, normalized)
+                sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
+                bindBlob(statement, 3, embedding.map(Self.encode))
+                bindText(statement, 4, id.uuidString)
+                sqlite3_step(statement)
+                sqlite3_finalize(statement)
+            }
         }
         if let topic {
             guard let statement = prepare("UPDATE facts SET topic = ?, updated_at = ? WHERE id = ?;") else { return }
@@ -323,6 +479,19 @@ actor MemoryStore {
         defer { sqlite3_finalize(statement) }
         bindText(statement, 1, id.uuidString)
         sqlite3_step(statement)
+    }
+
+    /// Full reset. `AppModel.performFullReset` deletes the Application
+    /// Support folder the database file lives in, but this actor is still
+    /// holding an open handle to it: the unlinked file stays readable for
+    /// the rest of the process, so everything in it would go on being
+    /// recalled until the app was quit. Emptying the tables is what makes
+    /// the reset take effect immediately.
+    func deleteEverything() {
+        open()
+        execute("DELETE FROM facts;")
+        execute("DELETE FROM chunks;")
+        execute("DELETE FROM rollups;")
     }
 
     func allFacts() -> [Fact] {
@@ -578,8 +747,17 @@ actor MemoryStore {
     /// So FTS5 decides what counts as a candidate — it cannot invent a
     /// match — and embeddings only reorder those candidates, where the set
     /// is already topically constrained. Real semantic recall needs a real
-    /// embedding model; that is what the opt-in pplx-embed/MLX upgrade is
-    /// for, and until it lands this stays honest about what it can do.
+    /// embedding model; that is what the opt-in hosted-embedding upgrade
+    /// is for (see `MemoryEmbedder`), and until it lands this stays honest
+    /// about what it can do.
+    ///
+    /// Because FTS5 is the gate, everything the gate cannot express is a
+    /// fact that exists and can never be recalled. So the query is built
+    /// as wide as it can be without losing the "cannot invent a match"
+    /// property: stopwords dropped (`searchTerms`), the rest OR-ed and
+    /// prefix-matched over `porter`-stemmed tables
+    /// (`matchExpression(for:)`), ranked by BM25, and only then re-ranked
+    /// by embedding.
     ///
     /// `context` is recent conversation text (e.g. the last couple of
     /// turns) that widens candidacy without pretending it's what the user
@@ -664,33 +842,83 @@ actor MemoryStore {
         return blob(statement, 0).map(Self.decode)
     }
 
-    /// Facts matched lexically. The set is small and user-curated, so a
-    /// scan beats maintaining a second FTS table for it.
-    private func keywordFacts(terms: [String], limit: Int) -> [Hit] {
+    /// One matched fact row, before it becomes a `Hit` — shared by recall
+    /// and by dedupe, which need the same candidates for different reasons.
+    private struct FactMatch {
+        let id: UUID
+        let content: String
+        let tier: String
+        /// Raw BM25 (lower is better).
+        let rank: Double
+    }
+
+    /// Facts matched through `facts_fts`, ranked by BM25 with content
+    /// weighted above topic — a fact whose *body* is about the query is a
+    /// better answer than one that merely sits under a matching topic.
+    private func factMatches(terms: [String], limit: Int) -> [FactMatch] {
         guard !terms.isEmpty else { return [] }
-        guard let statement = prepare("SELECT id, content, topic, tier FROM facts;") else { return [] }
+        guard let statement = prepare("""
+            SELECT f.id, f.content, f.tier, bm25(facts_fts, 1.0, 0.4)
+            FROM facts_fts JOIN facts f ON f.rowid = facts_fts.rowid
+            WHERE facts_fts MATCH ? ORDER BY bm25(facts_fts, 1.0, 0.4) LIMIT ?;
+            """) else { return [] }
         defer { sqlite3_finalize(statement) }
-        var hits: [Hit] = []
+        bindText(statement, 1, Self.matchExpression(for: terms))
+        sqlite3_bind_int(statement, 2, Int32(limit))
+        var matches: [FactMatch] = []
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let id = UUID(uuidString: text(statement, 0) ?? ""),
                   let content = text(statement, 1) else { continue }
-            let haystack = (content + " " + (text(statement, 2) ?? "")).lowercased()
-            let matches = terms.filter { haystack.contains($0) }.count
-            guard matches > 0 else { continue }
-            var score = min(0.9, 0.4 + 0.1 * Double(matches))
+            matches.append(FactMatch(
+                id: id,
+                content: content,
+                tier: text(statement, 2) ?? FactTier.confirmed.rawValue,
+                rank: sqlite3_column_double(statement, 3)
+            ))
+        }
+        return matches
+    }
+
+    private func keywordFacts(terms: [String], limit: Int) -> [Hit] {
+        factMatches(terms: terms, limit: limit).map { match in
+            var score = Self.normalizedRank(match.rank)
             // An inferred fact hasn't been confirmed by anyone; an equally
             // strong keyword match still ranks below a confirmed fact that
             // matched the same way.
-            if text(statement, 3) == FactTier.inferred.rawValue {
+            if match.tier == FactTier.inferred.rawValue {
                 score *= Self.inferredFactDiscount
             }
-            hits.append(Hit(source: .fact(id), text: content, score: score))
+            return Hit(source: .fact(match.id), text: match.content, score: score)
         }
-        return Array(hits.sorted { $0.score > $1.score }.prefix(limit))
     }
 
-    private func keywordChunks(terms rawTerms: [String], limit: Int, excluding conversationID: UUID?) -> [Hit] {
-        let terms = rawTerms.map { "\"\($0)\"" }
+    /// bm25 is lower-is-better and unbounded; this maps it into the 0…1
+    /// space the cosine scores use so the two can be blended.
+    private static func normalizedRank(_ rank: Double) -> Double {
+        max(0.3, min(0.9, 1.0 / (1.0 + abs(rank))))
+    }
+
+    /// The FTS5 query itself, and the place most of "a fact exists but
+    /// never comes back" was actually happening.
+    ///
+    /// Terms are OR-ed, never AND-ed: a natural-language question carries
+    /// several words, and requiring all of them turns any real sentence
+    /// into an impossible conjunction — one unlucky word and a perfectly
+    /// good match is invisible. Each term is also prefix-matched (`"x"*`)
+    /// on top of the `porter` stemming the tables are built with, so
+    /// "prefers" reaches "preference" and a half-typed word still gates.
+    ///
+    /// This widens what counts as a candidate; it does not weaken the
+    /// safety argument. FTS5 still cannot return text that shares no
+    /// vocabulary with the query, which is exactly the property that
+    /// embeddings failed to provide and that the whole design rests on.
+    /// BM25 then orders what did match, and the embedding re-rank in
+    /// `recall` reorders that.
+    static func matchExpression(for terms: [String]) -> String {
+        terms.map { "\"\($0)\"*" }.joined(separator: " OR ")
+    }
+
+    private func keywordChunks(terms: [String], limit: Int, excluding conversationID: UUID?) -> [Hit] {
         guard !terms.isEmpty else { return [] }
         guard let statement = prepare("""
             SELECT c.conversation_id, c.message_id, c.text, bm25(chunks_fts)
@@ -698,7 +926,7 @@ actor MemoryStore {
             WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?;
             """) else { return [] }
         defer { sqlite3_finalize(statement) }
-        bindText(statement, 1, terms.joined(separator: " OR "))
+        bindText(statement, 1, Self.matchExpression(for: terms))
         sqlite3_bind_int(statement, 2, Int32(limit))
         var hits: [Hit] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -706,13 +934,10 @@ actor MemoryStore {
                   let message = UUID(uuidString: text(statement, 1) ?? ""),
                   let body = text(statement, 2) else { continue }
             if let conversationID, conversation == conversationID { continue }
-            // bm25 is lower-is-better; map it into the 0…1 space the cosine
-            // scores use so the two can be blended.
-            let rank = sqlite3_column_double(statement, 3)
             hits.append(Hit(
                 source: .chunk(conversationID: conversation, messageID: message),
                 text: body,
-                score: max(0.3, min(0.9, 1.0 / (1.0 + abs(rank))))
+                score: Self.normalizedRank(sqlite3_column_double(statement, 3))
             ))
         }
         return hits
@@ -747,11 +972,20 @@ actor MemoryStore {
             "same", "too", "very", "who", "whom", "whose", "why", "all",
             "each", "few", "these", "those", "again", "once", "out", "off",
             "down", "now", "one", "two", "ever", "every",
+            // Two-letter words. The length floor used to be three, which
+            // silently made "Go", "AI", "UI", "JS" and every other short
+            // name unsearchable — a fact could exist and be permanently
+            // unreachable because its subject was two letters long. The
+            // floor is two now, so the short filler words it lets in have
+            // to be named explicitly.
+            "am", "an", "as", "at", "be", "by", "do", "he", "if", "in",
+            "is", "it", "me", "my", "no", "of", "oh", "ok", "on", "or", "so",
+            "to", "up", "us", "we",
         ]
         let candidates = query
             .lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count > 2 && !stopWords.contains($0) }
+            .filter { $0.count >= 2 && !stopWords.contains($0) }
             .reduce(into: [String]()) { result, term in
                 // De-dupe while keeping first occurrence, so "budget...
                 // budget" doesn't cost two of the eight slots.
@@ -812,6 +1046,17 @@ actor MemoryStore {
         defer { sqlite3_finalize(statement) }
         bindText(statement, 1, name)
         return sqlite3_step(statement) == SQLITE_ROW
+    }
+
+    /// The `CREATE` statement a table was actually built with — the only
+    /// way to tell which tokenizer an existing FTS5 index uses, since
+    /// `PRAGMA table_info` says nothing about it.
+    private func tableSQL(_ name: String) -> String? {
+        guard let statement = prepare("SELECT sql FROM sqlite_master WHERE name = ? LIMIT 1;") else { return nil }
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, name)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return text(statement, 0)
     }
 
     private func columnExists(table: String, column: String) -> Bool {
