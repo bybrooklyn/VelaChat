@@ -184,6 +184,18 @@ Accessibility requires GUI interaction this agent session cannot perform (no Acc
 permission — see `AGENTS.md`). The signature analysis above determines the outcome, but a
 human should confirm once.
 
+### 4.3 The app had no icon at all
+
+`Info.plist` carried no `CFBundleIconFile`, so macOS drew the generic blank tile in the
+dock. `Scripts/make-icon.swift` renders the `VelaMark` marque from `Theme.swift`'s own
+colors; `just icon` regenerates it; the committed `.icns` is copied into the bundle at
+build time, because generating it there would need AppKit to rasterize an SF Symbol on a
+runner with no window server.
+
+Verified live via `NSRunningApplication.icon()`: every representation from 16 to 2048 px is
+present. It renders blue rather than teal on this Mac because
+`AppleIconAppearanceTheme = TintedDark` — macOS 26 recolors every dock icon system-wide.
+
 ### 4.2 The `just run` failure — stale absolute path, not a cache problem
 
 Observed:
@@ -208,12 +220,16 @@ this. Recorded in `AGENTS.md` instead. A stale sibling remains in `.vscode/launc
 
 ## 5. Open items and cautions
 
-1. **CI's test guard is stale.** `.github/workflows/build.yml:47-52` says *"No test target
-   yet — this stays green until one exists."* But `Package.swift` declares `VelaChatTests`
-   and `Tests/VelaChatTests/` holds six test files. The guard runs
-   `swift test --list-tests`; if that exits non-zero for any reason, **every test silently
-   skips and CI still goes green.** Worth confirming tests actually run before Phase 1
-   adds three required suites. *Not changed in this phase.*
+1. **CI's test guard — RESOLVED, and it was worse than "may be skipping".** The guard ran
+   `swift test --list-tests` and skipped on any non-zero exit. A test target that fails to
+   **build** exits non-zero, so a broken suite was reported as "no tests defined yet" and CI
+   went green. `MemoryStoreTests` had in fact never compiled — `throw XCTSkip` in a
+   non-throwing method and `XCTAssertNil(await ...)`, which cannot work because XCTAssert
+   takes an autoclosure. The step now runs `swift test` directly. First green run:
+   **146 tests, 0 failures.** The first run that was *able* to fail immediately caught a
+   real bug in `SystemPrompt.compose`: budgeting used `continue`, so a small low-priority
+   section could leapfrog a dropped high-priority one, and a squeezed prompt kept its
+   artifacts guidance while losing its tool inventory.
 2. **`--setting-sources ""` isolation — RESOLVED, and it FAILS.** Measured against real
    `claude` 2.1.236: that flag alone still reported the user's MCP servers, 15 inherited
    skills, and their full slash-command list in the init handshake. The working combination
