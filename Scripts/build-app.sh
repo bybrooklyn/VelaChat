@@ -52,6 +52,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <string>__SHORT_VERSION__</string>
     <key>CFBundleExecutable</key>
     <string>VelaChat</string>
+    <key>CFBundleIconFile</key>
+    <string>VelaChat</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>VelaChat reads your upcoming events, and creates events you ask for, only when the AI uses its schedule tool at your request.</string>
     <key>NSRemindersFullAccessUsageDescription</key>
@@ -89,6 +91,21 @@ PLIST
   -e "s|__SHORT_VERSION__|$SHORT_VERSION|" \
   -e "s|__SPARKLE_PUBLIC_KEY__|$SPARKLE_PUBLIC_KEY|" \
   "$CONTENTS/Info.plist"
+
+# The dock icon is generated from the same marque the app draws in-app
+# (Scripts/make-icon.swift reads its colors from Theme.swift's teal family),
+# so the two cannot drift apart. iconutil needs the .iconset laid out with
+# Apple's exact filenames, which the generator produces.
+# The .icns is committed rather than generated here on purpose. Building it
+# needs AppKit to rasterize an SF Symbol, and doing that on a CI runner with
+# no window server is exactly the kind of thing that works locally and fails
+# in the cloud. Regenerate deliberately with `just icon` after changing the
+# marque or the theme colors.
+if [[ ! -f "$ROOT/Resources/VelaChat.icns" ]]; then
+  echo "✗ Resources/VelaChat.icns is missing — run \`just icon\` to rebuild it." >&2
+  exit 1
+fi
+cp "$ROOT/Resources/VelaChat.icns" "$RESOURCES/VelaChat.icns"
 
 # Sparkle is a dynamic framework: it has to travel inside the bundle AND
 # the binary needs an rpath pointing at it. Without the rpath the app dies

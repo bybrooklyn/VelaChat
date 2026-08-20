@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SidebarView: View {
     @Environment(AppModel.self) private var appModel
-    @Environment(WindowChrome.self) private var chrome
     @State private var searchQuery = ""
     @State private var isSearchExpanded = false
     @State private var renamingConversationID: UUID?
@@ -61,19 +60,11 @@ struct SidebarView: View {
         }
     }
 
-    /// How far the brand row has to start in from the leading edge to clear
-    /// the traffic lights, which the sidebar now sits directly underneath.
-    /// Measured, not guessed: the buttons occupy 9–68.5pt, so 80 leaves a
-    /// comfortable gap. Fullscreen has no lights, so it gets the normal
-    /// gutter back.
-    private var trafficLightInset: CGFloat { chrome.isFullScreen ? 14 : 80 }
-
     private var expandedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             sidebarHeader
-                .padding(.leading, trafficLightInset)
-                .padding(.trailing, 14)
-                .padding(.top, 9)
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
                 .padding(.bottom, 12)
 
             topActionsRow
@@ -82,17 +73,17 @@ struct SidebarView: View {
 
             conversationList
 
+            if appModel.isLocalOnlyMode {
+                localOnlyBanner
+                    .padding(.horizontal, 10)
+                    .padding(.top, 8)
+            }
+
             settingsFooter
                 .padding(.horizontal, 10)
                 .padding(.top, 8)
                 .padding(.bottom, 12)
         }
-        // The sidebar's material already extends up behind the transparent
-        // titlebar; before this, its *content* stopped at the safe area, so
-        // the top ~59pt was an empty frosted band beside the traffic lights
-        // that read as a stray title bar. Content now starts at the very top
-        // and the brand row simply steps around the lights.
-        .ignoresSafeArea(.container, edges: .top)
     }
 
     /// The narrow state: the same actions as icons with tooltips, plus the
@@ -102,11 +93,7 @@ struct SidebarView: View {
     private var railBody: some View {
         VStack(spacing: 8) {
             sidebarToggleButton
-                // The rail is only 60pt wide — narrower than the traffic
-                // lights themselves — so it can't start at the very top the
-                // way the expanded sidebar does. It clears them vertically
-                // instead.
-                .padding(.top, chrome.isFullScreen ? 10 : 46)
+                .padding(.top, 10)
 
             railButton(symbol: "square.and.pencil", help: "New Chat (⌘N)", tint: Theme.accentStrong) {
                 _ = appModel.newConversation()
@@ -120,6 +107,14 @@ struct SidebarView: View {
                 }
             }
             UsageGaugeButton()
+            if appModel.isLocalOnlyMode {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.warning)
+                    .frame(width: 30, height: 30)
+                    .help("Local-only mode — requests to non-loopback hosts are refused.")
+                    .accessibilityLabel("Local-only mode is on")
+            }
 
             Divider()
                 .padding(.horizontal, 12)
@@ -217,12 +212,7 @@ struct SidebarView: View {
     /// read as two colliding buttons — it now has its own full-width row.
     private var sidebarHeader: some View {
         HStack(spacing: 11) {
-            // No `VelaMark` here any more. Now that this row sits beside the
-            // traffic lights rather than below them, the 30pt mark plus its
-            // spacing was enough to wrap "5 conversations" onto two lines at
-            // the default sidebar width — and the lights already anchor the
-            // corner, so the mark was decorating an area that had no room
-            // for decoration.
+            VelaMark(size: 30)
             VStack(alignment: .leading, spacing: 0) {
                 Text("VelaChat")
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -230,9 +220,7 @@ struct SidebarView: View {
                 Text(conversationCountLabel)
                     .font(.caption2)
                     .foregroundStyle(Theme.tertiaryText)
-                    .lineLimit(1)
             }
-            .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             // The app's own sidebar toggle, opposite the wordmark — the
             // system toolbar (and its long band) is hidden entirely. Same
@@ -532,6 +520,30 @@ struct SidebarView: View {
 
     /// Outlined rather than a filled glass card — it reads as a quiet control
     /// anchored to the sidebar's bottom edge instead of a floating pane.
+    /// Local-only mode changes what the app is allowed to do, so it is
+    /// stated persistently rather than left to a Settings switch the user
+    /// has to remember flipping.
+    private var localOnlyBanner: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "hand.raised.fill")
+                .font(.system(size: 11, weight: .semibold))
+            Text("Local-only mode")
+                .font(.caption.weight(.medium))
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Theme.warning)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(Theme.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                .stroke(Theme.warning.opacity(0.35), lineWidth: 1)
+        }
+        .help("Requests to non-loopback hosts are refused. Turn this off in Settings → Privacy.")
+        .accessibilityLabel("Local-only mode is on")
+        .accessibilityHint("Requests to non-loopback hosts are refused")
+    }
+
     private var settingsFooter: some View {
         Button {
             appModel.section = .settings

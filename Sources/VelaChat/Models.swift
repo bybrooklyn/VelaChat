@@ -176,6 +176,22 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var isLocal: Bool { self == .ollama || self == .lmStudio || self == .appleIntelligence }
 
+    /// Whether this provider's reported prompt/input token count already
+    /// includes tokens served from cache.
+    ///
+    /// This is a real wire-format difference, not a preference:
+    /// Anthropic's `input_tokens` **excludes** `cache_read_input_tokens`
+    /// (verified against a recorded live session), while OpenAI-style
+    /// `prompt_tokens` **includes** `prompt_tokens_details.cached_tokens`.
+    /// Pricing the same numbers under the wrong assumption is wrong in
+    /// opposite directions — see `UsageSummary.costUSD(for:promptIncludesCached:)`.
+    var promptTokensIncludeCached: Bool {
+        switch self {
+        case .anthropic: false
+        default: true
+        }
+    }
+
     /// How usage is presented for this provider family. Subscription
     /// plans show their real provider-reported windows; metered (API-key)
     /// providers show locally counted meters + live rate-limit headers;
@@ -728,6 +744,12 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// For `role: "notice"` cards only: "info", "success", or "warning"
     /// (the default) — a success toast should not wear a warning triangle.
     var noticeKind: String?
+    /// Redactions applied to `content` before this message was sent. The
+    /// message stores the redacted text — what actually went out — so the
+    /// transcript never claims to have sent something it didn't, and the
+    /// secret itself is never written to disk. These spans are what the
+    /// transcript renders as chips.
+    var redactions: [RedactionSpan] = []
 
     init(role: String, content: String, reasoning: String? = nil, error: String? = nil, isStreaming: Bool = false, providerName: String? = nil, modelID: String? = nil, isPinned: Bool = false, attachments: [Attachment] = [], alternates: [ChatMessage] = []) {
         self.id = UUID()
@@ -761,11 +783,12 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         alternates = try container.decodeIfPresent([ChatMessage].self, forKey: .alternates) ?? []
         segments = try container.decodeIfPresent([MessageSegment].self, forKey: .segments) ?? []
         noticeKind = try container.decodeIfPresent(String.self, forKey: .noticeKind)
+        redactions = try container.decodeIfPresent([RedactionSpan].self, forKey: .redactions) ?? []
     }
 
     /// Full-field copy initializer — the only way to reproduce a message
     /// with a chosen id/createdAt (the memberwise init hardcodes both).
-    init(id: UUID, role: String, content: String, reasoning: String?, error: String?, isStreaming: Bool, createdAt: Date, providerName: String?, modelID: String?, isPinned: Bool, attachments: [Attachment], usage: UsageSummary?, alternates: [ChatMessage], segments: [MessageSegment], noticeKind: String?) {
+    init(id: UUID, role: String, content: String, reasoning: String?, error: String?, isStreaming: Bool, createdAt: Date, providerName: String?, modelID: String?, isPinned: Bool, attachments: [Attachment], usage: UsageSummary?, alternates: [ChatMessage], segments: [MessageSegment], noticeKind: String?, redactions: [RedactionSpan] = []) {
         self.id = id
         self.role = role
         self.content = content
@@ -781,6 +804,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         self.alternates = alternates
         self.segments = segments
         self.noticeKind = noticeKind
+        self.redactions = redactions
     }
 
     /// A copy with a fresh identity (alternates re-id'd too) — used by
@@ -802,7 +826,8 @@ struct ChatMessage: Identifiable, Codable, Equatable {
             usage: usage,
             alternates: alternates.map { $0.duplicatedWithFreshID() },
             segments: segments,
-            noticeKind: noticeKind
+            noticeKind: noticeKind,
+            redactions: redactions
         )
     }
 
@@ -1309,6 +1334,19 @@ struct QuotaSnapshot: Sendable, Equatable, Codable {
     }
 }
 
+/// Cache-write tokens split by TTL tier. Writes are billed at 1.25x
+/// (5-minute) and 2x (1-hour) base input, so the split is not cosmetic —
+/// collapsing it would misprice by up to 60%.
+struct CacheCreationTokens: Sendable, Equatable {
+    var ephemeral5m: Int?
+    var ephemeral1h: Int?
+
+    var total: Int? {
+        guard ephemeral5m != nil || ephemeral1h != nil else { return nil }
+        return (ephemeral5m ?? 0) + (ephemeral1h ?? 0)
+    }
+}
+
 enum ChatStreamEvent: Sendable {
     case delta(content: String, reasoning: String)
     /// `cachedTokens`: real provider-reported cache-hit tokens — OpenAI's
@@ -1316,7 +1354,12 @@ enum ChatStreamEvent: Sendable {
     /// `prompt_cache_hit_tokens`, or Anthropic's `cache_read_input_tokens`.
     /// `nil` when the provider doesn't report it at all (not the same as
     /// zero — zero means "reported, no hit this time").
-    case usage(prompt: Int?, completion: Int?, cachedTokens: Int?)
+    /// `cacheCreation`: cache *writes*, split by TTL tier. Only Anthropic
+    /// reports this (`cache_creation.ephemeral_5m_input_tokens` /
+    /// `ephemeral_1h_input_tokens`, confirmed against a recorded live
+    /// session); everyone else sends `nil`, which stays distinct from a
+    /// reported zero.
+    case usage(prompt: Int?, completion: Int?, cachedTokens: Int?, cacheCreation: CacheCreationTokens?)
     /// The reply's terminal state, when the provider reports one —
     /// "length" (normalized from length/max_tokens) drives auto-continue.
     case finished(reason: String?)
@@ -1335,9 +1378,25 @@ enum ChatStreamEvent: Sendable {
 struct UsageSummary: Codable, Equatable {
     var promptTokens: Int?
     var completionTokens: Int?
-    /// Real provider-reported cache-hit tokens — see `ChatStreamEvent.usage`.
-    /// Only ever what the provider actually reported, never estimated.
+    /// Real provider-reported cache-hit tokens (cache *reads*) — see
+    /// `ChatStreamEvent.usage`. Only ever what the provider actually
+    /// reported, never estimated.
     var cachedTokens: Int?
+    /// Cache *writes*, split by TTL tier. Anthropic reports these as
+    /// `cache_creation.ephemeral_5m_input_tokens` /
+    /// `ephemeral_1h_input_tokens`; verified against a recorded live
+    /// session. OpenAI-compatible providers report neither, so `nil`
+    /// stays meaningfully distinct from `0` — "not reported" is not
+    /// "none were written".
+    var cacheCreation5mTokens: Int?
+    var cacheCreation1hTokens: Int?
+    /// A cost the provider computed itself (OpenRouter, and Claude Code's
+    /// `total_cost_usd`). Preferred over local math when present, and
+    /// labelled as provider-reported so it is never confused with a
+    /// figure VelaChat derived.
+    var providerReportedCostUSD: Double?
+    /// Batch requests bill at half rate.
+    var isBatch: Bool = false
 
     var label: String? {
         guard let completionTokens else { return nil }
@@ -1345,6 +1404,15 @@ struct UsageSummary: Codable, Equatable {
         if let promptTokens { text = "\(promptTokens + completionTokens) tokens" } else { text = "\(completionTokens) tokens" }
         if let cachedTokens, cachedTokens > 0 { text += " · \(cachedTokens) cached" }
         return text
+    }
+
+    /// Cache writes across both tiers, or `nil` when the provider reported
+    /// neither. Kept separate from `cachedTokens` (reads) because they are
+    /// billed at opposite ends of the scale: reads at 0.10×, writes at
+    /// 1.25×/2×.
+    var cacheCreationTokens: Int? {
+        guard cacheCreation5mTokens != nil || cacheCreation1hTokens != nil else { return nil }
+        return (cacheCreation5mTokens ?? 0) + (cacheCreation1hTokens ?? 0)
     }
 }
 

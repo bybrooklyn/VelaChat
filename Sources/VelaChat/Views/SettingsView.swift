@@ -21,6 +21,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case tools = "Tools"
     case agentAbilities = "Agent Abilities"
     case mcpServers = "MCP Servers"
+    case privacy = "Privacy"
     case statistics = "Statistics"
     case about = "About"
 
@@ -37,6 +38,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .tools: "wrench.and.screwdriver"
         case .agentAbilities: "wand.and.stars"
         case .mcpServers: "puzzlepiece.extension"
+        case .privacy: "hand.raised"
         case .general: "gearshape"
         case .statistics: "chart.bar.xaxis"
         case .about: "info.circle"
@@ -557,6 +559,10 @@ struct SettingsView: View {
                         McpServersCard()
                     }
 
+                    SettingsCard(section: .privacy, footer: Text("Redaction rewrites matches before a message leaves your Mac, and marks what it changed in the transcript. Local-only mode refuses every request to a non-loopback host at the network layer, not just in the provider picker.")) {
+                        PrivacyCard()
+                    }
+
                     SettingsCard(section: .statistics, footer: Text("Lifetime messages, tokens, and per-model usage.")) {
 
                 SettingsDisclosureRow(
@@ -720,6 +726,177 @@ struct SettingsView: View {
 /// A real draft: Cancel creates nothing, and nothing is selected until the
 /// user explicitly chooses to use the endpoint — adding no longer instantly
 /// switched the whole app to an unconfigured localhost profile.
+/// Egress controls. Both switches here change what physically leaves the
+/// machine, so both say so in plain language rather than in a tooltip.
+private struct PrivacyCard: View {
+    @Environment(AppModel.self) private var appModel
+    @State private var testText = ""
+    @State private var newName = ""
+    @State private var newPattern = ""
+    @State private var isAddingRule = false
+
+    private var invalidIDs: Set<UUID> { appModel.redaction.invalidRuleIDs }
+
+    var body: some View {
+        @Bindable var model = appModel
+
+        Toggle("Local-only mode", isOn: $model.isLocalOnlyMode)
+        Text("Refuses every request to a host that isn't loopback — hosted providers, model discovery, quota checks, web search, and provider logos alike. A model server on another machine on your network counts as remote and is also refused.")
+            .font(.caption)
+            .foregroundStyle(Theme.tertiaryText)
+            .fixedSize(horizontal: false, vertical: true)
+
+        Divider()
+
+        // `redaction` is a `let` sub-object, so `@Bindable` can't reach
+        // through it — an explicit binding is the supported route.
+        Toggle("Redact secrets before sending", isOn: Binding(
+            get: { appModel.redaction.isEnabled },
+            set: { appModel.redaction.isEnabled = $0 }
+        ))
+
+        if appModel.redaction.isEnabled {
+            rulesList
+            testField
+            addRuleControls
+        }
+    }
+
+    private var rulesList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(appModel.redaction.rules) { rule in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(rule.name)
+                            .font(.callout.weight(.medium))
+                        Text(rule.pattern)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(Theme.tertiaryText)
+                            .lineLimit(1)
+                        if invalidIDs.contains(rule.id) {
+                            // A rule that cannot compile matches nothing,
+                            // which is indistinguishable from a rule that
+                            // found nothing. Say it out loud.
+                            Text("This pattern isn't a valid regular expression, so it never matches.")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.danger)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    Toggle("", isOn: Binding(
+                        get: { rule.isEnabled },
+                        set: { appModel.redaction.setEnabled($0, for: rule.id) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .accessibilityLabel("\(rule.name) rule")
+                    if !rule.isBuiltIn {
+                        Button {
+                            appModel.redaction.delete(rule.id)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(VelaIconButtonStyle())
+                        .foregroundStyle(Theme.tertiaryText)
+                        .accessibilityLabel("Delete the \(rule.name) rule")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    /// Live test: type anything and see exactly what would be sent. This is
+    /// the only way to gain confidence in a regex without leaking a real
+    /// credential to find out.
+    private var testField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            Text("Test")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Theme.secondaryText)
+            TextField("Paste something to see how it would be sent", text: $testText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .flatFieldStyle()
+                .lineLimit(1...4)
+                .accessibilityLabel("Redaction test input")
+            let result = appModel.redaction.redactor.redact(testText)
+            if testText.isEmpty {
+                Text("Nothing to test yet.")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiaryText)
+            } else {
+                Text(result.text)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(result.didRedact ? Theme.warning : Theme.secondaryText)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Redaction test result")
+                Text(result.didRedact
+                     ? "\(result.spans.count) match\(result.spans.count == 1 ? "" : "es") would be replaced."
+                     : "No rule matches this — it would be sent unchanged.")
+                    .font(.caption2)
+                    .foregroundStyle(result.didRedact ? Theme.warning : Theme.tertiaryText)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var addRuleControls: some View {
+        if isAddingRule {
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Rule name", text: $newName)
+                    .textFieldStyle(.plain)
+                    .flatFieldStyle()
+                TextField("Regular expression", text: $newPattern)
+                    .textFieldStyle(.plain)
+                    .flatFieldStyle()
+                    .font(.system(.body, design: .monospaced))
+                if !newPattern.isEmpty, (try? NSRegularExpression(pattern: newPattern)) == nil {
+                    Text("Not a valid regular expression yet.")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.danger)
+                }
+                HStack(spacing: 8) {
+                    Button("Add") {
+                        appModel.redaction.add(name: newName, pattern: newPattern)
+                        newName = ""
+                        newPattern = ""
+                        isAddingRule = false
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.accent)
+                    .disabled(
+                        newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || (try? NSRegularExpression(pattern: newPattern)) == nil
+                    )
+                    Button("Cancel") {
+                        isAddingRule = false
+                        newName = ""
+                        newPattern = ""
+                    }
+                    .buttonStyle(.borderless)
+                    Spacer()
+                }
+            }
+        } else {
+            HStack(spacing: 12) {
+                Button {
+                    isAddingRule = true
+                } label: {
+                    Label("Add a Rule…", systemImage: "plus.circle")
+                }
+                .buttonStyle(SettingsAddButtonStyle())
+                Button("Restore Built-Ins") {
+                    appModel.redaction.restoreBuiltIns()
+                }
+                .buttonStyle(SettingsAddButtonStyle())
+            }
+        }
+    }
+}
+
 private struct McpServersCard: View {
     @Environment(AppModel.self) private var appModel
     @State private var editing: McpServerConfig?
@@ -923,6 +1100,7 @@ private struct UpdatesRow: View {
             get: { updater.automaticallyChecks },
             set: { updater.automaticallyChecks = $0 }
         ))
+        .disabled(!updater.isAvailable)
         LabeledContent {
             HStack(spacing: 10) {
                 Text(updater.lastCheckDescription)
@@ -931,9 +1109,21 @@ private struct UpdatesRow: View {
                 Button("Check Now") { updater.checkForUpdates() }
                     .buttonStyle(SettingsAddButtonStyle())
                     .disabled(!updater.canCheckForUpdates)
+                    .accessibilityLabel("Check for updates now")
             }
         } label: {
             Text("Updates")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Updates")
+        .accessibilityValue(updater.lastCheckDescription)
+        // A dead control with no explanation reads as a bug. Say why it is
+        // off: Sparkle needs a real .app, which `swift run` never produces.
+        if !updater.isAvailable {
+            Text("Updating is only available in the bundled app (`just app`). A `swift run` build has no bundle for Sparkle to update.")
+                .font(.caption)
+                .foregroundStyle(Theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

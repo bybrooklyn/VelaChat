@@ -34,6 +34,12 @@ enum Limits {
 
     /// Streaming requests: an idle timeout, reset by every received byte.
     /// Not a total budget — long replies are normal.
+    /// How often a still-streaming reply is written to history, so a hard
+    /// quit mid-stream doesn't lose the turn. Low enough to keep the loss
+    /// window small, high enough that encoding every conversation doesn't
+    /// compete with the stream itself.
+    static let streamingPersistInterval: TimeInterval = 4
+
     static let streamIdleTimeout: TimeInterval = 180
     /// Ordinary JSON round trips.
     static let requestTimeout: TimeInterval = 60

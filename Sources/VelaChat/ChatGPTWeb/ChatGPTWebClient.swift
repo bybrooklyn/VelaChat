@@ -119,7 +119,9 @@ actor ChatGPTWebClient {
         if let refreshTask { return try await refreshTask.value }
         guard let cookie else { throw ClientError.notAuthenticated }
         let task = Task<String, Error> {
-            var request = URLRequest(url: baseURL.appendingPathComponent("api/auth/session"))
+            let sessionURL = baseURL.appendingPathComponent("api/auth/session")
+            try EgressPolicy.check(sessionURL)
+            var request = URLRequest(url: sessionURL)
             request.timeoutInterval = Limits.authTimeout
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
@@ -232,6 +234,7 @@ actor ChatGPTWebClient {
             guard let url = URL(string: path, relativeTo: baseURL) else {
                 throw ClientError.badPayload("bad path \(path)")
             }
+            try EgressPolicy.check(url)
             var request = URLRequest(url: url)
             request.httpMethod = method
             request.timeoutInterval = Limits.requestTimeout
@@ -282,6 +285,7 @@ actor ChatGPTWebClient {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw ClientError.badPayload("bad path \(path)")
         }
+        try EgressPolicy.check(url)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         // Idle timeout consistent with the app's other streams.

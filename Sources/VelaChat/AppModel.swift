@@ -55,6 +55,17 @@ final class AppModel {
 
     let providers = ProviderStore()
     let usage = UsageStore()
+    let redaction = RedactionStore()
+    /// Hard egress switch. The stored value is mirrored into `EgressPolicy`
+    /// (a process-wide gate read at request construction) because the
+    /// paths that must honor it — the ChatGPT web client, quota probes,
+    /// model discovery — never see `AppModel`.
+    var isLocalOnlyMode = false {
+        didSet {
+            UserDefaults.standard.set(isLocalOnlyMode, forKey: DefaultsKey.localOnlyMode)
+            EgressPolicy.isLocalOnly = isLocalOnlyMode
+        }
+    }
     let mcp = McpManager()
     let skills = SkillsStore()
     let memoryIndexer = MemoryIndexer()
@@ -481,6 +492,14 @@ final class AppModel {
     /// the drain empties instead of snapping the buffer in one frame.
     var pendingFinish: Set<UUID> = []
     var historySaveTask: Task<Void, Never>?
+    /// When streamed text was last persisted. A reply used to be written to
+    /// history only at send, at stop, and at completion — never while it was
+    /// arriving — so a hard quit thirty seconds into a long answer lost the
+    /// whole thing and `reconcileInterruptedMessages` stamped it
+    /// "Interrupted before finishing" over an empty message. Throttled
+    /// rather than saved per chunk: `writeHistoryNow` encodes every
+    /// conversation, which is far too much work to do per token.
+    var lastStreamingPersist: Date = .distantPast
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: DefaultsKey.thinkingLevel),
@@ -511,6 +530,12 @@ final class AppModel {
         isHoverTimestampsEnabled = Defaults.bool(DefaultsKey.hoverTimestamps, default: isHoverTimestampsEnabled)
         isAppleIntelligenceEnabled = Defaults.bool(DefaultsKey.appleIntelligenceEnabled, default: false)
         isSidebarRail = Defaults.bool(DefaultsKey.sidebarRail, default: false)
+        // Swift does not run property observers for assignments made
+        // inside an initializer, so the mirror into `EgressPolicy` is done
+        // explicitly here. Getting this wrong would leave the gate open for
+        // the whole launch despite the switch reading as on.
+        isLocalOnlyMode = Defaults.bool(DefaultsKey.localOnlyMode, default: false)
+        EgressPolicy.isLocalOnly = isLocalOnlyMode
         restoreQuotaSnapshots()
         isAgentToolsEnabled = Defaults.bool(DefaultsKey.agentToolsEnabled, default: isAgentToolsEnabled)
         isCommandToolEnabled = Defaults.bool(DefaultsKey.commandToolEnabled, default: false)
@@ -629,6 +654,30 @@ final class AppModel {
 
     var contextTokenEstimate: Int {
         activeConversation.map(tokenEstimate) ?? 0
+    }
+
+    /// What the next turn would cost to send, from the composer, before
+    /// hitting Send.
+    ///
+    /// This is an ESTIMATE and is labelled as one everywhere it appears —
+    /// the token count is derived from characters, not from the provider's
+    /// tokenizer, and the reply's length is unknowable in advance. It
+    /// therefore prices *input only*, and returns `nil` unless the model's
+    /// real input price is known. Never presented as an observed figure
+    /// (house rule: unobserved numbers are never implied).
+    var estimatedNextTurnInputCostUSD: Double? {
+        guard let model = selectedModelInfo,
+              let inputPrice = model.inputPricePerMillion,
+              inputPrice > 0 else { return nil }
+        let tokens = contextTokenEstimate + tokenEstimate(forDraft: activeConversation?.draftText ?? "")
+        guard tokens > 0 else { return nil }
+        return Double(tokens) * inputPrice / 1_000_000
+    }
+
+    /// Rough token count for text not yet in the transcript — the same
+    /// four-characters-per-token approximation the context readout uses.
+    private func tokenEstimate(forDraft text: String) -> Int {
+        text.isEmpty ? 0 : max(1, text.count / 4)
     }
 
     /// Counts only what would actually be sent on the next request — after
@@ -1885,8 +1934,16 @@ final class AppModel {
             for index in conversation.messages.indices where conversation.messages[index].isStreaming {
                 conversation.messages[index].isStreaming = false
                 conversation.messages[index].reconcileRunningActivities()
-                if conversation.messages[index].content.isEmpty, conversation.messages[index].error == nil {
-                    conversation.messages[index].error = "Interrupted before finishing — the app closed or crashed."
+                if conversation.messages[index].error == nil {
+                    // Partial text now survives a crash (see
+                    // `persistStreamingProgress`), so this has two cases.
+                    // A recovered fragment must still say it is a fragment:
+                    // silently presenting a truncated answer as a finished
+                    // one is worse than losing it, because nothing on
+                    // screen distinguishes the two.
+                    conversation.messages[index].error = conversation.messages[index].content.isEmpty
+                        ? "Interrupted before finishing — the app closed or crashed."
+                        : "Interrupted before finishing — the app closed or crashed. This reply is partial; use Continue Generating or Regenerate."
                 }
                 didChange = true
             }

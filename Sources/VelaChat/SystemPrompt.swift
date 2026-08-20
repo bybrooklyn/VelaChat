@@ -41,6 +41,9 @@ enum SystemPrompt {
     private struct Section {
         let priority: Int
         let body: String
+
+        /// Sections at or below this priority are never dropped for budget.
+        static let lastRequiredPriority = 1
     }
 
     static func compose(_ context: Context) -> String {
@@ -73,11 +76,26 @@ enum SystemPrompt {
         // drop whole rather than being truncated mid-sentence — half an
         // instruction is worse than none.
         let budgetCharacters = context.contextWindow.map { max(2_000, $0 / 8 * 4) } ?? .max
-        var kept: [Section] = []
-        var used = 0
-        for section in sections.sorted(by: { $0.priority < $1.priority }) {
+
+        // Environment and the tool inventory are mandatory. This file
+        // already says they are "the two things a model genuinely cannot
+        // work without", and a model that doesn't know which tools it has
+        // cannot use them at all — so they are never dropped, and the
+        // budget governs only what sits below them.
+        let required = sections.filter { $0.priority <= Section.lastRequiredPriority }
+        let optional = sections.filter { $0.priority > Section.lastRequiredPriority }
+
+        var kept = required
+        var used = required.reduce(0) { $0 + $1.body.count + 2 }
+        for section in optional.sorted(by: { $0.priority < $1.priority }) {
             let cost = section.body.count + 2
-            guard used + cost <= budgetCharacters else { continue }
+            // `break`, not `continue`. Skipping a section that doesn't fit
+            // and carrying on let a small low-priority section leapfrog a
+            // larger high-priority one that had just been dropped — which
+            // produced exactly the "random subset" this is supposed to
+            // prevent (a squeezed prompt that had lost its tool inventory
+            // but still carried the artifacts guidance).
+            guard used + cost <= budgetCharacters else { break }
             used += cost
             kept.append(section)
         }

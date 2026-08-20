@@ -35,7 +35,7 @@ final class MemoryStoreTests: XCTestCase {
         XCTAssertEqual(MemoryStore.cosine([0, 0], [0, 0]), 0)
     }
 
-    func testEmbedderProducesNormalisedVectors() {
+    func testEmbedderProducesNormalisedVectors() throws {
         guard let vector = MemoryEmbedder.shared.vector(for: "The user prefers concise answers and works in Swift.") else {
             throw XCTSkip("No on-device embedding assets on this runner.")
         }
@@ -337,7 +337,10 @@ final class MemoryStoreTests: XCTestCase {
     func testRollupLifecycle() async {
         let store = makeStore()
         let conversationID = UUID()
-        XCTAssertNil(await store.rollup(for: conversationID))
+        // Hoisted: XCTAssertNil takes an autoclosure, and an autoclosure
+        // cannot contain `await`.
+        let beforeAnyRollup = await store.rollup(for: conversationID)
+        XCTAssertNil(beforeAnyRollup)
 
         let ok = await store.upsertRollup(conversationID: conversationID, content: "Discussed the project atlas budget timeline.")
         XCTAssertTrue(ok)
@@ -349,7 +352,8 @@ final class MemoryStoreTests: XCTestCase {
         XCTAssertEqual(updated?.content, "Updated summary about project atlas launch plans.")
 
         await store.deleteRollup(for: conversationID)
-        XCTAssertNil(await store.rollup(for: conversationID))
+        let afterDelete = await store.rollup(for: conversationID)
+        XCTAssertNil(afterDelete)
     }
 
     /// The whole point: `recall` must surface a rollup through its normal
@@ -369,7 +373,8 @@ final class MemoryStoreTests: XCTestCase {
         await store.upsertRollup(conversationID: conversationID, content: "Summary about project nightingale rollout plans.")
         await store.forgetConversation(conversationID)
 
-        XCTAssertNil(await store.rollup(for: conversationID))
+        let afterForget = await store.rollup(for: conversationID)
+        XCTAssertNil(afterForget)
         let hits = await store.recall(query: "nightingale rollout plans")
         XCTAssertFalse(hits.contains { $0.text.contains("nightingale") })
     }

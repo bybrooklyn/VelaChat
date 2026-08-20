@@ -479,9 +479,23 @@ struct ChatView: View {
                         .buttonStyle(SendButtonStyle(isReady: canSend, isStopping: appModel.isGenerating))
                         .keyboardShortcut(.return, modifiers: [.command])
                         .disabled(!canSend && !appModel.isGenerating)
-                        .help(appModel.isGenerating ? "Stop generating (⌘.)" : "Send message (⌘Return)")
-                        .accessibilityLabel(appModel.isGenerating ? "Stop generating (⌘.)" : "Send message (⌘Return)")
+                        .help(appModel.isGenerating ? "Stop generating, keeping what has arrived (⌘.)" : "Send message (⌘Return)")
+                        .accessibilityLabel(appModel.isGenerating ? "Stop generating and keep the partial reply (⌘.)" : "Send message (⌘Return)")
                         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: appModel.isGenerating)
+                        // Stopping keeps the partial reply, which is the
+                        // right default — a half-written answer is usually
+                        // worth continuing. Discarding is the other real
+                        // case (a reply that went wrong immediately) and
+                        // needs its own control, not a hidden modifier.
+                        .contextMenu {
+                            if appModel.isGenerating {
+                                Button(role: .destructive) {
+                                    appModel.stopGenerationDiscardingPartial()
+                                } label: {
+                                    Label("Stop and Discard Reply", systemImage: "trash")
+                                }
+                            }
+                        }
                     }
                 }
             }

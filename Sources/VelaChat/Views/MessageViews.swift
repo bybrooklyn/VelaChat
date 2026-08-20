@@ -95,6 +95,9 @@ struct MessageRow: View {
                                 }
                             }
                         }
+                        if !message.redactions.isEmpty {
+                            RedactionChipRow(spans: message.redactions)
+                        }
                         RichMessageText(text: message.content, isUser: true)
                             .padding(.horizontal, 14)
                             .padding(.vertical, appModel.density.bubblePadding)
@@ -307,10 +310,13 @@ struct MessageRow: View {
                                     .first(where: { $0.name == displayedMessage.providerName })?.id
                                     ?? appModel.activeConversation?.providerID
                                     ?? UUID()
-                                let cost = summary.costUSD(for: appModel.providers.modelInfo(
-                                    for: costProviderID,
-                                    model: displayedMessage.modelID ?? ""
-                                ))
+                                let cost = summary.costUSD(
+                                    for: appModel.providers.modelInfo(
+                                        for: costProviderID,
+                                        model: displayedMessage.modelID ?? ""
+                                    ),
+                                    providerKind: appModel.providers.profile(id: costProviderID)?.kind
+                                )
                                 Text(cost.map { label + String(format: " · $%.4f", $0) } ?? label)
                                     .font(.caption2)
                                     .foregroundStyle(Theme.tertiaryText)
@@ -339,6 +345,62 @@ struct MessageRow: View {
             }
             .onHover { isHovering = $0 }
         }
+    }
+}
+
+/// Proof that redaction ran, shown above the message it changed.
+///
+/// A silent substitution is not acceptable (the whole point of the
+/// feature is that the user can tell it worked), so every rule that fired
+/// gets a named chip with its match count. The redacted text itself
+/// carries an inline `[redacted: <rule>]` marker where the secret was, so
+/// the transcript reads honestly on its own too.
+struct RedactionChipRow: View {
+    let spans: [RedactionSpan]
+
+    /// Rule name → how many times it fired, in first-seen order so the
+    /// row doesn't reshuffle between renders.
+    private var tallies: [(name: String, count: Int, inAttachment: Bool)] {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        var attachmentOnly: [String: Bool] = [:]
+        for span in spans {
+            if counts[span.ruleName] == nil {
+                order.append(span.ruleName)
+                attachmentOnly[span.ruleName] = true
+            }
+            counts[span.ruleName, default: 0] += 1
+            if span.isInMessageBody { attachmentOnly[span.ruleName] = false }
+        }
+        return order.map { ($0, counts[$0] ?? 0, attachmentOnly[$0] ?? false) }
+    }
+
+    private func label(_ tally: (name: String, count: Int, inAttachment: Bool)) -> String {
+        var text = tally.name
+        if tally.count > 1 { text += " ×\(tally.count)" }
+        if tally.inAttachment { text += " (attachment)" }
+        return text
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "eye.slash.fill")
+                .font(.caption2)
+                .foregroundStyle(Theme.warning)
+            ForEach(tallies, id: \.name) { tally in
+                Text(label(tally))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.warning)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Theme.warning.opacity(0.14), in: Capsule())
+                    .overlay { Capsule().stroke(Theme.warning.opacity(0.35), lineWidth: 1) }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Redacted before sending")
+        .accessibilityValue(tallies.map(label).joined(separator: ", "))
+        .help("These were replaced with a placeholder before this message left your Mac.")
     }
 }
 
