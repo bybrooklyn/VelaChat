@@ -58,6 +58,11 @@ enum DefaultsKey {
     static let subagentModel = "velachat.subagent-model"
     static let appleIntelligenceEnabled = "velachat.apple-intelligence-enabled"
 
+    // Egress controls
+    static let redactionEnabled = "velachat.redaction-enabled"
+    static let redactionRules = "velachat.redaction-rules"
+    static let localOnlyMode = "velachat.local-only-mode"
+
     // Extensions
     static let mcpServers = "velachat.mcp-servers"
     static let customSkillPaths = "velachat.custom-skill-paths"

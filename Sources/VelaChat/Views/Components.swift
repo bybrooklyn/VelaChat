@@ -453,7 +453,12 @@ private struct ModelPaletteView: View {
         // is to show what you could switch to, and an unconfigured row
         // still explains what it needs.
         let configured = appModel.providers.profiles.filter { appModel.providers.isConfigured($0) }
-        return configured.isEmpty ? appModel.providers.profiles : configured
+        let base = configured.isEmpty ? appModel.providers.profiles : configured
+        // Local-only mode removes what cannot be used. The real block is
+        // in `EgressPolicy` at request construction — this only keeps the
+        // picker from offering a choice that would immediately fail.
+        guard appModel.isLocalOnlyMode else { return base }
+        return base.filter(\.kind.isLocal)
     }
 
     private func filteredModels(for profile: ProviderProfile) -> [RemoteModel] {
@@ -576,7 +581,14 @@ private struct ModelPaletteView: View {
 
             Divider()
 
-            if groupProfiles.isEmpty {
+            if groupProfiles.isEmpty, appModel.isLocalOnlyMode {
+                EmptyState(
+                    symbol: "hand.raised",
+                    title: "Local-only mode",
+                    message: "Only on-device providers can be used. Set up Ollama, LM Studio, or Apple Intelligence — or turn local-only off in Settings → Privacy."
+                )
+                .frame(height: 220)
+            } else if groupProfiles.isEmpty {
                 EmptyState(symbol: "server.rack", title: "No provider", message: "Choose a connection first.")
                     .frame(height: 220)
             } else if visibleGroups.isEmpty {

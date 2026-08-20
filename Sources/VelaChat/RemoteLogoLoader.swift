@@ -42,6 +42,9 @@ final class RemoteLogoLoader {
         ]
         for candidate in candidates {
             guard let url = URL(string: candidate) else { continue }
+            // Decorative, but still a network call that names this machine
+            // to a third party — local-only mode covers it too.
+            guard (try? EgressPolicy.check(url)) != nil else { continue }
             var request = URLRequest(url: url)
             request.timeoutInterval = 8
             guard let (data, response) = try? await URLSession.shared.data(for: request),

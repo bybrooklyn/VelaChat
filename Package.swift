@@ -32,7 +32,10 @@ let package = Package(
         .testTarget(
             name: "VelaChatTests",
             dependencies: ["VelaChat"],
-            path: "Tests/VelaChatTests"
+            path: "Tests/VelaChatTests",
+            // Read via `#filePath` at runtime, not bundled as resources —
+            // excluded so SwiftPM stops warning about unhandled files.
+            exclude: ["README.md", "Fixtures"]
         )
     ],
     swiftLanguageModes: [.v5]

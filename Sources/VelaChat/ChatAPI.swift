@@ -36,6 +36,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         guard let url = components.url else {
             throw APIError.message("Invalid web search endpoint URL.")
         }
+        try EgressPolicy.check(url)
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15
@@ -369,7 +370,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 guard let choice = chunk.choices.first else {
                     if let usage = chunk.usage {
                         let totals = usageTotals.observe(prompt: usage.promptTokens, completion: usage.completionTokens, cached: usage.cachedTokens)
-                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
+                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached, cacheCreation: totals.cacheCreation))
                     }
                     continue
                 }
@@ -392,7 +393,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 }
                 if let usage = chunk.usage {
                     let totals = usageTotals.observe(prompt: usage.promptTokens, completion: usage.completionTokens, cached: usage.cachedTokens)
-                    onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
+                    onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached, cacheCreation: totals.cacheCreation))
                 }
             }
 
@@ -569,6 +570,11 @@ final class CompatibleChatClient: @unchecked Sendable {
         guard let url = URL(string: string), url.host != nil else {
             throw APIError.message("Invalid endpoint URL: \(value)")
         }
+        // Local-only mode is enforced here rather than in the picker: every
+        // provider request, model fetch, and quota probe funnels through
+        // this one function, so a stale view or a background refresh cannot
+        // route around it.
+        try EgressPolicy.check(url)
         return url
     }
 
@@ -672,6 +678,9 @@ final class CompatibleChatClient: @unchecked Sendable {
         guard let url = URL(string: "https://chatgpt.com/backend-api/codex/responses") else {
             throw APIError.message("Invalid Codex endpoint")
         }
+        // Hardcoded host, so it never passes through `baseURL(for:)` and
+        // needs its own check.
+        try EgressPolicy.check(url)
         var inputItems: [CodexInputItem] = messages.map { message in
             // The Responses API requires "output_text" for model-authored
             // turns being replayed as history, and "input_text" for
@@ -768,7 +777,7 @@ final class CompatibleChatClient: @unchecked Sendable {
                 case "response.completed":
                     if let usage = event.response?.usage {
                         let totals = usageTotals.observe(prompt: usage.inputTokens, completion: usage.outputTokens, cached: nil)
-                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
+                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached, cacheCreation: totals.cacheCreation))
                     }
                 default:
                     continue
@@ -973,13 +982,13 @@ final class CompatibleChatClient: @unchecked Sendable {
                     }
                 case "message_start":
                     if let usage = event.message?.usage {
-                        let totals = usageTotals.observe(prompt: usage.inputTokens, completion: usage.outputTokens, cached: usage.cacheReadInputTokens)
-                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
+                        let totals = usageTotals.observe(prompt: usage.inputTokens, completion: usage.outputTokens, cached: usage.cacheReadInputTokens, cacheCreation: usage.creationTokens)
+                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached, cacheCreation: totals.cacheCreation))
                     }
                 case "message_delta":
                     if let usage = event.usage {
-                        let totals = usageTotals.observe(prompt: nil, completion: usage.outputTokens, cached: usage.cacheReadInputTokens)
-                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached))
+                        let totals = usageTotals.observe(prompt: nil, completion: usage.outputTokens, cached: usage.cacheReadInputTokens, cacheCreation: usage.creationTokens)
+                        onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached, cacheCreation: totals.cacheCreation))
                     }
                 case "error":
                     if let message = event.error?.message { throw APIError.message(message) }
@@ -1607,13 +1616,44 @@ private struct AnthropicStreamEvent: Decodable {
         }
     }
     struct Usage: Decodable {
+        /// Anthropic EXCLUDES cache reads from this — see
+        /// `ProviderKind.promptTokensIncludeCached`.
         let inputTokens: Int?
         let outputTokens: Int?
         let cacheReadInputTokens: Int?
+        let cacheCreationInputTokens: Int?
+        /// The TTL split. Present on real responses (verified against a
+        /// recorded session); absent on older API versions, in which case
+        /// the flat `cacheCreationInputTokens` is all there is.
+        let cacheCreation: CacheCreationDetail?
+
+        struct CacheCreationDetail: Decodable {
+            let ephemeral5m: Int?
+            let ephemeral1h: Int?
+            enum CodingKeys: String, CodingKey {
+                case ephemeral5m = "ephemeral_5m_input_tokens"
+                case ephemeral1h = "ephemeral_1h_input_tokens"
+            }
+        }
+
         enum CodingKeys: String, CodingKey {
             case inputTokens = "input_tokens"
             case outputTokens = "output_tokens"
             case cacheReadInputTokens = "cache_read_input_tokens"
+            case cacheCreationInputTokens = "cache_creation_input_tokens"
+            case cacheCreation = "cache_creation"
+        }
+
+        /// The split when the API gave one. When only the flat total is
+        /// present it is attributed to the 5-minute tier, which is the
+        /// default TTL — and the cheaper of the two, so this can only ever
+        /// under-state cost, never invent one.
+        var creationTokens: CacheCreationTokens? {
+            if let cacheCreation {
+                return CacheCreationTokens(ephemeral5m: cacheCreation.ephemeral5m, ephemeral1h: cacheCreation.ephemeral1h)
+            }
+            guard let cacheCreationInputTokens else { return nil }
+            return CacheCreationTokens(ephemeral5m: cacheCreationInputTokens, ephemeral1h: nil)
         }
     }
     struct MessageEnvelope: Decodable {
@@ -1696,19 +1736,43 @@ enum APIError: Error, LocalizedError {
 /// five-round tool reply recorded only its final hop (~5x undercount).
 struct ToolLoopUsage {
     private var basePrompt = 0, baseCompletion = 0, baseCached = 0
+    private var base5m = 0, base1h = 0
     private var roundPrompt: Int?, roundCompletion: Int?, roundCached: Int?
+    private var round5m: Int?, round1h: Int?
 
     /// Feed one provider-reported usage payload; returns the running
     /// whole-reply totals to emit (nil where nothing was ever reported,
     /// so unknown never masquerades as zero).
-    mutating func observe(prompt: Int?, completion: Int?, cached: Int?) -> (prompt: Int?, completion: Int?, cached: Int?) {
+    ///
+    /// Within one round the latest report *replaces* the previous one —
+    /// providers send cumulative usage, so summing intermediate events
+    /// would multiply the count. Across rounds `finishRound()` folds the
+    /// finished round into the base, because each round is its own
+    /// billed request.
+    mutating func observe(
+        prompt: Int?,
+        completion: Int?,
+        cached: Int?,
+        cacheCreation: CacheCreationTokens? = nil
+    ) -> (prompt: Int?, completion: Int?, cached: Int?, cacheCreation: CacheCreationTokens?) {
         if let prompt { roundPrompt = prompt }
         if let completion { roundCompletion = completion }
         if let cached { roundCached = cached }
+        if let value = cacheCreation?.ephemeral5m { round5m = value }
+        if let value = cacheCreation?.ephemeral1h { round1h = value }
         func total(_ base: Int, _ round: Int?) -> Int? {
             base == 0 && round == nil ? nil : base + (round ?? 0)
         }
-        return (total(basePrompt, roundPrompt), total(baseCompletion, roundCompletion), total(baseCached, roundCached))
+        let creation = CacheCreationTokens(
+            ephemeral5m: total(base5m, round5m),
+            ephemeral1h: total(base1h, round1h)
+        )
+        return (
+            total(basePrompt, roundPrompt),
+            total(baseCompletion, roundCompletion),
+            total(baseCached, roundCached),
+            creation.total == nil ? nil : creation
+        )
     }
 
     /// Call between rounds — folds the finished round into the base.
@@ -1716,6 +1780,10 @@ struct ToolLoopUsage {
         basePrompt += roundPrompt ?? 0
         baseCompletion += roundCompletion ?? 0
         baseCached += roundCached ?? 0
+        base5m += round5m ?? 0
+        base1h += round1h ?? 0
+        round5m = nil
+        round1h = nil
         roundPrompt = nil
         roundCompletion = nil
         roundCached = nil

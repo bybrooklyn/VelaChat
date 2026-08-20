@@ -853,3 +853,207 @@ controls in Settings.
 contradiction resolution, time-shifting), fact-layer migration into the
 store (facts still live in the old `memories` array and are mirrored,
 not moved), and the MLX/pplx-embed opt-in.
+
+## Session 2026-08-19 (round 7) — Phase 0 audit, updater gate, sidebar revert
+
+Working from `~/Downloads/velachat-implementation-plan.md`. Phase 0 is an
+audit with a STOP gate; this round delivers `audit.md` plus two fixes that
+surfaced while doing it.
+
+### The audit found the plan wrong on four rows
+
+Full detail in `audit.md`. The one that matters:
+
+**Folder attach is not missing — it is substantially built.**
+`Conversation.workspaceRootPath` (`Models.swift:1078`), `workspaceRoot` with
+sandbox fallback (`Models.swift:1116`), `setWorkspaceRoot`/`clearWorkspaceRoot`
+(`AppModel.swift:1613`/`1645`), persisted through `SavedConversation`, threaded
+into the tools and command runner, with detach UI in Settings. `SandboxManager`'s
+symlink hardening exists *because* a real project folder can be the root — the
+comment says so. **Phase 3B must extend this, not build a parallel system.**
+
+Also: offline handling is partial not missing (a 10-minute wait with a visible
+note already exists, `AppModel+Generation.swift:450-475`); stop-and-keep-partial
+is built (the gap is a *discard* variant); retry-with-a-different-model is built
+and already lands as an `AlternateStepper` sibling (the gap is a one-click
+affordance, not the capability).
+
+Confirmed real: the cost-math bug (`Usage.swift:124-131` never prices
+`cachedTokens`), missing crash-safe streaming (traced every `saveHistory()` call
+site — none fire during a stream), and the ten zero-hit rows.
+
+### TCC grants DO survive a rebuild — measured, not reasoned
+
+The plan flagged this as a possible Phase 4 blocker. Built `just app` twice with
+a real code change between them:
+
+- `CDHash` changed (`4f6ad3fc…` → `39f11be4…`)
+- designated requirement **unchanged**:
+  `identifier "com.velachat.desktop" and certificate leaf = H"04979854…"`
+
+It is cdhash-*independent*, so TCC still sees the same app. Ad-hoc signing the
+same bundle for contrast gives `designated => cdhash H"…"` — bound to the hash,
+lost on every rebuild. **`just setup-signing` is a Phase 4 prerequisite, not a
+convenience.** Worth a README line.
+
+Also learned: a comment-only source edit produces a byte-identical binary, so
+the first attempt at this experiment measured nothing. Needed a real code change.
+
+### Sparkle "Unable to Check For Updates" — fixed
+
+The dialog named the app as **"debug"**, i.e. `Bundle.main` was `.build/debug/`.
+`swift run` executes the raw binary with no Info.plist, so no `SUFeedURL`, no
+`SUPublicEDKey`, no XPC services — and `SPUStandardUpdaterController` puts a
+modal alert on screen at launch. The old comment in `Updater.swift` claimed
+Sparkle "no-ops when the feed or key is missing"; it does not, and that comment
+is gone. Now gated on `AppModel.isRunningAsBundledApp`, the same latch
+`UNUserNotificationCenter` already needed for the same reason. Settings says why
+the control is off rather than leaving a dead button.
+
+### Sidebar header reverted
+
+Brook: *"reverse this. this is bad. why is it right next to the traffic lights"*.
+Reverse-applied the `SidebarView.swift` portion of `14beefa` — `VelaMark` is
+back, the brand row returns to `.padding(.horizontal, 14)` below the titlebar
+safe area, `.ignoresSafeArea(.container, edges: .top)` and `trafficLightInset`
+are gone, and the rail's top padding returns to 10. Nothing else from that
+commit was touched.
+
+### `just run` XCFramework error — diagnosed, not a cache bug
+
+`error: XCFramework Info.plist not found at '/Users/brooklyn/data/unsloth fork/…'`
+— the checkout was renamed and `.build/workspace-state.json` stores absolute
+paths. `just clean` fixes it. Grepped the shared SwiftPM cache: no stale paths,
+so it was never implicated and `--disable-dependency-cache` would fix nothing.
+Recorded in `AGENTS.md`; fixed the matching stale `${workspaceFolder:unsloth fork}`
+in `.vscode/launch.json`. **Standing rule confirmed with Brook: build caching in
+CI only, never locally.**
+
+### Needs human verification
+
+- The updater fix was verified structurally: `swift run` now shows exactly one
+  onscreen window (the 1180×780 main window) and no alert panel, and the process
+  stays alive. **A screenshot was not possible** — no Screen Recording permission
+  in this session (`screencapture` returns "could not create image from window"),
+  per the standing `AGENTS.md` limitation. Someone should eyeball it once.
+- The sidebar revert builds clean but was **not** visually confirmed, same reason.
+- TCC §4.1 is settled by signature analysis; an end-to-end grant → rebuild →
+  recheck cycle still wants one human pass.
+- **CI may be silently skipping tests.** `build.yml:47-52` still says "No test
+  target yet" and guards on `swift test --list-tests`, but `Package.swift`
+  declares `VelaChatTests` and six test files exist. Not changed this round —
+  worth confirming before Phase 1 adds three required suites.
+
+### Round 7 (continued) — Phase 1A shipped, Phase 1B protocol layer, Phase 2 cost math
+
+Brook said "just finish", so the plan's per-phase STOP gates were dropped
+and work continued straight through.
+
+#### Phase 1A — egress controls (shipped)
+
+`Redaction.swift`: `RedactionRule` (10 built-ins, email off by default),
+`Redactor` with longest-match-wins overlap resolution, `RedactionStore`
+persisting to `DefaultsKey.redactionRules`, and `EgressPolicy` — a
+lock-guarded process-wide gate.
+
+Two decisions worth recording:
+
+- **The transcript stores the redacted text, not the original.** A
+  matched credential is therefore never written to `UserDefaults` at all,
+  and the transcript can never claim to have sent something it didn't.
+  `ChatMessage.redactions` carries the spans; `RedactionChipRow` renders
+  them above the bubble with rule name and match count.
+- **Local-only mode is enforced at request construction, not in the
+  picker.** `EgressPolicy.check(_:)` throws, so no call site can forget to
+  test the result. Gated: `baseURL(for:)` (which every provider request,
+  model fetch, and quota probe funnels through), the hardcoded Codex
+  endpoint, all three ChatGPT web-client request sites, SearXNG search,
+  and remote provider logos. Loopback means loopback — a LAN model server
+  is still egress and is refused.
+
+#### Phase 1B — verified findings that contradict the plan
+
+The plan's launch invocation is wrong in two places, both confirmed
+against real `claude` 2.1.236 runs:
+
+1. **`--setting-sources ""` does NOT isolate.** A session launched with
+   only that flag reported, in its own init handshake: the user's MCP
+   servers (`claude.ai Google Drive`, connected), 15 inherited skills, and
+   the full inherited slash-command list. The plan asked for this to be
+   confirmed empirically — it fails.
+   **What actually works:** `--setting-sources "" --strict-mcp-config
+   --disable-slash-commands` → `mcp_servers: []`, `skills: []`,
+   `slash_commands: []`. Encoded in `ClaudeExecutableLocator.arguments`.
+   Residue: the built-in `agents` list is still reported. Those ship with
+   Claude Code rather than being inherited config, so it is left alone.
+2. **`--permission-prompt-tool` does not exist in 2.1.236.** Not in
+   `--help`, and passing it produces no control frames. The plan's
+   permission design needs rework against the real control protocol.
+3. **`--bare` is a trap.** It looks like the isolation flag and is not:
+   it forces auth to `ANTHROPIC_API_KEY`/`apiKeyHelper` and never reads
+   OAuth or Keychain, which defeats the entire premise of the bridge.
+   Recorded in `ClaudeExecutableLocator` so nobody reaches for it.
+
+Two things the plan didn't know exist, both valuable:
+
+- **`rate_limit_event`** arrives unprompted on the stream carrying
+  `status`, `rateLimitType` ("five_hour"), and a real `resetsAt` epoch.
+  This is a far better quota source than the OAuth endpoint the plan
+  designated as fallback: it costs no extra request and can't itself be
+  rate-limited. Phase 2's auto-resume should prefer it.
+- **`cache_creation.{ephemeral_5m,ephemeral_1h}_input_tokens`** is real
+  and present on live responses — exactly the TTL split Phase 2's cost
+  math needs. It is no longer hypothetical.
+
+Shipped: `ClaudeControlProtocol.swift` (forgiving decode — unknown frame
+types become `.unknown` rather than throwing), `JSONValue.swift`,
+`InstructionFiles.swift`, `ClaudeExecutableLocator.swift`.
+Fixture recorded from real sessions at
+`Tests/VelaChatTests/Fixtures/claude-stream.jsonl` (only absolute paths
+scrubbed; every field and shape is as emitted).
+
+**Not built:** `ClaudeProcessTransport`, `ClaudeBridgeSession`,
+`ClaudeBackend`, and the `Backend.swift` abstraction (1C). The protocol
+layer they need is done and tested; the process/session plumbing is not.
+
+#### Phase 2 — cost math (shipped)
+
+The bug was exactly as described. `UsageSummary.costUSD` now prices fresh
+input, output, 5-minute writes at 1.25x, 1-hour writes at 2x, reads at
+0.10x, and halves for batch. `ProviderKind.promptTokensIncludeCached`
+encodes the per-provider convention (Anthropic excludes cache reads from
+`input_tokens`; OpenAI-style includes them in `prompt_tokens`) so the
+correction is a capability, not a guess at the call site. A
+provider-reported cost always wins over derived math.
+
+Concrete size of the old bug, on a 100k-prompt/80k-cached OpenAI-style
+request: **$0.315 charged versus $0.099 actual — a 3.2x overcount.**
+Anthropic went the other way, billing cache writes at nothing.
+
+Threaded end to end: Anthropic's `cache_creation` split now decodes,
+flows through `ToolLoopUsage`, and lands on `UsageSummary`. Where only a
+flat `cache_creation_input_tokens` exists it is attributed to the
+5-minute tier — the cheaper one, so it can only under-state, never invent.
+
+**Verified, no change needed:** usage is already taken from the final
+cumulative event, not summed. `ToolLoopUsage.observe` *replaces* within a
+round and folds at round boundaries, which is correct since each tool
+round is its own billed request.
+
+**Not built in Phase 2:** the two-meter UI (subscription window vs.
+dollars), auto-resume at window reset, Codex `app-server` usage, and
+per-message cost on hover.
+
+#### Needs human verification
+
+- **No test in this round was executed.** XCTest needs Xcode, which this
+  machine doesn't have. `RedactionTests`, `InstructionFilesTests`,
+  `ClaudeControlProtocolTests`, and `CostMathTests` are written and the
+  package builds, but they have only ever run in CI. The cost
+  expectations were independently recomputed outside Swift and agree, but
+  that is not the same as the suite passing.
+- Redaction chips, the Privacy settings card, and the local-only sidebar
+  banner build clean but were **not** seen rendered — no Screen Recording
+  permission in this session.
+- `--include-partial-messages` is wired into the argument builder but
+  never exercised, since no transport spawns the process yet.

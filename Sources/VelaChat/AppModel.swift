@@ -55,6 +55,17 @@ final class AppModel {
 
     let providers = ProviderStore()
     let usage = UsageStore()
+    let redaction = RedactionStore()
+    /// Hard egress switch. The stored value is mirrored into `EgressPolicy`
+    /// (a process-wide gate read at request construction) because the
+    /// paths that must honor it — the ChatGPT web client, quota probes,
+    /// model discovery — never see `AppModel`.
+    var isLocalOnlyMode = false {
+        didSet {
+            UserDefaults.standard.set(isLocalOnlyMode, forKey: DefaultsKey.localOnlyMode)
+            EgressPolicy.isLocalOnly = isLocalOnlyMode
+        }
+    }
     let mcp = McpManager()
     let skills = SkillsStore()
     let memoryIndexer = MemoryIndexer()
@@ -511,6 +522,12 @@ final class AppModel {
         isHoverTimestampsEnabled = Defaults.bool(DefaultsKey.hoverTimestamps, default: isHoverTimestampsEnabled)
         isAppleIntelligenceEnabled = Defaults.bool(DefaultsKey.appleIntelligenceEnabled, default: false)
         isSidebarRail = Defaults.bool(DefaultsKey.sidebarRail, default: false)
+        // Swift does not run property observers for assignments made
+        // inside an initializer, so the mirror into `EgressPolicy` is done
+        // explicitly here. Getting this wrong would leave the gate open for
+        // the whole launch despite the switch reading as on.
+        isLocalOnlyMode = Defaults.bool(DefaultsKey.localOnlyMode, default: false)
+        EgressPolicy.isLocalOnly = isLocalOnlyMode
         restoreQuotaSnapshots()
         isAgentToolsEnabled = Defaults.bool(DefaultsKey.agentToolsEnabled, default: isAgentToolsEnabled)
         isCommandToolEnabled = Defaults.bool(DefaultsKey.commandToolEnabled, default: false)

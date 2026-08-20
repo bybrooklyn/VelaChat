@@ -68,18 +68,51 @@ extension AppModel {
         if conversation.model.isEmpty {
             conversation.model = providers.effectiveModel(for: profile)
         }
+        // Redaction happens here, once, before anything can leave: the
+        // title generator, the request payload, and the stored transcript
+        // all use the redacted text. Storing the redacted form (rather than
+        // the original plus a "don't send this" flag) means the transcript
+        // never claims to have sent something it didn't, and a matched
+        // credential is never written to disk at all.
+        //
+        // Attachment text is redacted in place for the same reason —
+        // `contentForRequest` folds it into the outgoing message, so
+        // redacting only the typed text would leave the larger hole open.
+        let outbound = redaction.redactor.redact(text)
+        var outboundAttachments = attachments
+        var attachmentSpans: [RedactionSpan] = []
+        if redaction.isEnabled {
+            let redactor = redaction.redactor
+            for index in outboundAttachments.indices where outboundAttachments[index].kind != .image {
+                guard let original = outboundAttachments[index].textContent else { continue }
+                let result = redactor.redact(original)
+                guard result.didRedact, let encoded = result.text.data(using: .utf8) else { continue }
+                outboundAttachments[index].data = encoded
+                // Location is meaningless outside the message body, so it
+                // is recorded as `notInMessageBody` — the chip row shows
+                // which rules fired, which is the part that must be seen.
+                attachmentSpans += result.spans.map {
+                    RedactionSpan(ruleName: $0.ruleName, location: RedactionSpan.notInMessageBody, length: $0.length)
+                }
+            }
+        }
+        let outboundText = outbound.text
+        let redactionSpans = outbound.spans + attachmentSpans
+
         let isFirstMessage = conversation.realMessages.isEmpty
         if isFirstMessage, !conversation.titleIsCustom {
-            let titleSource = text.isEmpty ? (attachments.first?.filename ?? text) : text
+            let titleSource = outboundText.isEmpty ? (outboundAttachments.first?.filename ?? outboundText) : outboundText
             conversation.title = titleSource.count > 54 ? String(titleSource.prefix(54)) + "…" : titleSource
             // A real title starts generating NOW, in parallel with the
             // reply, from the user's message alone — it typically lands in
             // the sidebar while the reply is still streaming.
-            if isAutoTitleEnabled, !text.isEmpty {
-                generateInstantTitle(for: conversation, userText: text, profile: profile)
+            if isAutoTitleEnabled, !outboundText.isEmpty {
+                generateInstantTitle(for: conversation, userText: outboundText, profile: profile)
             }
         }
-        conversation.messages.append(ChatMessage(role: "user", content: text, attachments: attachments))
+        var userMessage = ChatMessage(role: "user", content: outboundText, attachments: outboundAttachments)
+        userMessage.redactions = redactionSpans
+        conversation.messages.append(userMessage)
         conversation.updatedAt = Date()
         // Stamped now, not read live off `selectedProvider` when displayed —
         // otherwise switching providers mid-conversation retroactively
@@ -897,6 +930,7 @@ extension AppModel {
         var promptTokens: Int?
         var completionTokens: Int?
         var cachedTokens: Int?
+        var cacheCreation: CacheCreationTokens?
         // Events enqueue in arrival order — deltas must NOT be merged across
         // an activity boundary, or the interleaving is lost.
         for event in events {
@@ -904,10 +938,11 @@ extension AppModel {
             case .delta(let content, let reasoning):
                 if !content.isEmpty { enqueue(.text(content), for: assistantID, conversation: conversation) }
                 if !reasoning.isEmpty { enqueue(.reasoning(reasoning), for: assistantID, conversation: conversation) }
-            case .usage(let prompt, let completion, let cached):
+            case .usage(let prompt, let completion, let cached, let creation):
                 promptTokens = prompt ?? promptTokens
                 completionTokens = completion ?? completionTokens
                 cachedTokens = cached ?? cachedTokens
+                cacheCreation = creation ?? cacheCreation
             case .finished(let reason):
                 if let reason {
                     // Normalize the providers' truncation vocabulary.
@@ -932,7 +967,9 @@ extension AppModel {
             }
         }
         if promptTokens != nil || completionTokens != nil {
-            let summary = UsageSummary(promptTokens: promptTokens, completionTokens: completionTokens, cachedTokens: cachedTokens)
+            var summary = UsageSummary(promptTokens: promptTokens, completionTokens: completionTokens, cachedTokens: cachedTokens)
+            summary.cacheCreation5mTokens = cacheCreation?.ephemeral5m
+            summary.cacheCreation1hTokens = cacheCreation?.ephemeral1h
             usageByMessage[assistantID] = summary
             // Persisted onto the message itself (not just the in-memory
             // cache above) so lifetime usage statistics survive a relaunch
@@ -967,7 +1004,7 @@ extension AppModel {
             providerID: providerID,
             promptTokens: summary.promptTokens,
             completionTokens: summary.completionTokens,
-            costUSD: summary.costUSD(for: modelInfo)
+            costUSD: summary.costUSD(for: modelInfo, providerKind: providers.profile(id: providerID)?.kind)
         )
     }
 
