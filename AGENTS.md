@@ -111,6 +111,21 @@ wiring — the mistakes below are easy to repeat blind.
   silently turns every default-ON setting off. Use
   `Defaults.bool(_:default:)`.
 
+## Moving or renaming the checkout
+
+- **A renamed or moved checkout needs `just clean` before anything else.**
+  `.build/workspace-state.json` stores **absolute** paths, so a `.build/`
+  carried across a rename sends SwiftPM looking for binary artifacts at the
+  old directory. It fails as
+  `error: XCFramework Info.plist not found at '.../<old name>/.build/artifacts/...'`,
+  which reads like a corrupt Sparkle dependency and is not one. Verified: the
+  shared cache (`~/Library/Caches/org.swift.swiftpm`) holds no absolute paths
+  and is never the culprit, so disabling it fixes nothing and only costs
+  re-fetches. **Build caching belongs in CI only** (`actions/cache` in
+  `.github/workflows/build.yml`); never add a local one.
+- Grep `.vscode/launch.json` after a rename too — `${workspaceFolder:<name>}`
+  pins the old name and keeps working silently until it doesn't.
+
 ## Build commands
 
 - `just build` / `swift build` — debug build, fast iteration.

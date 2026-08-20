@@ -46,15 +46,16 @@ jobs:
       - name: Build release
         run: swift build -c release
 
+      # There IS a test target (Tests/VelaChatTests, 8 suites). The guard
+      # that used to live here ran `swift test --list-tests` and skipped on
+      # any non-zero exit, which meant a test target that failed to *build*
+      # was reported as "no tests defined" and CI went green anyway. Run
+      # them directly so a broken or failing suite fails the run.
+      #
+      # These only ever run here: XCTest ships with Xcode, which the
+      # development machine doesn't have (see Tests/VelaChatTests/README.md).
       - name: Run tests
-        run: |
-          # No test target yet — this stays green until one exists, then
-          # starts gating for real without touching the workflow.
-          if swift test --list-tests >/dev/null 2>&1; then
-            swift test
-          else
-            echo "No tests defined yet; skipping."
-          fi
+        run: swift test
 
       - name: Package .app
         run: ./Scripts/build-app.sh --release
