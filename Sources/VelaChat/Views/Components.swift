@@ -952,8 +952,16 @@ private struct ContextInspector: View {
                 }
                 .font(.caption)
                 .foregroundStyle(Theme.secondaryText)
+                // Where the total came from. A figure looked up from a model
+                // name is not the same claim as one the endpoint reported,
+                // and the readout must not present them as if it were.
+                if let source = appModel.contextWindowSource {
+                    Text("Limit \(source.label).")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.tertiaryText)
+                }
             } else {
-                Text("This provider did not publish a context limit. The endpoint will enforce its own window.")
+                Text("This provider did not publish a context limit, and this model isn't one with a documented one. The endpoint will enforce its own window.")
                     .font(.callout)
                     .foregroundStyle(Theme.secondaryText)
             }
@@ -1002,7 +1010,9 @@ private struct ContextInspector: View {
             }
 
             Divider()
-            Text("The estimate counts the current conversation text. Reasoning tokens and provider-side caching can use additional capacity.")
+            Text(appModel.contextEstimateIsCalibrated
+                 ? "The estimate counts the conversation plus this model's measured per-request overhead, at a characters-per-token rate fitted from what this model actually reported. Reasoning tokens can still use additional capacity."
+                 : "The estimate counts the current conversation text at a generic four-characters-per-token rate, until enough replies have been measured to fit a real one. Reasoning tokens and provider-side caching can use additional capacity.")
                 .font(.caption)
                 .foregroundStyle(Theme.tertiaryText)
                 .fixedSize(horizontal: false, vertical: true)

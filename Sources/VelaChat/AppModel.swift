@@ -59,6 +59,11 @@ final class AppModel {
 
     let providers = ProviderStore()
     let usage = UsageStore()
+    /// Per-model characters-per-token ratios, fitted from the
+    /// provider-reported `prompt_tokens` of finished replies. Turns the
+    /// context readout from a flat `characters / 4` guess into something
+    /// calibrated against what the provider actually charged.
+    let tokenCalibration = TokenCalibrationStore()
     let redaction = RedactionStore()
     /// Hard egress switch. The stored value is mirrored into `EgressPolicy`
     /// (a process-wide gate read at request construction) because the
@@ -137,6 +142,12 @@ final class AppModel {
         didSet { UserDefaults.standard.set(thinkingLevel.rawValue, forKey: DefaultsKey.thinkingLevel) }
     }
     var usageByMessage: [UUID: UsageSummary] = [:]
+    /// What each in-flight reply actually sent, kept until the provider
+    /// reports how many tokens that was. Dropped the moment the reply stops
+    /// being a single request — a tool round or an auto-continue — because
+    /// the `prompt_tokens` it would then be measured against covers several
+    /// requests, not the one text this recorded.
+    var calibrationSampleByMessage: [UUID: TokenCalibrationSample] = [:]
     var customInstructions: String = "" {
         didSet { UserDefaults.standard.set(customInstructions, forKey: DefaultsKey.customInstructions) }
     }
@@ -678,10 +689,39 @@ final class AppModel {
         return Double(tokens) * inputPrice / 1_000_000
     }
 
-    /// Rough token count for text not yet in the transcript — the same
-    /// four-characters-per-token approximation the context readout uses.
+    /// Token count for text not yet in the transcript — the same
+    /// calibrated ratio the context readout uses, so the composer's
+    /// "about to send" number and the ring can't disagree with each other.
     private func tokenEstimate(forDraft text: String) -> Int {
-        text.isEmpty ? 0 : max(1, text.count / 4)
+        guard !text.isEmpty else { return 0 }
+        return TokenCalibration.tokens(
+            units: TokenCalibration.units(of: text),
+            charactersPerToken: charactersPerToken(providerID: selectedProvider?.id, model: currentModelID)
+        )
+    }
+
+    /// The fitted ratio for a provider+model, or `TokenCalibration`'s
+    /// fallback while that pair is still under-sampled.
+    private func charactersPerToken(providerID: UUID?, model: String) -> Double {
+        guard let providerID, !model.isEmpty else { return TokenCalibration.fallbackCharactersPerToken }
+        return tokenCalibration.charactersPerToken(for: ProviderStore.modelKey(providerID, model))
+    }
+
+    /// Bytes every request carries that aren't transcript — the composed
+    /// system prompt and the tool schemas — as last observed for this
+    /// provider+model. Zero until a reply has been sent, so an unknown
+    /// overhead adds nothing rather than being guessed at.
+    private func overheadUnits(providerID: UUID?, model: String) -> Int {
+        guard let providerID, !model.isEmpty else { return 0 }
+        return tokenCalibration.overheadUnits(for: ProviderStore.modelKey(providerID, model))
+    }
+
+    /// True once the active model's estimate is a measurement rather than
+    /// the flat fallback. Surfaced in the context popover so the two cases
+    /// aren't presented as if they were the same thing.
+    var contextEstimateIsCalibrated: Bool {
+        guard let provider = selectedProvider, !currentModelID.isEmpty else { return false }
+        return tokenCalibration.isCalibrated(for: ProviderStore.modelKey(provider.id, currentModelID))
     }
 
     /// Counts only what would actually be sent on the next request — after
@@ -691,41 +731,81 @@ final class AppModel {
     /// below, which reads the same number — would stay pinned near "full"
     /// forever after compacting, since the visible transcript itself never
     /// gets smaller.
+    ///
+    /// Two corrections on top of the old `bytes / 4`: the divisor is the
+    /// ratio fitted from this model's own reported `prompt_tokens`, and the
+    /// last observed system-prompt-plus-tools overhead is added in. Every
+    /// request really does carry that overhead, so leaving it out made the
+    /// readout short by a fixed few thousand tokens on every single turn —
+    /// in the unsafe direction, since it is the number auto-compaction
+    /// compares against the window.
+    ///
+    /// Deliberately a plain synchronous function: it is read during view
+    /// rendering, so it may not await anything or touch the network.
     func tokenEstimate(for conversation: Conversation) -> Int {
+        let ratio = charactersPerToken(providerID: conversation.providerID, model: conversation.model)
+        let transcript = transcriptUnits(for: conversation)
+        let overhead = overheadUnits(providerID: conversation.providerID, model: conversation.model)
+        return TokenCalibration.tokens(units: transcript.units + overhead, charactersPerToken: ratio)
+            + transcript.attachmentTokens
+    }
+
+    /// UTF-8 bytes of the transcript a request would carry, and the
+    /// attachment tokens alongside it (already counted in tokens, not
+    /// bytes, by `Attachment.estimatedTokens`).
+    ///
+    /// Split out because the calibration hook needs exactly this number:
+    /// the difference between it and the bytes actually sent is the
+    /// system-prompt-plus-tool-schema overhead the readout otherwise
+    /// misses on every turn.
+    func transcriptUnits(for conversation: Conversation) -> (units: Int, attachmentTokens: Int) {
         let messages: [ChatMessage]
         if let boundary = conversation.lastCompactionIndex {
             messages = Array(conversation.messages[boundary...])
         } else {
             messages = conversation.messages
         }
-        return messages.reduce(0) { partial, message in
+        var units = 0
+        var attachmentTokens = 0
+        for message in messages {
             // Notices and other local-only cards are never sent, so they
             // must not inflate the readout or trip auto-compaction early.
             // The compaction-summary system message IS sent, and stays
             // counted because it is not synthetic.
-            guard !message.isSynthetic else { return partial }
-            let attachmentTokens = message.attachments.filter(\.isIncluded).reduce(0) { $0 + $1.estimatedTokens }
-            return partial + max(1, message.content.utf8.count / 4) + attachmentTokens
+            guard !message.isSynthetic else { continue }
+            units += max(1, TokenCalibration.units(of: message.content))
+            attachmentTokens += message.attachments.filter(\.isIncluded).reduce(0) { $0 + $1.estimatedTokens }
         }
+        return (units, attachmentTokens)
     }
 
-    /// A manual correction always wins over what the catalog reported —
-    /// covers both "the catalog didn't publish one at all" and "the catalog
-    /// published a wrong one for this deployment."
-    var contextWindow: Int? {
-        if let provider = selectedProvider,
-           let override = providers.contextWindowOverride(providerID: provider.id, model: currentModelID) {
-            return override
-        }
-        return selectedModelInfo?.contextLength
+    /// The active model's context window and where the number came from.
+    /// Precedence is documented once, in `ContextWindowResolver` — this is
+    /// only the wiring that hands it the four candidates.
+    var resolvedContextWindow: ContextWindowResolver.Resolved? {
+        guard let provider = selectedProvider, !currentModelID.isEmpty else { return nil }
+        return ContextWindowResolver.resolve(
+            manual: providers.contextWindowOverride(providerID: provider.id, model: currentModelID),
+            learned: providers.learnedContextWindow(providerID: provider.id, model: currentModelID),
+            catalog: selectedModelInfo?.contextLength,
+            modelID: currentModelID
+        )
     }
+
+    var contextWindow: Int? { resolvedContextWindow?.value }
+
+    /// Where the displayed window came from, so a curated guess is never
+    /// shown as though the provider had published it.
+    var contextWindowSource: ContextWindowSource? { resolvedContextWindow?.source }
 
     func contextWindow(for conversation: Conversation) -> Int? {
-        guard let providerID = conversation.providerID else { return nil }
-        if let override = providers.contextWindowOverride(providerID: providerID, model: conversation.model) {
-            return override
-        }
-        return providers.modelInfo(for: providerID, model: conversation.model)?.contextLength
+        guard let providerID = conversation.providerID, !conversation.model.isEmpty else { return nil }
+        return ContextWindowResolver.resolve(
+            manual: providers.contextWindowOverride(providerID: providerID, model: conversation.model),
+            learned: providers.learnedContextWindow(providerID: providerID, model: conversation.model),
+            catalog: providers.modelInfo(for: providerID, model: conversation.model)?.contextLength,
+            modelID: conversation.model
+        )?.value
     }
 
     var contextWindowIsOverridden: Bool {
@@ -1010,6 +1090,8 @@ final class AppModel {
         conversations.removeAll()
         pendingConversation = nil
         usageByMessage.removeAll()
+        calibrationSampleByMessage.removeAll()
+        tokenCalibration.reset()
         searchByMessage.removeAll()
         memories.removeAll()
         promptSnippets.removeAll()
@@ -1511,6 +1593,7 @@ final class AppModel {
     func discardTransientState(for messages: [ChatMessage]) {
         let ids = Set(messages.map(\.id))
         usageByMessage = usageByMessage.filter { !ids.contains($0.key) }
+        calibrationSampleByMessage = calibrationSampleByMessage.filter { !ids.contains($0.key) }
         searchByMessage = searchByMessage.filter { !ids.contains($0.key) }
         planByMessage = planByMessage.filter { !ids.contains($0.key) }
         finishReasonByMessage = finishReasonByMessage.filter { !ids.contains($0.key) }
@@ -1552,6 +1635,7 @@ final class AppModel {
         conversations.removeAll()
         pendingConversation = nil
         usageByMessage.removeAll()
+        calibrationSampleByMessage.removeAll()
         searchByMessage.removeAll()
         planByMessage.removeAll()
         finishReasonByMessage.removeAll()

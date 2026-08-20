@@ -26,6 +26,18 @@ enum Limits {
     /// Conversation titles, and exported filenames derived from them.
     static let titleCharacters = 60
 
+    /// An older round's tool result, as replayed into *later* rounds of
+    /// the same reply. Distinct from `toolResultBytes` above, which bounds
+    /// what gets stored: this bounds what gets re-sent and re-billed on
+    /// every subsequent round. Generous enough that a condensed result
+    /// still says what it found.
+    static let replayedToolResultBytes = 1_024
+    /// How many of the most recent tool rounds replay their results in
+    /// full. Two, because the round just finished and the one before it are
+    /// what the model is still actually reasoning over; anything older it
+    /// has already folded into its plan.
+    static let toolResultReplayRounds = 2
+
     /// Attachment bytes above this go to the blob store instead of into
     /// the conversation history (see `AttachmentStore`).
     static let inlineAttachmentBytes = 8_192
@@ -57,7 +69,15 @@ enum Limits {
     // MARK: - Loops
 
     /// Tool-calling rounds per reply before the model is told to answer.
-    static let maxToolRounds = 10
+    ///
+    /// Was 10, and a real reply hit that ceiling mid-task at 82,000 tokens.
+    /// Raising it was only safe *after* the two changes that flattened the
+    /// per-round cost — Anthropic prompt caching (`AnthropicPromptCache`)
+    /// and condensed replay of older tool results (`ToolResultReplay`).
+    /// Before those, every extra round re-sent and re-billed the entire
+    /// growing exchange at full price, so a higher budget would have made
+    /// the quadratic blow-up worse rather than buying more work done.
+    static let maxToolRounds = 16
     /// Concurrent subagents.
     static let maxSubagents = 3
     /// Silent continuations after a provider truncates at its output cap.
