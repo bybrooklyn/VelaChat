@@ -226,7 +226,7 @@ extension AppModel {
         if !trimmedInstructions.isEmpty {
             systemMessages.append(ChatMessage(role: "system", content: trimmedInstructions))
         }
-        if !memories.isEmpty {
+        if !facts.isEmpty {
             systemMessages.append(ChatMessage(role: "system", content: "Remembered facts about the user, true across every conversation:\n\(relevantMemoryText(for: conversation))"))
         }
         // Active skills' bodies become extra scoped context for the rest of
@@ -268,11 +268,10 @@ extension AppModel {
         )
         toolContext.attachmentTexts = attachmentTexts
         toolContext.memory = ToolCatalog.MemoryAccess(
-            snapshot: memories.map { ToolCatalog.MemorySnapshot(id: $0.id, content: $0.content, topic: $0.topic) },
+            snapshot: facts.map { ToolCatalog.MemorySnapshot(id: $0.id, content: $0.content, topic: $0.topic) },
             mutate: { [weak self] mutation in
-                await MainActor.run { [weak self] in
-                    self?.applyMemoryMutation(mutation) ?? "Error: memory is unavailable."
-                }
+                guard let self else { return "Error: memory is unavailable." }
+                return await self.applyMemoryMutation(mutation)
             }
         )
         if isScheduleToolEnabled {
@@ -419,7 +418,9 @@ extension AppModel {
                 // withheld from it, so telling it about a mode it cannot
                 // participate in is pure confusion.
                 promptContext.isPlanning = conversation.isPlanning && modelSupportsTools
-                promptContext.memoryCount = self.memories.count
+                // `facts` replaced the old `memories` array — the legacy
+                // store is gone, so this reads the mirror of MemoryStore.
+                promptContext.memoryCount = self.facts.count
                 promptContext.attachmentNames = conversation.realMessages.flatMap { $0.attachments.map(\.filename) }
             }
             // Past conversations that look relevant to what was just

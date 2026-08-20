@@ -17,10 +17,12 @@ import NaturalLanguage
 /// sends a word of the user's history anywhere — which matters more here
 /// than raw quality, because this indexes everything they have ever typed.
 ///
-/// A stronger option exists — pplx-embed-0.6b via MLX — and is planned as
-/// an opt-in upgrade. Until then, a nil vector simply means keyword
-/// search does the work alone, which is why every caller treats
-/// embeddings as optional rather than required.
+/// A stronger option exists and is a functional requirement, not a nicety
+/// — see `RemoteEmbedding` below and `isRemoteEnabled`. It is opt-in and
+/// off by default because it is the one part of memory that would send
+/// the user's text off the machine. Until it is wired into the store, a
+/// nil vector simply means keyword search does the work alone, which is
+/// why every caller treats embeddings as optional rather than required.
 final class MemoryEmbedder: @unchecked Sendable {
     static let shared = MemoryEmbedder()
 
@@ -98,5 +100,94 @@ final class MemoryEmbedder: @unchecked Sendable {
         defer { lock.unlock() }
         loadIfNeeded()
         return contextual != nil || sentence != nil
+    }
+}
+
+// MARK: - Opt-in hosted embeddings
+
+/// The upgrade path out of on-device embeddings.
+///
+/// The measurement that shaped this whole subsystem is that
+/// `NLEmbedding.sentenceEmbedding` cannot retrieve on its own: the query
+/// "zzzqqq unrelated gibberish xyzzy" scored an unrelated note at 0.279,
+/// higher than the correct hit for a real question at 0.274. A real
+/// embedding model fixes that, and every hosted one lives on somebody
+/// else's computer.
+///
+/// So this is opt-in, off by default, stated plainly in Settings, and
+/// gated on `EgressPolicy` — memory text is the most personal corpus the
+/// app holds, and "local-only mode" has to mean it about this too. The
+/// check is inside `vector(for:)` rather than at the call site so no
+/// future caller can forget it.
+///
+/// The wire shape is the OpenAI `/v1/embeddings` one (`{"input": …,
+/// "model": …}` → `{"data": [{"embedding": [Float]}]}`), which is what
+/// every hosted embedding endpoint worth pointing at speaks. Per
+/// AGENTS.md, "OpenAI-compatible" is a claim rather than a guarantee, so
+/// `verify()` exists to make an endpoint prove it before the user trusts
+/// it with anything.
+struct RemoteEmbedding: Sendable {
+    var endpoint: URL
+    var model: String
+    var apiKey: String
+
+    /// Reads the stored opt-in. False unless the user explicitly turned it
+    /// on: nothing about memory should start leaving the Mac because a
+    /// default flipped.
+    static var isEnabled: Bool {
+        Defaults.bool(DefaultsKey.remoteEmbeddingsEnabled, default: false)
+    }
+
+    /// The configured endpoint, or nil when the opt-in is off or the
+    /// settings are incomplete. `apiKey` is supplied by the caller because
+    /// keys live in the Keychain behind `ProviderStore`, never here.
+    static func configured(apiKey: String) -> RemoteEmbedding? {
+        guard isEnabled else { return nil }
+        guard let raw = Defaults.string(DefaultsKey.remoteEmbeddingEndpoint),
+              let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme != nil else { return nil }
+        let model = (Defaults.string(DefaultsKey.remoteEmbeddingModel) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else { return nil }
+        return RemoteEmbedding(endpoint: url, model: model, apiKey: apiKey)
+    }
+
+    /// One vector for one string. Throws rather than returning nil so a
+    /// blocked egress, a dead endpoint and an unparseable answer stay
+    /// distinguishable — a silent nil here would read as "this text just
+    /// isn't embeddable" and hide a misconfiguration forever.
+    func vector(for text: String) async throws -> [Float] {
+        // The gate, before anything is serialised, let alone sent.
+        try EgressPolicy.check(endpoint)
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = Limits.requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        let body: [String: Any] = ["model": model, "input": String(text.prefix(8_000))]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw APIError.message("Embedding endpoint returned \(http.statusCode) \(HTTPURLResponse.localizedString(forStatusCode: http.statusCode)).")
+        }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = object["data"] as? [[String: Any]],
+              let numbers = entries.first?["embedding"] as? [Double], !numbers.isEmpty else {
+            throw APIError.message("Embedding endpoint did not return an OpenAI-shaped {\"data\":[{\"embedding\":[…]}]} body.")
+        }
+        return numbers.map(Float.init)
+    }
+
+    /// What the Settings "Test" button calls: returns the dimension the
+    /// endpoint actually produced, so the user sees proof rather than a
+    /// green tick that only means "the request didn't throw".
+    func verify() async -> Result<Int, Error> {
+        do {
+            return .success(try await vector(for: "User prefers concise answers.").count)
+        } catch {
+            return .failure(error)
+        }
     }
 }

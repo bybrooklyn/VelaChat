@@ -398,11 +398,11 @@ struct SettingsView: View {
                     }
 
 
-                    SettingsCard(section: .memory, footer: Text("Written by the model as you chat, kept on this Mac only \u{2014} yours to edit or remove, grouped by topic.")) {
+                    SettingsCard(section: .memory, footer: Text("Durable facts about you \u{2014} stable preferences, standing constraints, things still true next month. Written by the model as you chat, kept on this Mac, yours to edit or remove.")) {
 
-                if appModel.memories.isEmpty {
+                if appModel.facts.isEmpty {
                     SettingsEmptyState(
-                        text: "Nothing remembered yet — the model saves facts as you chat.",
+                        text: "Nothing remembered yet — the model saves durable facts as you chat.",
                         symbol: "brain"
                     )
                 } else {
@@ -411,24 +411,8 @@ struct SettingsView: View {
                             Text(topic)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(Theme.tertiaryText)
-                            ForEach($appModel.memories) { $memory in
-                                if memory.displayTopic == topic {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "brain")
-                                            .font(.caption)
-                                            .foregroundStyle(Theme.tertiaryText)
-                                        TextField("Memory", text: $memory.content, axis: .vertical)
-                                            .textFieldStyle(.plain)
-                                        Button {
-                                            appModel.removeMemory(memory)
-                                        } label: {
-                                            Image(systemName: "trash")
-                                        }
-                                        .buttonStyle(VelaIconButtonStyle())
-                                        .foregroundStyle(Theme.tertiaryText)
-                                    }
-                                    .transition(.opacity)
-                                }
+                            ForEach(appModel.facts.filter { $0.displayTopic == topic }) { fact in
+                                MemoryFactRow(fact: fact)
                             }
                         }
                         .padding(.vertical, 2)
@@ -447,6 +431,8 @@ struct SettingsView: View {
                 }
                 Divider()
                 ConversationIndexRow()
+                Divider()
+                RemoteEmbeddingRow()
                     }
 
 
@@ -750,7 +736,7 @@ struct SettingsView: View {
 
     private var memoryTopics: [String] {
         var topics: [String] = []
-        for memory in appModel.memories where !topics.contains(memory.displayTopic) {
+        for memory in appModel.facts where !topics.contains(memory.displayTopic) {
             topics.append(memory.displayTopic)
         }
         // "General" (untopiced) sorts last, everything else alphabetical.
@@ -1182,6 +1168,180 @@ private struct UpdatesRow: View {
                 .font(.caption)
                 .foregroundStyle(Theme.tertiaryText)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// One stored fact, editable in place.
+///
+/// The list used to bind straight into the old `AppModel.memories` array,
+/// so every keystroke rewrote it — and, through its `didSet`, re-encoded
+/// the whole `UserDefaults` blob. Facts live in SQLite now and an edit is
+/// a real write with re-embedding behind it, so the text is buffered here
+/// and committed once: on Return, or when focus leaves the field.
+private struct MemoryFactRow: View {
+    @Environment(AppModel.self) private var appModel
+    let fact: MemoryItem
+
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "brain")
+                .font(.caption)
+                .foregroundStyle(Theme.tertiaryText)
+            TextField("Memory", text: $draft, axis: .vertical)
+                .textFieldStyle(.plain)
+                .focused($isFocused)
+                .onSubmit { commit() }
+                .accessibilityLabel("Stored memory")
+            Button {
+                appModel.removeMemory(fact)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(VelaIconButtonStyle())
+            .foregroundStyle(Theme.tertiaryText)
+            .help("Forget this memory")
+            .accessibilityLabel("Forget this memory")
+        }
+        .transition(.opacity)
+        .onAppear { draft = fact.content }
+        // The store normalizes phrasing on write ("i like tea" becomes
+        // "User likes tea"), so what comes back can differ from what was
+        // typed. Adopt it — unless the field is still being edited, where
+        // overwriting under the cursor would be maddening.
+        .onChange(of: fact.content) { _, updated in
+            if !isFocused { draft = updated }
+        }
+        .onChange(of: isFocused) { _, focused in
+            if !focused { commit() }
+        }
+    }
+
+    private func commit() {
+        appModel.updateMemory(fact, content: draft)
+    }
+}
+
+/// The opt-in hosted embedder.
+///
+/// On-device embeddings measurably cannot retrieve on their own — the
+/// query "zzzqqq unrelated gibberish xyzzy" once scored an unrelated note
+/// higher than the correct hit for a real question scored — which is why
+/// recall is keyword-first and why a real embedding model is a functional
+/// requirement rather than a refinement. Every real one runs on somebody
+/// else's computer.
+///
+/// So: off unless explicitly switched on, with the consequence stated in
+/// the UI rather than buried, and unavailable at all in local-only mode.
+/// `EgressPolicy.check` is enforced inside `RemoteEmbedding.vector`, so
+/// this screen is the explanation, not the enforcement.
+private struct RemoteEmbeddingRow: View {
+    @Environment(AppModel.self) private var appModel
+
+    @State private var isEnabled = RemoteEmbedding.isEnabled
+    @State private var endpoint = Defaults.string(DefaultsKey.remoteEmbeddingEndpoint) ?? ""
+    @State private var model = Defaults.string(DefaultsKey.remoteEmbeddingModel) ?? ""
+    @State private var providerID = Defaults.string(DefaultsKey.remoteEmbeddingProvider) ?? ""
+    @State private var status: String?
+    @State private var isTesting = false
+
+    private var keyedProfiles: [ProviderProfile] {
+        appModel.providers.profiles.filter { appModel.providers.hasStoredKey(for: $0.id) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: Binding(get: { isEnabled }, set: { newValue in
+                isEnabled = newValue
+                Defaults.set(newValue, DefaultsKey.remoteEmbeddingsEnabled)
+                status = nil
+            })) {
+                Text("Use a hosted embedding model")
+                    .font(.callout)
+            }
+            .toggleStyle(.switch)
+            .disabled(appModel.isLocalOnlyMode)
+            .accessibilityLabel("Use a hosted embedding model for memory")
+
+            Text(appModel.isLocalOnlyMode
+                 ? "Unavailable while local-only mode is on — a hosted embedder is network egress by definition."
+                 : "Sends the text of your saved memories and recall queries to the endpoint below, so a real embedding model can rank them. Off by default; on-device embeddings never leave this Mac.")
+                .font(.caption)
+                .foregroundStyle(Theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if isEnabled && !appModel.isLocalOnlyMode {
+                TextField("https://api.example.com/v1/embeddings", text: $endpoint)
+                    .textFieldStyle(.plain)
+                    .flatFieldStyle()
+                    .accessibilityLabel("Embedding endpoint URL")
+                    .onChange(of: endpoint) { _, value in
+                        Defaults.set(value, DefaultsKey.remoteEmbeddingEndpoint)
+                    }
+                TextField("Embedding model, e.g. text-embedding-3-small", text: $model)
+                    .textFieldStyle(.plain)
+                    .flatFieldStyle()
+                    .accessibilityLabel("Embedding model name")
+                    .onChange(of: model) { _, value in
+                        Defaults.set(value, DefaultsKey.remoteEmbeddingModel)
+                    }
+                // Keys are never stored twice: this borrows an existing
+                // provider's Keychain entry rather than minting another
+                // secret to look after.
+                Picker("Authenticate with", selection: $providerID) {
+                    Text("No key").tag("")
+                    ForEach(keyedProfiles) { profile in
+                        Text(profile.name).tag(profile.id.uuidString)
+                    }
+                }
+                .accessibilityLabel("Provider key used for the embedding endpoint")
+                .onChange(of: providerID) { _, value in
+                    Defaults.set(value, DefaultsKey.remoteEmbeddingProvider)
+                }
+                HStack(spacing: 8) {
+                    Button(isTesting ? "Testing…" : "Test") { test() }
+                        .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                        .disabled(isTesting || endpoint.isEmpty || model.isEmpty)
+                        .accessibilityLabel("Test the embedding endpoint")
+                    if let status {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(Theme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+                Text("Not yet used for stored vectors: enabling this configures and verifies the endpoint, and the store still embeds on device. Mixing two embedding spaces in one index would silently corrupt ranking, so the switch-over needs a re-embed pass that hasn't landed.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Proof rather than a green tick: an endpoint that claims to be
+    /// OpenAI-compatible has to actually return a vector, and the
+    /// dimension it returns is the evidence.
+    private func test() {
+        isTesting = true
+        status = nil
+        let key = UUID(uuidString: providerID).map { appModel.providers.apiKey(for: $0) } ?? ""
+        Task {
+            guard let remote = RemoteEmbedding.configured(apiKey: key) else {
+                status = "Fill in the endpoint and model first."
+                isTesting = false
+                return
+            }
+            switch await remote.verify() {
+            case .success(let dimension):
+                status = "Returned a \(dimension)-dimension vector."
+            case .failure(let error):
+                status = error.localizedDescription
+            }
+            isTesting = false
         }
     }
 }

@@ -78,7 +78,7 @@ final class AppModel {
     let mcp = McpManager()
     let skills = SkillsStore()
     let memoryIndexer = MemoryIndexer()
-    /// Which stored memories and past-conversation excerpts informed each
+    /// Which stored facts and past-conversation excerpts informed each
     /// reply — surfaced under the message so recall is explainable rather
     /// than magical.
     var recallByMessage: [UUID: [MemoryRecall]] = [:]
@@ -89,14 +89,21 @@ final class AppModel {
             }
         }
     }
-    /// Global, editable, included in every request — see `MemoryItem`.
-    var memories: [MemoryItem] = [] {
-        didSet {
-            if let data = try? JSONEncoder().encode(memories) {
-                UserDefaults.standard.set(data, forKey: DefaultsKey.memories)
-            }
-        }
-    }
+    /// The user's durable facts, global and included in every request —
+    /// see `MemoryItem`.
+    ///
+    /// Read-only from outside, and NOT persisted here. Facts used to live
+    /// in this array as a `UserDefaults`-backed list that was separately
+    /// *mirrored* into `MemoryStore` so retrieval had something to search.
+    /// Two sources of truth for the same data is its own bug: a write that
+    /// reached one and not the other left the list the user edits and the
+    /// text the model recalls permanently disagreeing, which reads as
+    /// "memory is just bad" rather than as a missing write.
+    ///
+    /// The store is the only home now. Every mutation goes through it and
+    /// comes back through `refreshFacts()`; this array exists solely
+    /// because SwiftUI renders synchronously and the store is an actor.
+    private(set) var facts: [MemoryItem] = []
     var messageWidth: MessageWidthPreset = .comfortable {
         didSet { UserDefaults.standard.set(messageWidth.rawValue, forKey: DefaultsKey.messageWidth) }
     }
@@ -542,10 +549,6 @@ final class AppModel {
            let saved = try? JSONDecoder().decode([PromptSnippet].self, from: data) {
             promptSnippets = saved
         }
-        if let data = UserDefaults.standard.data(forKey: DefaultsKey.memories),
-           let saved = try? JSONDecoder().decode([MemoryItem].self, from: data) {
-            memories = saved
-        }
         if let raw = UserDefaults.standard.string(forKey: DefaultsKey.messageWidth),
            let saved = MessageWidthPreset(rawValue: raw) {
             messageWidth = saved
@@ -909,7 +912,15 @@ final class AppModel {
         // Recent conversations become searchable within seconds; older
         // ones fill in behind them without competing with the interface.
         memoryIndexer.startBackfill(conversations: conversations)
-        syncAllFactsToStore()
+        // Facts have one home now. `LegacyMemoryMigration` moves the old
+        // `velachat.memories` array into the store, verifies every fact
+        // landed, and only then deletes it; a failure leaves the legacy
+        // copy intact to retry next launch. Either way the UI mirror is
+        // loaded from the store afterwards.
+        Task {
+            await LegacyMemoryMigration.run(store: .shared, defaults: .standard)
+            await refreshFacts()
+        }
         if let active = activeConversation, let providerID = active.providerID {
             providers.select(providerID, markExplicit: false)
         }
@@ -1109,7 +1120,8 @@ final class AppModel {
         calibrationSampleByMessage.removeAll()
         tokenCalibration.reset()
         searchByMessage.removeAll()
-        memories.removeAll()
+        facts.removeAll()
+        Task { await MemoryStore.shared.deleteEverything() }
         promptSnippets.removeAll()
         customInstructions = ""
         searchEndpoint = ""
@@ -1404,51 +1416,44 @@ final class AppModel {
         }
     }
 
-    func addMemory(_ content: String) {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        let item = MemoryItem(content: trimmed)
-        withAnimation(.easeOut(duration: 0.18)) {
-            memories.append(item)
+    /// Re-reads the fact list out of the store. Every mutation below ends
+    /// here, so the list on screen is always what retrieval will actually
+    /// search rather than a hopeful local copy of it.
+    func refreshFacts() async {
+        let stored = await MemoryStore.shared.allFacts()
+        let mapped = stored.map {
+            MemoryItem(id: $0.id, content: $0.content, createdAt: $0.createdAt, topic: $0.topic)
         }
-        syncFactToStore(item)
+        withAnimation(.easeOut(duration: 0.18)) {
+            facts = mapped
+        }
+    }
+
+    /// Settings' "Add a memory" field. Goes through the same `write` the
+    /// model's `save_memory` ends at, so a hand-typed fact is normalized
+    /// ("i like tea" → "User likes tea") and deduped like any other —
+    /// but *not* filtered by `MemoryCapture`, because a person writing
+    /// their own fact is not the over-saving problem those rules exist for.
+    func addMemory(_ content: String) {
+        Task {
+            await MemoryStore.shared.write(content: content, topic: nil, sourceConversationID: nil)
+            await refreshFacts()
+        }
     }
 
     func updateMemory(_ memory: MemoryItem, content: String) {
-        guard let index = memories.firstIndex(where: { $0.id == memory.id }) else { return }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        memories[index].content = trimmed
-        syncFactToStore(memories[index])
+        guard !trimmed.isEmpty, trimmed != memory.content else { return }
+        Task {
+            await MemoryStore.shared.updateFact(id: memory.id, content: trimmed, topic: nil)
+            await refreshFacts()
+        }
     }
 
     func removeMemory(_ memory: MemoryItem) {
-        withAnimation(.easeOut(duration: 0.18)) {
-            memories.removeAll { $0.id == memory.id }
-        }
-        Task { await MemoryStore.shared.deleteFact(id: memory.id) }
-    }
-
-    /// Facts still live in `memories` (Settings edits them directly), but
-    /// retrieval reads from the store — so each change is mirrored across.
-    /// Without this the fact half of recall silently never matches, which
-    /// is exactly the kind of gap that looks like "memory just isn't very
-    /// good" rather than a missing write.
-    private func syncFactToStore(_ item: MemoryItem) {
-        let id = item.id, content = item.content, topic = item.topic
         Task {
-            await MemoryStore.shared.upsertFact(id: id, content: content, topic: topic)
-        }
-    }
-
-    /// One-time reconciliation at launch, so memories saved before the
-    /// store existed become searchable too.
-    func syncAllFactsToStore() {
-        let snapshot = memories.map { (id: $0.id, content: $0.content, topic: $0.topic) }
-        Task {
-            for fact in snapshot {
-                await MemoryStore.shared.upsertFact(id: fact.id, content: fact.content, topic: fact.topic)
-            }
+            await MemoryStore.shared.deleteFact(id: memory.id)
+            await refreshFacts()
         }
     }
 
@@ -1491,8 +1496,10 @@ final class AppModel {
     func forgetRecall(_ recall: MemoryRecall) {
         switch recall.origin {
         case .fact(let id):
-            if let memory = memories.first(where: { $0.id == id }) { removeMemory(memory) }
-            Task { await MemoryStore.shared.deleteFact(id: id) }
+            Task {
+                await MemoryStore.shared.deleteFact(id: id)
+                await refreshFacts()
+            }
         case .conversation(_, let messageID):
             Task { await MemoryStore.shared.forgetMessage(messageID) }
         }
@@ -1504,8 +1511,8 @@ final class AppModel {
     func relevantMemoryText(for conversation: Conversation) -> String {
         let selection: [MemoryItem]
         var omitted = 0
-        if memories.count <= 15 {
-            selection = memories
+        if facts.count <= 15 {
+            selection = facts
         } else {
             let recentText = conversation.realMessages.suffix(5).map(\.content).joined(separator: " ").lowercased()
             let contextWords = Set(
@@ -1524,15 +1531,15 @@ final class AppModel {
                 }
                 return value
             }
-            let ranked = memories
+            let ranked = facts
                 .map { (memory: $0, score: score($0)) }
                 .sorted { ($0.score, $0.memory.createdAt.timeIntervalSince1970) > ($1.score, $1.memory.createdAt.timeIntervalSince1970) }
             let matched = ranked.filter { $0.score > 0 }.prefix(12).map(\.memory)
             // Nothing matched (fresh conversation): fall back to recency.
             selection = matched.isEmpty
-                ? Array(memories.sorted { $0.createdAt > $1.createdAt }.prefix(12))
+                ? Array(facts.sorted { $0.createdAt > $1.createdAt }.prefix(12))
                 : matched
-            omitted = memories.count - selection.count
+            omitted = facts.count - selection.count
         }
         var topics: [String] = []
         var grouped: [String: [MemoryItem]] = [:]
@@ -1554,34 +1561,52 @@ final class AppModel {
         return lines.joined(separator: "\n")
     }
 
-    /// The memory tools' MainActor entry point — every mutation lands in
-    /// `memories`, whose `didSet` persists it, and Settings reflects it
-    /// immediately.
-    func applyMemoryMutation(_ mutation: ToolCatalog.MemoryMutation) -> String {
+    /// The memory tools' entry point. Every mutation lands in
+    /// `MemoryStore` — the only place facts live — and `refreshFacts`
+    /// brings the change back to Settings immediately.
+    ///
+    /// The save result is deliberately more than "Saved.": the model needs
+    /// to learn what memory actually did with what it sent. A refusal
+    /// names the rule it broke, a merge says a duplicate was folded in
+    /// rather than added, and a save echoes the normalized text so the
+    /// model can see that "i prefer tea" was stored as "User prefers tea"
+    /// instead of saving it again in a different voice.
+    func applyMemoryMutation(_ mutation: ToolCatalog.MemoryMutation) async -> String {
         switch mutation {
         case .save(let content, let topic):
-            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return "Error: the memory content is empty." }
             let cleanTopic = topic?.trimmingCharacters(in: .whitespacesAndNewlines)
-            memories.append(MemoryItem(content: trimmed, topic: (cleanTopic?.isEmpty ?? true) ? nil : cleanTopic))
-            return "Saved."
+            let outcome = await MemoryStore.shared.capture(
+                content: content,
+                topic: (cleanTopic?.isEmpty ?? true) ? nil : cleanTopic,
+                sourceConversationID: activeConversation?.id
+            )
+            await refreshFacts()
+            switch outcome {
+            case .saved(let stored):
+                return "Saved: \(stored)"
+            case .merged(let stored):
+                return "A near-identical memory already existed, so it was updated in place rather than duplicated: \(stored)"
+            case .rejected(let reason):
+                return reason
+            }
         case .update(let id, let content, let topic):
-            guard let index = memories.firstIndex(where: { $0.id == id }) else {
+            guard facts.contains(where: { $0.id == id }) else {
                 return "Error: no memory with that id — use search_memory to find the right one."
             }
-            if let content, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                memories[index].content = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            if let topic {
-                let cleaned = topic.trimmingCharacters(in: .whitespacesAndNewlines)
-                memories[index].topic = cleaned.isEmpty ? nil : cleaned
-            }
+            let cleanTopic = topic?.trimmingCharacters(in: .whitespacesAndNewlines)
+            await MemoryStore.shared.updateFact(
+                id: id,
+                content: content,
+                topic: (cleanTopic?.isEmpty ?? true) ? nil : cleanTopic
+            )
+            await refreshFacts()
             return "Updated."
         case .delete(let id):
-            guard memories.contains(where: { $0.id == id }) else {
+            guard facts.contains(where: { $0.id == id }) else {
                 return "Error: no memory with that id — use search_memory to find the right one."
             }
-            memories.removeAll { $0.id == id }
+            await MemoryStore.shared.deleteFact(id: id)
+            await refreshFacts()
             return "Deleted."
         }
     }
