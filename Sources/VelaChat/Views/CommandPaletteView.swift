@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 
 private enum PaletteItem: Identifiable, Equatable {
     case newConversation

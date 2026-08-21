@@ -2,7 +2,7 @@ import Foundation
 
 /// What kind of work an activity line describes — drives the SF Symbol and
 /// the present/past-tense phrasing in the transcript.
-enum ActivityKind: String, Codable, Sendable {
+public enum ActivityKind: String, Codable, Sendable {
     case webSearch, conversationSearch, fetchURL, fileRead, fileWrite, fileList
     case datetime, calculation, attachment, note
     case schedule, clipboard, mcp
@@ -10,7 +10,7 @@ enum ActivityKind: String, Codable, Sendable {
     case fileEdit, fileSearch, command, plan, subagent
     case systemStatus, imageAnalysis
 
-    static func from(toolName: String) -> ActivityKind {
+    public static func from(toolName: String) -> ActivityKind {
         switch toolName {
         case ToolCatalog.webSearch.name: .webSearch
         case ToolCatalog.searchConversations.name: .conversationSearch
@@ -39,11 +39,11 @@ enum ActivityKind: String, Codable, Sendable {
     }
 
     /// Display form for an mcp_-prefixed label argument.
-    static func mcpDisplayName(_ argument: String) -> String {
+    public static func mcpDisplayName(_ argument: String) -> String {
         argument.isEmpty ? "an MCP tool" : "“\(argument)”"
     }
 
-    var symbol: String {
+    public var symbol: String {
         switch self {
         case .webSearch: "globe"
         case .conversationSearch: "magnifyingglass"
@@ -70,7 +70,7 @@ enum ActivityKind: String, Codable, Sendable {
     }
 
     /// Present tense, shown while the call runs — "Searching the web".
-    func runningLabel(argument: String) -> String {
+    public func runningLabel(argument: String) -> String {
         let detail = argument.isEmpty ? "" : " for “\(argument)”"
         switch self {
         case .webSearch: return "Searching the web\(detail)"
@@ -101,7 +101,7 @@ enum ActivityKind: String, Codable, Sendable {
     }
 
     /// Past tense, once the call finished — "Searched the web".
-    func finishedLabel(argument: String) -> String {
+    public func finishedLabel(argument: String) -> String {
         let detail = argument.isEmpty ? "" : " for “\(argument)”"
         switch self {
         case .webSearch: return "Searched the web\(detail)"
@@ -134,7 +134,7 @@ enum ActivityKind: String, Codable, Sendable {
     /// The noun used when several calls of this kind collapse into one
     /// aggregated line — "Searched the web **3** times" reads worse than
     /// "Ran **3** web searches", so each kind names its own unit.
-    func aggregateUnit(count: Int) -> String {
+    public func aggregateUnit(count: Int) -> String {
         let plural = count == 1 ? "" : "s"
         switch self {
         case .webSearch: return "\(count) web search\(count == 1 ? "" : "es")"
@@ -166,14 +166,36 @@ enum ActivityKind: String, Codable, Sendable {
 /// One executed (or executing) tool call, as it appears in the transcript
 /// timeline. `argument` is always the human-readable form (a query, a path)
 /// — never raw JSON.
-struct ActivityRecord: Identifiable, Codable, Equatable, Sendable {
-    var id: UUID = UUID()
-    var kind: ActivityKind
-    var toolName: String
-    var argument: String
-    var result: String = ""
-    var isError: Bool = false
-    var isRunning: Bool = false
+public struct ActivityRecord: Identifiable, Codable, Equatable, Sendable {
+
+    public init(
+        id: UUID = UUID(),
+        kind: ActivityKind,
+        toolName: String,
+        argument: String,
+        result: String = "",
+        isError: Bool = false,
+        isRunning: Bool = false,
+        startedAt: Date? = nil,
+        finishedAt: Date? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.toolName = toolName
+        self.argument = argument
+        self.result = result
+        self.isError = isError
+        self.isRunning = isRunning
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+    }
+    public var id: UUID = UUID()
+    public var kind: ActivityKind
+    public var toolName: String
+    public var argument: String
+    public var result: String = ""
+    public var isError: Bool = false
+    public var isRunning: Bool = false
     /// Wall-clock bounds of the call, stamped where the stream event
     /// actually arrived — not where the paced reveal drained it, which
     /// would report the typewriter's backlog as the tool's runtime.
@@ -182,11 +204,11 @@ struct ActivityRecord: Identifiable, Codable, Equatable, Sendable {
     /// existed decode untouched, and a record missing either end renders no
     /// duration at all rather than an invented `0s`: an unobserved number is
     /// never implied.
-    var startedAt: Date?
-    var finishedAt: Date?
+    public var startedAt: Date?
+    public var finishedAt: Date?
 
     /// How long the call took, or `nil` when either end wasn't observed.
-    var duration: TimeInterval? {
+    public var duration: TimeInterval? {
         guard let startedAt, let finishedAt else { return nil }
         let elapsed = finishedAt.timeIntervalSince(startedAt)
         // A clock adjustment mid-call is the only way this goes negative,
@@ -196,7 +218,7 @@ struct ActivityRecord: Identifiable, Codable, Equatable, Sendable {
 
     /// `"0.4s"` / `"12s"` / `"1m 04s"` — sub-second precision only where it
     /// carries information, so a fast call doesn't read as "0s".
-    var durationLabel: String? {
+    public var durationLabel: String? {
         guard let duration else { return nil }
         if duration < 10 { return String(format: "%.1fs", duration) }
         if duration < 60 { return "\(Int(duration.rounded()))s" }
@@ -211,7 +233,7 @@ struct ActivityRecord: Identifiable, Codable, Equatable, Sendable {
 /// full text — the concatenation of the text segments always equals it —
 /// and `ChatMessage.reasoning` relates to the reasoning segments the same
 /// way.
-enum MessageSegment: Identifiable, Codable, Equatable {
+public enum MessageSegment: Identifiable, Codable, Equatable {
     case text(id: UUID, content: String)
     /// A reasoning run, placed where the model actually thought. Reasoning
     /// used to render only as one block pinned above the whole message,
@@ -220,7 +242,7 @@ enum MessageSegment: Identifiable, Codable, Equatable {
     case reasoning(id: UUID, content: String)
     case activity(ActivityRecord)
 
-    var id: UUID {
+    public var id: UUID {
         switch self {
         case .text(let id, _): id
         case .reasoning(let id, _): id
@@ -230,7 +252,7 @@ enum MessageSegment: Identifiable, Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey { case type, id, content, record }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(String.self, forKey: .type) {
         case "activity":
@@ -251,7 +273,7 @@ enum MessageSegment: Identifiable, Codable, Equatable {
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .text(let id, let content):
@@ -269,11 +291,11 @@ enum MessageSegment: Identifiable, Codable, Equatable {
     }
 }
 
-extension ChatMessage {
+public extension ChatMessage {
     /// Appends revealed text to both the canonical `content` and the
     /// trailing text segment, creating one if the timeline's tail is an
     /// activity (or empty).
-    mutating func appendTimelineText(_ chunk: String) {
+    public mutating func appendTimelineText(_ chunk: String) {
         guard !chunk.isEmpty else { return }
         content += chunk
         if case .text(let id, let existing) = segments.last {
@@ -289,7 +311,7 @@ extension ChatMessage {
     /// call, nothing at all) starts a new one. Everything downstream that
     /// reads `reasoning` — export, alternates, the pre-segment fallback
     /// view — keeps working without knowing segments carry it now.
-    mutating func appendTimelineReasoning(_ chunk: String) {
+    public mutating func appendTimelineReasoning(_ chunk: String) {
         guard !chunk.isEmpty else { return }
         reasoning = (reasoning ?? "") + chunk
         if case .reasoning(let id, let existing) = segments.last {
@@ -303,15 +325,15 @@ extension ChatMessage {
     /// reasoning block is the fallback for transcripts saved before that was
     /// possible, so it keys off this rather than off `reasoning` being
     /// non-empty — otherwise both would render the same chain twice.
-    var hasTimelineReasoning: Bool {
+    public var hasTimelineReasoning: Bool {
         segments.contains { if case .reasoning = $0 { return true } else { return false } }
     }
 
-    mutating func appendActivity(_ record: ActivityRecord) {
+    public mutating func appendActivity(_ record: ActivityRecord) {
         segments.append(.activity(record))
     }
 
-    mutating func updateActivity(id: UUID, result: String, isError: Bool, finishedAt: Date? = nil) {
+    public mutating func updateActivity(id: UUID, result: String, isError: Bool, finishedAt: Date? = nil) {
         for index in segments.indices.reversed() {
             if case .activity(var record) = segments[index], record.id == id {
                 record.result = result
@@ -326,7 +348,7 @@ extension ChatMessage {
 
     /// Flips any still-running activity to an interrupted error — used when
     /// restoring a session that died mid-stream.
-    mutating func reconcileRunningActivities() {
+    public mutating func reconcileRunningActivities() {
         for index in segments.indices {
             if case .activity(var record) = segments[index], record.isRunning {
                 record.isRunning = false

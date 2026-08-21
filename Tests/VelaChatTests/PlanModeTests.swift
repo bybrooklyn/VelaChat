@@ -1,5 +1,6 @@
 import XCTest
 @testable import VelaChat
+@testable import VelaCore
 
 /// Planning mode is only worth anything if it is a real constraint, so
 /// these pin both halves of it: what never reaches the wire, and — just as

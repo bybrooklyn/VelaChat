@@ -12,24 +12,24 @@ import SQLite3
 /// Only cookies for chatgpt.com / openai.com are ever read, and they go
 /// straight to the Keychain — nothing else in the cookie store is touched
 /// or retained.
-enum BrowserCookieImport {
-    struct Browser: Identifiable, Sendable {
-        enum Engine: Sendable { case chromium, firefox, safari }
-        var id: String { name }
-        let name: String
-        let engine: Engine
-        let path: URL
+public enum BrowserCookieImport {
+    public struct Browser: Identifiable, Sendable {
+        public enum Engine: Sendable { case chromium, firefox, safari }
+        public var id: String { name }
+        public let name: String
+        public let engine: Engine
+        public let path: URL
         /// Keychain service name holding the Chromium profile's AES key.
-        let keychainService: String?
+        public let keychainService: String?
     }
 
-    enum ImportError: LocalizedError {
+    public enum ImportError: LocalizedError {
         case notInstalled
         case unreadable(String)
         case needsFullDiskAccess
         case noSession(String)
 
-        var errorDescription: String? {
+        public var errorDescription: String? {
             switch self {
             case .notInstalled:
                 "That browser isn't installed, or has no profile yet."
@@ -45,7 +45,7 @@ enum BrowserCookieImport {
 
     /// Every browser we know how to read, filtered to the ones actually
     /// present on this Mac.
-    static func availableBrowsers() -> [Browser] {
+    public static func availableBrowsers() -> [Browser] {
         let support = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support", isDirectory: true)
         let candidates: [Browser] = [
@@ -93,7 +93,7 @@ enum BrowserCookieImport {
 
     /// Returns a `name=value; …` Cookie header for chatgpt.com, or throws
     /// with a reason the user can act on.
-    static func cookieHeader(from browser: Browser) throws -> String {
+    public static func cookieHeader(from browser: Browser) throws -> String {
         let cookies: [(name: String, value: String)]
         switch browser.engine {
         case .chromium: cookies = try chromiumCookies(browser)
@@ -106,7 +106,7 @@ enum BrowserCookieImport {
         return cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
     }
 
-    static func isSessionCookie(_ name: String) -> Bool {
+    public static func isSessionCookie(_ name: String) -> Bool {
         name == "__Secure-next-auth.session-token"
             || name == "__Secure-authjs.session-token"
             || name.hasPrefix("__Secure-next-auth.session-token.")

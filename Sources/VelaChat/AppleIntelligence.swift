@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 #if canImport(FoundationModels)
 import FoundationModels
 #endif

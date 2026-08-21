@@ -1,5 +1,6 @@
 import XCTest
 @testable import VelaChat
+@testable import VelaCore
 
 /// Models emit almost-JSON more often than anyone would like. These are
 /// the shapes seen in practice; each one used to fail the call outright.

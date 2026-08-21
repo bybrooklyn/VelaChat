@@ -1,5 +1,6 @@
 import XCTest
 @testable import VelaChat
+@testable import VelaCore
 
 /// Table-driven cost math. The formula this replaces captured
 /// `cachedTokens` off the wire and then never used it, which was wrong in

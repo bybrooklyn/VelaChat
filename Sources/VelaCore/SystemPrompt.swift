@@ -15,27 +15,91 @@ import Foundation
 /// small-context model the lowest-priority ones drop out rather than
 /// crowding the actual conversation.
 @MainActor
-enum SystemPrompt {
-    struct Context {
-        var tools: [ToolCatalog.Definition] = []
-        var nativeSearch = false
-        var hasMemories = false
-        var providerName = ""
-        var providerKind: ProviderKind = .compatible
-        var modelID = ""
-        var contextWindow: Int?
-        var userFirstName: String?
-        var workspaceFiles: [String] = []
-        var hasAttachedFolder = false
+public enum SystemPrompt {
+    /// Teaches the model a real capability it has — asking the user a
+    /// multiple-choice question instead of guessing — the same idea as
+    /// Claude Code's own `AskUserQuestion` tool, adapted to a fenced-block
+    /// convention so it works over plain chat completions without needing
+    /// real function calling. `AskUserQuestionPayload.parse` (Models.swift)
+    /// is the matching reader; `AskUserQuestionCard` (ChatView.swift) is the
+    /// interactive card rendered from it.
+    public static let askUserQuestionInstruction = """
+        # Asking the user
+        When a real decision or ambiguity is worth pausing on — not for \
+        routine replies — write first and ask at the end. Give a short, \
+        genuinely useful reply: what you already know, or the part of the \
+        work you can do without the answer. Finish the thought, and only \
+        then put the question block last, so the user is never left \
+        staring at half a paragraph above a question card. Nothing may \
+        follow the block. It takes exactly this shape:
+
+        ```ask-user
+        {"questions": [{"header": "Approach", "question": "Which approach should I take?", "multiSelect": false, "options": [{"label": "Short option name", "description": "One-sentence explanation", "recommended": true}, {"label": "Another option", "description": "One-sentence explanation"}]}], "allowNotes": true}
+        ```
+
+        Rules: 1–4 questions per block, each with 2–4 mutually distinct \
+        options. `header` is a very short chip label (max ~12 chars, e.g. \
+        "Scope", "Auth"). Mark at most ONE option per question \
+        `"recommended": true` — the one you'd pick — and list it first. \
+        Set `"multiSelect": true` only when several options genuinely \
+        combine. Batch related decisions into one block instead of asking \
+        one at a time across replies. The user's selections (and any note) \
+        come back as their next message. Never use this for questions a \
+        tool or the conversation itself can answer.
+        """
+
+    public struct Context {
+
+        public init(
+            tools: [ToolCatalog.Definition] = [],
+            nativeSearch: Bool = false,
+            hasMemories: Bool = false,
+            providerName: String = "",
+            providerKind: ProviderKind = .compatible,
+            modelID: String = "",
+            contextWindow: Int? = nil,
+            userFirstName: String? = nil,
+            workspaceFiles: [String] = [],
+            hasAttachedFolder: Bool = false,
+            isPlanning: Bool = false,
+            activeSkillNames: [String] = [],
+            memoryCount: Int = 0,
+            attachmentNames: [String] = []
+        ) {
+            self.tools = tools
+            self.nativeSearch = nativeSearch
+            self.hasMemories = hasMemories
+            self.providerName = providerName
+            self.providerKind = providerKind
+            self.modelID = modelID
+            self.contextWindow = contextWindow
+            self.userFirstName = userFirstName
+            self.workspaceFiles = workspaceFiles
+            self.hasAttachedFolder = hasAttachedFolder
+            self.isPlanning = isPlanning
+            self.activeSkillNames = activeSkillNames
+            self.memoryCount = memoryCount
+            self.attachmentNames = attachmentNames
+        }
+        public var tools: [ToolCatalog.Definition] = []
+        public var nativeSearch = false
+        public var hasMemories = false
+        public var providerName = ""
+        public var providerKind: ProviderKind = .compatible
+        public var modelID = ""
+        public var contextWindow: Int?
+        public var userFirstName: String?
+        public var workspaceFiles: [String] = []
+        public var hasAttachedFolder = false
         /// Planning mode. The constraint is enforced in the tool layer
         /// (`PlanMode`); this only tells the model why its tools look the
         /// way they do and how the mode ends.
-        var isPlanning = false
-        var activeSkillNames: [String] = []
-        var memoryCount = 0
-        var attachmentNames: [String] = []
+        public var isPlanning = false
+        public var activeSkillNames: [String] = []
+        public var memoryCount = 0
+        public var attachmentNames: [String] = []
 
-        func hasTool(_ definition: ToolCatalog.Definition) -> Bool {
+        public func hasTool(_ definition: ToolCatalog.Definition) -> Bool {
             tools.contains { $0.name == definition.name }
         }
     }
@@ -50,7 +114,7 @@ enum SystemPrompt {
         static let lastRequiredPriority = 1
     }
 
-    static func compose(_ context: Context) -> String {
+    public static func compose(_ context: Context) -> String {
         var sections: [Section] = []
         sections.append(Section(priority: 0, body: environment(context)))
         if let tools = toolInventory(context) {
@@ -74,7 +138,7 @@ enum SystemPrompt {
         // same question — which is how it ends up doing both, or emitting a
         // fenced block the tool loop never sees.
         if !context.hasTool(ToolCatalog.askUser) {
-            sections.append(Section(priority: 4, body: AppModel.askUserQuestionInstruction))
+            sections.append(Section(priority: 4, body: askUserQuestionInstruction))
         }
         if context.hasMemories {
             sections.append(Section(priority: 5, body: memoryDuties))

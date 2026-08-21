@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 
 /// The per-provider editor, shown in place of the Settings list when a
 /// provider is opened. Not a `NavigationStack` destination: see the note on

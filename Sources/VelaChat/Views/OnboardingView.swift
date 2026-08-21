@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 import KeyboardShortcuts
 
 /// First launch (and the landing spot after a full reset): welcome, a

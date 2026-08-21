@@ -1,4 +1,5 @@
 import AppKit
+import VelaCore
 import CoreText
 
 /// Conversation export: clean Markdown, and a real paginated PDF drawn

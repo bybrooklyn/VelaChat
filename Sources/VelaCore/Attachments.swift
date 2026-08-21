@@ -1,20 +1,19 @@
 import Foundation
-import VelaCore
 import PDFKit
 
 /// A file attached to a message. Images get real multimodal wiring (base64
 /// content blocks) for vision-capable models; text/code/PDF are folded into
 /// the outgoing message as a labeled block, since that works over plain
 /// text with every provider without touching any wire format at all.
-struct Attachment: Identifiable, Codable, Equatable {
-    enum Kind: String, Codable {
+public struct Attachment: Identifiable, Codable, Equatable {
+    public enum Kind: String, Codable {
         case image, text, code, pdf, git
     }
 
-    let id: UUID
-    var kind: Kind
-    var filename: String
-    var mimeType: String
+    public let id: UUID
+    public var kind: Kind
+    public var filename: String
+    public var mimeType: String
     /// Raw image bytes for `.image`; UTF-8 text for everything else
     /// (already-extracted text for `.pdf`).
     ///
@@ -24,7 +23,7 @@ struct Attachment: Identifiable, Codable, Equatable {
     /// meant tens of megabytes of base64 in a preferences plist. Images
     /// are written to a blob store on disk instead and loaded lazily; text
     /// attachments are small and stay inline where they're simplest.
-    var data: Data {
+    public var data: Data {
         get {
             if let inlineData { return inlineData }
             guard let blobID else { return Data() }
@@ -45,12 +44,12 @@ struct Attachment: Identifiable, Codable, Equatable {
     private var blobID: UUID?
     /// Original byte count before any truncation — kept for the
     /// attachment inspector even if `data` itself was shortened.
-    var originalByteCount: Int
+    public var originalByteCount: Int
     /// Inclusion control: attached but not sent. Toggled from the
     /// composer's attachment chip.
-    var isIncluded: Bool = true
+    public var isIncluded: Bool = true
 
-    init(id: UUID = UUID(), kind: Kind, filename: String, mimeType: String, data: Data, originalByteCount: Int? = nil, isIncluded: Bool = true) {
+    public init(id: UUID = UUID(), kind: Kind, filename: String, mimeType: String, data: Data, originalByteCount: Int? = nil, isIncluded: Bool = true) {
         self.id = id
         self.kind = kind
         self.filename = filename
@@ -64,7 +63,7 @@ struct Attachment: Identifiable, Codable, Equatable {
         case id, kind, filename, mimeType, data, originalByteCount, isIncluded, blobID
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         kind = try container.decode(Kind.self, forKey: .kind)
@@ -82,7 +81,7 @@ struct Attachment: Identifiable, Codable, Equatable {
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(kind, forKey: .kind)
@@ -94,12 +93,12 @@ struct Attachment: Identifiable, Codable, Equatable {
         try container.encodeIfPresent(inlineData, forKey: .data)
     }
 
-    var textContent: String? {
+    public var textContent: String? {
         guard kind != .image else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
-    var estimatedTokens: Int {
+    public var estimatedTokens: Int {
         if kind == .image {
             // No provider publishes an exact formula VelaChat can rely on;
             // this is the widely-used rough OpenAI vision estimate for a
@@ -109,7 +108,7 @@ struct Attachment: Identifiable, Codable, Equatable {
         return max(1, data.count / 4)
     }
 
-    var sizeLabel: String {
+    public var sizeLabel: String {
         let bytes = Double(originalByteCount)
         if bytes >= 1_000_000 { return String(format: "%.1f MB", bytes / 1_000_000) }
         if bytes >= 1_000 { return String(format: "%.0f KB", bytes / 1_000) }
@@ -119,9 +118,9 @@ struct Attachment: Identifiable, Codable, Equatable {
     /// A hard cap so one huge pasted file doesn't blow the whole context
     /// budget silently — real summarization (compressing instead of just
     /// cutting off) is a documented gap, not built yet.
-    static let maxTextBytes = 60_000
+    public static let maxTextBytes = 60_000
 
-    static func fromText(filename: String, kind: Kind, content: String, mimeType: String) -> Attachment {
+    public static func fromText(filename: String, kind: Kind, content: String, mimeType: String) -> Attachment {
         let full = Data(content.utf8)
         let truncated = full.count > maxTextBytes
         let bytes = truncated ? full.prefix(maxTextBytes) : full
@@ -134,7 +133,7 @@ struct Attachment: Identifiable, Codable, Equatable {
 
     /// Shared file loader (composer + quick chat): image/PDF/text/code by
     /// extension; nil for directories and undecodable binaries.
-    static func fromFile(url: URL) -> Attachment? {
+    public static func fromFile(url: URL) -> Attachment? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue,
               let data = try? Data(contentsOf: url) else { return nil }
@@ -152,7 +151,7 @@ struct Attachment: Identifiable, Codable, Equatable {
         return nil
     }
 
-    static func fromPDF(filename: String, data pdfData: Data) -> Attachment? {
+    public static func fromPDF(filename: String, data pdfData: Data) -> Attachment? {
         guard let document = PDFDocument(data: pdfData) else { return nil }
         var text = ""
         for pageIndex in 0..<document.pageCount {
@@ -172,7 +171,7 @@ struct Attachment: Identifiable, Codable, Equatable {
     /// and fold that into a text attachment. No standing workspace concept,
     /// no bash tool — a one-shot inspection at attach time, deliberately
     /// scoped down from the full sandbox-workstation idea.
-    static func fromGitFolder(url: URL) -> Attachment? {
+    public static func fromGitFolder(url: URL) -> Attachment? {
         let fm = FileManager.default
         var isDirectory: ObjCBool = false
         guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
@@ -215,11 +214,11 @@ struct Attachment: Identifiable, Codable, Equatable {
     /// A `data:` URI for an image attachment — the shape every OpenAI-
     /// compatible `image_url` content part and Anthropic's base64 image
     /// source both start from.
-    var dataURL: String {
+    public var dataURL: String {
         "data:\(mimeType);base64,\(data.base64EncodedString())"
     }
 
-    static func codeKind(forExtension ext: String) -> Bool {
+    public static func codeKind(forExtension ext: String) -> Bool {
         let codeExtensions: Set<String> = [
             "swift", "py", "js", "ts", "tsx", "jsx", "go", "rs", "rb", "java",
             "kt", "c", "cpp", "h", "hpp", "cs", "php", "sh", "bash", "zsh",
@@ -236,7 +235,7 @@ struct Attachment: Identifiable, Codable, Equatable {
 /// Support. A missing file degrades to empty data rather than throwing —
 /// an attachment whose bytes went away should show as unavailable, never
 /// take the app down.
-enum AttachmentStore {
+public enum AttachmentStore {
     private static let directory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("VelaChat/Attachments", isDirectory: true)
@@ -246,21 +245,21 @@ enum AttachmentStore {
 
     private static let cache = NSCache<NSString, NSData>()
 
-    static func save(_ data: Data, suggestedID: UUID) -> UUID {
+    public static func save(_ data: Data, suggestedID: UUID) -> UUID {
         let url = directory.appendingPathComponent(suggestedID.uuidString)
         try? data.write(to: url, options: .atomic)
         cache.setObject(data as NSData, forKey: suggestedID.uuidString as NSString)
         return suggestedID
     }
 
-    static func load(_ id: UUID) -> Data? {
+    public static func load(_ id: UUID) -> Data? {
         if let cached = cache.object(forKey: id.uuidString as NSString) { return cached as Data }
         guard let data = try? Data(contentsOf: directory.appendingPathComponent(id.uuidString)) else { return nil }
         cache.setObject(data as NSData, forKey: id.uuidString as NSString)
         return data
     }
 
-    static func remove(_ id: UUID) {
+    public static func remove(_ id: UUID) {
         cache.removeObject(forKey: id.uuidString as NSString)
         try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
     }
@@ -268,7 +267,7 @@ enum AttachmentStore {
     /// Deletes blobs no live attachment references any more. Called after
     /// destructive history operations rather than on a timer, so an
     /// orphan can only survive until the next deletion.
-    static func pruneOrphans(keeping liveIDs: Set<UUID>) {
+    public static func pruneOrphans(keeping liveIDs: Set<UUID>) {
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
         for file in files {
             guard let id = UUID(uuidString: file), !liveIDs.contains(id) else { continue }

@@ -1,10 +1,9 @@
 import Foundation
-import AppKit
 import Security
 
 // MARK: - Keychain
 
-enum SecureStore {
+public enum SecureStore {
     /// Deliberately a new service name.
     ///
     /// Items under the old `com.velachat.credentials` service were written
@@ -17,7 +16,7 @@ enum SecureStore {
     /// stable identity, so they are readable forever without a prompt.
     private static let service = "com.velachat.credentials.v2"
 
-    static func value(for account: String) -> String? {
+    public static func value(for account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -32,7 +31,7 @@ enum SecureStore {
     }
 
     @discardableResult
-    static func set(_ value: String?, for account: String) -> Bool {
+    public static func set(_ value: String?, for account: String) -> Bool {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -49,22 +48,22 @@ enum SecureStore {
 
 // MARK: - Codex auth
 
-struct CodexCredential {
-    let token: String
-    let isAPIKey: Bool
-    let accountID: String?
-    let fileURL: URL
+public struct CodexCredential {
+    public let token: String
+    public let isAPIKey: Bool
+    public let accountID: String?
+    public let fileURL: URL
 
-    var kindLabel: String { isAPIKey ? "API key" : "OAuth session" }
+    public var kindLabel: String { isAPIKey ? "API key" : "OAuth session" }
 }
 
-enum CodexAuth {
-    static var authFileURL: URL {
+public enum CodexAuth {
+    public static var authFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/auth.json")
     }
 
-    static func discover() -> CodexCredential? {
+    public static func discover() -> CodexCredential? {
         guard let data = try? Data(contentsOf: authFileURL),
               let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
 
@@ -79,7 +78,7 @@ enum CodexAuth {
 
     /// Launches the official Codex CLI login flow without exposing credentials
     /// to the app. Once it completes, `discover()` reads the CLI's auth file.
-    static func launchLogin() throws {
+    public static func launchLogin() throws {
         let candidates = [
             "/opt/homebrew/bin/codex",
             "/usr/local/bin/codex",
@@ -115,10 +114,10 @@ enum CodexAuth {
     }
 }
 
-enum CodexError: Error, LocalizedError {
+public enum CodexError: Error, LocalizedError {
     case cliMissing
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .cliMissing:
             "Codex CLI was not found. Install it, then run `codex login` once."

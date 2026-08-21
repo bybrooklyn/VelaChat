@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import Sparkle
 import SwiftUI
 

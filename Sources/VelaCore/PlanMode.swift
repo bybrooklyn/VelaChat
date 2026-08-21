@@ -1,5 +1,4 @@
 import Foundation
-import VelaCore
 
 /// Planning mode: a hard constraint on what the model *can* do, not a
 /// polite request in the prompt.
@@ -28,7 +27,7 @@ import VelaCore
 /// while planning — and it does not extend to tools somebody else's
 /// server provides (which, as `SettingsView` says, already run without
 /// per-call confirmation).
-enum PlanMode {
+public enum PlanMode {
     /// Withheld while planning. Everything here changes state outside the
     /// conversation: the user's files, or their persistent memory.
     ///
@@ -36,7 +35,7 @@ enum PlanMode {
     /// take `ls`, `rg`, and `git log` away with it, which is most of how a
     /// plan gets informed; instead the tool stays attached and every
     /// non-read-only command is refused at the gate (`commandRefusal`).
-    static var withheldToolNames: Set<String> {
+    public static var withheldToolNames: Set<String> {
         [
             ToolCatalog.writeFile.name,
             ToolCatalog.editFile.name,
@@ -49,7 +48,7 @@ enum PlanMode {
     /// shape as `Subagents.allowedTools` — a filter over the definitions
     /// that were already assembled, so a tool added elsewhere can only
     /// ever be *kept*, never accidentally granted by this file.
-    static func filter(_ tools: [ToolCatalog.Definition]) -> [ToolCatalog.Definition] {
+    public static func filter(_ tools: [ToolCatalog.Definition]) -> [ToolCatalog.Definition] {
         let withheld = withheldToolNames
         return tools.filter { !withheld.contains($0.name) }
     }
@@ -60,7 +59,7 @@ enum PlanMode {
     /// It reads as an error on purpose: the model has to learn the
     /// constraint from the result it gets back, since it cannot see the
     /// mode from the tool schema.
-    static func commandRefusal(for command: String) -> String? {
+    public static func commandRefusal(for command: String) -> String? {
         if case .readOnly = CommandRunner.classify(command) { return nil }
         return """
         Error: this conversation is in planning mode, so only read-only commands run. \
@@ -75,7 +74,7 @@ enum PlanMode {
     /// conversation, so a false positive costs the user their one chance
     /// to be asked at the right moment. Short questions, quick lookups and
     /// one-line follow-ups never qualify.
-    static func looksSubstantial(_ text: String) -> Bool {
+    public static func looksSubstantial(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 140 else { return false }
         // Several lines usually means several requirements — a numbered

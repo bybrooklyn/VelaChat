@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import Observation
 
 /// Keeps the memory index in step with the conversation history.

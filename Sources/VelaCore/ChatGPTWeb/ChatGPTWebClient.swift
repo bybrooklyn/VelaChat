@@ -1,5 +1,4 @@
 import Foundation
-import VelaCore
 
 /// Scoped Swift port of the `chatgpt-web-runtime` direct transport
 /// (reference: ~/data/chatgpt-web-runtime-v0.9.0, docs/SWIFT_PORT.md).
@@ -11,16 +10,16 @@ import VelaCore
 /// ChatGPT Web is a private protocol surface — this client degrades
 /// loudly (typed errors, challenge detection) rather than pretending
 /// it is stable.
-actor ChatGPTWebClient {
-    static let shared = ChatGPTWebClient()
+public actor ChatGPTWebClient {
+    public static let shared = ChatGPTWebClient()
 
-    struct SessionInfo: Sendable {
-        var accountLabel: String?
-        var accountID: String?
-        var planName: String?
+    public struct SessionInfo: Sendable {
+        public var accountLabel: String?
+        public var accountID: String?
+        public var planName: String?
     }
 
-    enum ClientError: LocalizedError {
+    public enum ClientError: LocalizedError {
         case notAuthenticated
         /// Cloudflare / proof-of-work sentinel — a browserless client
         /// cannot solve these; the login window can.
@@ -28,7 +27,7 @@ actor ChatGPTWebClient {
         case http(Int, String)
         case badPayload(String)
 
-        var errorDescription: String? {
+        public var errorDescription: String? {
             switch self {
             case .notAuthenticated:
                 "ChatGPT is not signed in. Open the ChatGPT provider in Settings and sign in."
@@ -45,7 +44,7 @@ actor ChatGPTWebClient {
     private let baseURL = URL(string: "https://chatgpt.com")!
     private static let cookieAccount = "chatgpt-web-cookie"
     /// Mirrors the reference default — a stable, ordinary browser UA.
-    nonisolated static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+    public nonisolated static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 
     private var cookie: String?
     private var accessToken: String?
@@ -60,7 +59,7 @@ actor ChatGPTWebClient {
     /// warns against generating a fresh one per launch.
     private let deviceID: String
 
-    init() {
+    public init() {
         cookie = SecureStore.value(for: Self.cookieAccount)
         if let existing = UserDefaults.standard.string(forKey: DefaultsKey.chatGPTDeviceID) {
             deviceID = existing
@@ -71,19 +70,19 @@ actor ChatGPTWebClient {
         }
     }
 
-    var isConfigured: Bool { cookie != nil }
+    public var isConfigured: Bool { cookie != nil }
 
     /// Synchronous session-presence check for UI caches (primed once per
     /// launch, never per-render — Keychain reads can block).
-    nonisolated static var hasStoredSession: Bool {
+    public nonisolated static var hasStoredSession: Bool {
         SecureStore.value(for: cookieAccount) != nil
     }
 
-    func sessionInfo() -> SessionInfo {
+    public func sessionInfo() -> SessionInfo {
         SessionInfo(accountLabel: accountLabel, accountID: accountID, planName: planName)
     }
 
-    func signOut() {
+    public func signOut() {
         keepAliveTask?.cancel()
         keepAliveTask = nil
         importedBrowserName = nil
@@ -100,7 +99,7 @@ actor ChatGPTWebClient {
     /// Adopt a cookie-header string captured from the login web view.
     /// Validates by performing a real session refresh; persists only on
     /// success.
-    func adoptCookies(_ cookieHeader: String) async throws -> SessionInfo {
+    public func adoptCookies(_ cookieHeader: String) async throws -> SessionInfo {
         let trimmed = cookieHeader.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw ClientError.notAuthenticated }
         cookie = trimmed
@@ -186,7 +185,7 @@ actor ChatGPTWebClient {
         set { UserDefaults.standard.set(newValue, forKey: DefaultsKey.chatGPTImportBrowser) }
     }
 
-    func rememberImportSource(_ name: String) {
+    public func rememberImportSource(_ name: String) {
         importedBrowserName = name
     }
 
@@ -204,7 +203,7 @@ actor ChatGPTWebClient {
     /// Periodic refresh so a session rarely expires mid-conversation. Cheap
     /// (one session endpoint call), and silent when it fails — the request
     /// path still recovers on its own.
-    func startKeepAlive() {
+    public func startKeepAlive() {
         guard keepAliveTask == nil, cookie != nil else { return }
         keepAliveTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -221,7 +220,7 @@ actor ChatGPTWebClient {
     /// id, language, the raw cookie, and account id when known. One
     /// automatic refresh-and-retry on 401; simple backoff retry for
     /// idempotent GETs on 429/5xx.
-    func authedRequest(
+    public func authedRequest(
         path: String,
         method: String = "GET",
         jsonBody: [String: Any]? = nil,
@@ -277,7 +276,7 @@ actor ChatGPTWebClient {
     /// Streaming variant of `authedRequest` — same header contract, no
     /// retry loop (the caller owns turn-level retry semantics; replaying
     /// an accepted generation could duplicate it).
-    func authedStream(
+    public func authedStream(
         path: String,
         jsonBody: [String: Any],
         extraHeaders: [String: String] = [:]
@@ -310,7 +309,7 @@ actor ChatGPTWebClient {
     /// /backend-api/models — account-scoped, standard-chat surface. The
     /// reference walks the raw records for availability booleans and
     /// effort hints; this ports that pragmatically.
-    func fetchModels(force: Bool = false) async throws -> [RemoteModel] {
+    public func fetchModels(force: Bool = false) async throws -> [RemoteModel] {
         if !force, let modelCache, Date().timeIntervalSince(modelCache.at) < 60 {
             return modelCache.models
         }
@@ -462,7 +461,7 @@ actor ChatGPTWebClient {
     /// Plan + quota probe: accounts/check gives the plan type; the
     /// conversation-init probe exposes feature-level limits_progress.
     /// Only observed values land in the snapshot.
-    func usageQuota() async throws -> QuotaSnapshot? {
+    public func usageQuota() async throws -> QuotaSnapshot? {
         var snapshot = QuotaSnapshot()
         let timezoneOffset = -TimeZone.current.secondsFromGMT() / 60
         if let (data, http) = try? await authedRequest(path: "backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=\(timezoneOffset)"),
@@ -495,8 +494,8 @@ actor ChatGPTWebClient {
     }
 }
 
-extension QuotaSnapshot {
+public extension QuotaSnapshot {
     /// Empty snapshot for programmatic (non-header) sources like the
     /// ChatGPT usage probe.
-    init() {}
+    public init() {}
 }

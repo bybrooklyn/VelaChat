@@ -1,5 +1,6 @@
 import XCTest
 @testable import VelaChat
+@testable import VelaCore
 
 /// `AskUserQuestionPayload.parse` turns a ````ask-user` fenced block into an
 /// interactive card. A real payload was once rejected outright — silently
@@ -253,7 +254,7 @@ final class AskUserWriteFirstTests: XCTestCase {
     }
 
     func testFencedFallbackSaysTheSameThing() {
-        let instruction = AppModel.askUserQuestionInstruction
+        let instruction = SystemPrompt.askUserQuestionInstruction
         XCTAssertTrue(instruction.contains("write first and ask at the end"))
         // The old wording forbade any prose at all around the block.
         XCTAssertFalse(instruction.contains("nothing before or after it"))

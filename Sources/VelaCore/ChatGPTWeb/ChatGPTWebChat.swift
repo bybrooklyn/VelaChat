@@ -1,5 +1,4 @@
 import Foundation
-import VelaCore
 
 /// Streaming conversation turns over ChatGPT Web — ported from the
 /// reference runtime's direct transport: sentinel prefetch, the
@@ -12,8 +11,8 @@ import VelaCore
 /// history diverges (edit/regenerate/branch/relaunch), the turn starts
 /// a fresh upstream conversation with an explicit transcript replay —
 /// never silently continuing from the wrong node.
-actor ChatGPTWebChat {
-    static let shared = ChatGPTWebChat()
+public actor ChatGPTWebChat {
+    public static let shared = ChatGPTWebChat()
 
     private struct Continuation {
         var conversationID: String
@@ -28,7 +27,7 @@ actor ChatGPTWebChat {
 
     // MARK: - Entry
 
-    static func stream(
+    public static func stream(
         conversationKey: UUID?,
         model: String,
         thinking: ThinkingLevel,
@@ -235,7 +234,7 @@ actor ChatGPTWebChat {
 
     /// Local history was rewritten (branch, delete, clear) — never
     /// continue an upstream conversation whose tail no longer matches.
-    func forgetContinuation(for conversationKey: UUID) {
+    public func forgetContinuation(for conversationKey: UUID) {
         continuations[conversationKey] = nil
     }
 

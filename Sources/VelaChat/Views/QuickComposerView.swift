@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 import AppKit
 
 /// The menu-bar popover: a single-line composer that sends to the current

@@ -1,12 +1,9 @@
 import Foundation
-import VelaCore
-import SwiftUI
-import AppKit
 import Observation
 
 // MARK: - Providers
 
-enum ThinkingLevel: String, CaseIterable, Codable, Identifiable, Sendable {
+public enum ThinkingLevel: String, CaseIterable, Codable, Identifiable, Sendable {
     case auto = "Auto"
     case off = "Off"
     case low = "Low"
@@ -15,11 +12,11 @@ enum ThinkingLevel: String, CaseIterable, Codable, Identifiable, Sendable {
     case extraHigh = "Extra High"
     case max = "Max"
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
     /// Labels follow the current ChatGPT/Codex vocabulary while keeping the
     /// wire values accepted by OpenAI-compatible APIs internal.
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .auto: "Auto"
         case .off: "Off"
@@ -31,7 +28,7 @@ enum ThinkingLevel: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var symbol: String {
+    public var symbol: String {
         switch self {
         case .auto: "wand.and.stars"
         case .off: "bolt.slash"
@@ -44,7 +41,7 @@ enum ThinkingLevel: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 
     /// OpenAI and OpenRouter values. `nil` means leave the provider default.
-    var requestValue: String? {
+    public var requestValue: String? {
         switch self {
         case .auto: nil
         case .off: "none"
@@ -57,11 +54,11 @@ enum ThinkingLevel: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 
     /// Codex's Responses API expects an explicit effort even for Auto.
-    var codexValue: String {
+    public var codexValue: String {
         requestValue ?? "medium"
     }
 
-    var detail: String {
+    public var detail: String {
         switch self {
         case .auto: "Leave the provider’s native default unchanged"
         case .off: "Disable extra thinking when the provider supports it"
@@ -73,7 +70,7 @@ enum ThinkingLevel: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var wireLabel: String {
+    public var wireLabel: String {
         switch self {
         case .auto: "Provider default"
         case .off: "none / disabled"
@@ -85,7 +82,7 @@ enum ThinkingLevel: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var rank: Int {
+    public var rank: Int {
         switch self {
         case .off: 0
         case .low: 1
@@ -101,7 +98,7 @@ enum ThinkingLevel: String, CaseIterable, Codable, Identifiable, Sendable {
 /// How a provider reaches the live web. Providers that search natively are
 /// preferred over VelaChat's own SearXNG fallback, because the model gets the
 /// results inline (with citations) instead of a pre-stuffed context block.
-enum NativeWebSearch {
+public enum NativeWebSearch {
     case none
     /// Search is intrinsic to every request — Perplexity's Sonar models.
     case always
@@ -109,7 +106,7 @@ enum NativeWebSearch {
     case onlineSuffix
 }
 
-enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
+public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case appleIntelligence = "Apple Intelligence"
     case openAI = "OpenAI"
     case anthropic = "Anthropic"
@@ -127,29 +124,10 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case blockrun = "blockrun.ai"
     case compatible = "OpenAI Compatible"
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
     /// Brand color, used for the logo tile and any accenting.
-    var tint: Color {
-        switch self {
-        case .appleIntelligence: Color(hex: 0xE8E4F0)
-        case .openAI, .codex, .chatGPT: Color(hex: 0x10A37F)
-        case .anthropic: Color(hex: 0xD97757)
-        case .google: Color(hex: 0x4285F4)
-        case .deepSeek: Color(hex: 0x4D6BFE)
-        case .openRouter: Color(hex: 0x6467F2)
-        case .groq: Color(hex: 0xF55036)
-        case .mistral: Color(hex: 0xFA520F)
-        case .xai: Color(hex: 0xE8E8E8)
-        case .perplexity: Color(hex: 0x20B8CD)
-        case .ollama: Color(hex: 0xC8C8C8)
-        case .lmStudio: Color(hex: 0x7B5BF5)
-        case .blockrun: Color(hex: 0x2ED47A)
-        case .compatible: Color(hex: 0x5B9BD5)
-        }
-    }
-
-    var shortDescription: String {
+    public var shortDescription: String {
         switch self {
         case .appleIntelligence: "On-device Apple Intelligence — private, free, works offline"
         case .openAI: "OpenAI’s own API — the OpenAI-compatible standard"
@@ -173,9 +151,9 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// Every hosted provider here speaks the same `/chat/completions` shape
     /// that OpenAI defined — surfaced in the UI so the relationship between
     /// "OpenAI" and "OpenAI Compatible" reads as one family, not two ideas.
-    var speaksOpenAIProtocol: Bool { self != .codex && self != .appleIntelligence && self != .chatGPT }
+    public var speaksOpenAIProtocol: Bool { self != .codex && self != .appleIntelligence && self != .chatGPT }
 
-    var isLocal: Bool { self == .ollama || self == .lmStudio || self == .appleIntelligence }
+    public var isLocal: Bool { self == .ollama || self == .lmStudio || self == .appleIntelligence }
 
     /// Whether this provider's reported prompt/input token count already
     /// includes tokens served from cache.
@@ -186,7 +164,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// `prompt_tokens` **includes** `prompt_tokens_details.cached_tokens`.
     /// Pricing the same numbers under the wrong assumption is wrong in
     /// opposite directions — see `UsageSummary.costUSD(for:promptIncludesCached:)`.
-    var promptTokensIncludeCached: Bool {
+    public var promptTokensIncludeCached: Bool {
         switch self {
         case .anthropic: false
         default: true
@@ -197,8 +175,8 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// plans show their real provider-reported windows; metered (API-key)
     /// providers show locally counted meters + live rate-limit headers;
     /// local providers cost nothing and show no gauge at all.
-    enum UsageStyle { case subscription, metered, local }
-    var usageStyle: UsageStyle {
+    public enum UsageStyle { case subscription, metered, local }
+    public var usageStyle: UsageStyle {
         switch self {
         case .codex, .chatGPT: .subscription
         case .ollama, .lmStudio, .appleIntelligence: .local
@@ -209,7 +187,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// Where the provider's real logo lives — fetched at runtime by
     /// `RemoteLogoLoader` (own site first, Google favicons fallback).
     /// `nil` means hand-drawn mark only.
-    var logoDomain: String? {
+    public var logoDomain: String? {
         switch self {
         case .openAI, .codex: "openai.com"
         case .chatGPT: "chatgpt.com"
@@ -228,7 +206,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var nativeWebSearch: NativeWebSearch {
+    public var nativeWebSearch: NativeWebSearch {
         switch self {
         case .perplexity: .always
         case .openRouter: .onlineSuffix
@@ -236,9 +214,9 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var isBuiltIn: Bool { self != .compatible }
+    public var isBuiltIn: Bool { self != .compatible }
 
-    var requiresKey: Bool {
+    public var requiresKey: Bool {
         switch self {
         // ChatGPT signs in with a browser session, never an API key.
         case .ollama, .lmStudio, .blockrun, .appleIntelligence, .chatGPT: false
@@ -247,7 +225,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 
     /// Where to get a key, shown inline in the provider editor.
-    var consoleURL: URL? {
+    public var consoleURL: URL? {
         switch self {
         case .openAI, .codex: URL(string: "https://platform.openai.com/api-keys")
         case .anthropic: URL(string: "https://console.anthropic.com/settings/keys")
@@ -267,7 +245,7 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
 
     /// A last-resort value used only when a server does not publish a catalog.
     /// Normal operation always replaces this with a live discovered model.
-    var automaticFallbackModel: String {
+    public var automaticFallbackModel: String {
         switch self {
         case .appleIntelligence: "on-device"
         case .openAI: "gpt-5.6-terra"
@@ -289,17 +267,17 @@ enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
-struct ProviderProfile: Identifiable, Codable, Equatable, Sendable {
-    let id: UUID
-    var kind: ProviderKind
-    var name: String
-    var endpoint: String
+public struct ProviderProfile: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public var kind: ProviderKind
+    public var name: String
+    public var endpoint: String
     /// Empty means automatic model selection. It is intentionally not a
     /// required user setting.
-    var model: String
-    var enabled: Bool
+    public var model: String
+    public var enabled: Bool
 
-    init(id: UUID = UUID(), kind: ProviderKind, name: String, endpoint: String, model: String = "", enabled: Bool = true) {
+    public init(id: UUID = UUID(), kind: ProviderKind, name: String, endpoint: String, model: String = "", enabled: Bool = true) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -308,13 +286,13 @@ struct ProviderProfile: Identifiable, Codable, Equatable, Sendable {
         self.enabled = enabled
     }
 
-    var displayEndpoint: String {
+    public var displayEndpoint: String {
         endpoint.replacingOccurrences(of: "https://", with: "")
             .replacingOccurrences(of: "http://", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
-    static func defaults() -> [ProviderProfile] {
+    public static func defaults() -> [ProviderProfile] {
         [
             ProviderProfile(kind: .appleIntelligence, name: "Apple Intelligence", endpoint: "appleintelligence://local", model: "on-device"),
             ProviderProfile(kind: .openAI, name: "OpenAI", endpoint: "https://api.openai.com/v1"),
@@ -337,39 +315,39 @@ struct ProviderProfile: Identifiable, Codable, Equatable, Sendable {
 
 /// Metadata returned by a provider's catalog. The picker is generated from
 /// this shape rather than from a frozen list of model IDs.
-struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
-    let id: String
-    let name: String?
-    let ownedBy: String?
-    let description: String?
-    let contextLength: Int?
-    let maxOutputTokens: Int?
-    let parameterSize: String?
-    let sizeBytes: Int64?
+public struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
+    public let id: String
+    public let name: String?
+    public let ownedBy: String?
+    public let description: String?
+    public let contextLength: Int?
+    public let maxOutputTokens: Int?
+    public let parameterSize: String?
+    public let sizeBytes: Int64?
     /// Ollama-specific: the GGUF quantization actually running (`"Q4_K_M"`,
     /// `"Q8_0"`, …) — real data straight from `/api/tags`' `details.
     /// quantization_level`, not inferred.
-    let quantizationLevel: String?
+    public let quantizationLevel: String?
     /// True for an Ollama model tagged `:cloud` — it runs on Ollama's own
     /// servers via your local Ollama as an authenticated proxy, not on this
     /// Mac. The only documented way to tell the two apart is the tag suffix
     /// itself; there's no separate "is cloud" field in Ollama's API.
-    let isCloudHosted: Bool
-    let supportsReasoning: Bool
-    let supportsVision: Bool
-    let supportsTools: Bool
-    let supportedEfforts: [String]
-    let isLocal: Bool
+    public let isCloudHosted: Bool
+    public let supportsReasoning: Bool
+    public let supportsVision: Bool
+    public let supportsTools: Bool
+    public let supportedEfforts: [String]
+    public let isLocal: Bool
     /// Real per-provider pricing only — OpenRouter's and blockrun.ai's own
     /// catalogs both publish genuine per-model $/1M-token pricing; every
     /// other provider's `/models` response doesn't (verified, not assumed:
     /// checking DeepSeek/Groq/Mistral without a key just 401s, so there's
     /// nothing to read even if it existed). `nil` here means "unknown," not
     /// "free" — the UI must never imply a number that was never observed.
-    let inputPricePerMillion: Double?
-    let outputPricePerMillion: Double?
+    public let inputPricePerMillion: Double?
+    public let outputPricePerMillion: Double?
 
-    init(
+    public init(
         id: String,
         ownedBy: String? = nil,
         name: String? = nil,
@@ -412,7 +390,7 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
     /// A coarse $/$$/$$$ read on cost, from real per-provider pricing only
     /// — see `inputPricePerMillion`. `nil` when no real pricing is known,
     /// never guessed. Thresholds are $/1M input tokens.
-    var priceTier: String? {
+    public var priceTier: String? {
         guard let inputPricePerMillion else { return nil }
         if inputPricePerMillion <= 0 { return "Free" }
         if inputPricePerMillion < 1 { return "$" }
@@ -420,7 +398,7 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
         return "$$$"
     }
 
-    var displayName: String {
+    public var displayName: String {
         if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return name
         }
@@ -437,24 +415,24 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
             .capitalized
     }
 
-    var providerModelID: String {
+    public var providerModelID: String {
         id.split(separator: "/").last.map(String.init) ?? id
     }
 
-    var contextLabel: String? {
+    public var contextLabel: String? {
         guard let contextLength else { return nil }
         if contextLength >= 1_000_000 { return "\(contextLength / 1_000_000)M context" }
         if contextLength >= 1_000 { return "\(contextLength / 1_000)K context" }
         return "\(contextLength) context"
     }
 
-    var diskSizeLabel: String? {
+    public var diskSizeLabel: String? {
         guard let sizeBytes else { return nil }
         let gigabytes = Double(sizeBytes) / 1_000_000_000
         return gigabytes >= 1 ? String(format: "%.1f GB", gigabytes) : String(format: "%.0f MB", gigabytes * 1_000)
     }
 
-    var sizeLabel: String? {
+    public var sizeLabel: String? {
         if let parameterSize, !parameterSize.isEmpty { return parameterSize }
         return diskSizeLabel
     }
@@ -463,12 +441,12 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
     /// as close as VelaChat gets to "what resources this will use," built
     /// only from what Ollama's own `/api/tags` actually reports rather than
     /// a computed RAM/VRAM guess.
-    var resourceLabel: String? {
+    public var resourceLabel: String? {
         let parts = [parameterSize, quantizationLevel, diskSizeLabel].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    var capabilityLabels: [String] {
+    public var capabilityLabels: [String] {
         var labels: [String] = []
         if supportsReasoning { labels.append("Reasoning") }
         if supportsVision { labels.append("Vision") }
@@ -478,7 +456,7 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
         return labels
     }
 
-    func thinkingLevels(for provider: ProviderKind) -> [ThinkingLevel] {
+    public func thinkingLevels(for provider: ProviderKind) -> [ThinkingLevel] {
         let lowerID = id.lowercased()
         let hasProviderSignal: Bool
         switch provider {
@@ -549,16 +527,16 @@ struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
-struct ConnectionResult {
-    let ok: Bool
-    let message: String
-    let models: [RemoteModel]
+public struct ConnectionResult {
+    public let ok: Bool
+    public let message: String
+    public let models: [RemoteModel]
 }
 
 /// Curated data is only used for providers without a public model endpoint
 /// (Codex OAuth) or when an endpoint is offline. Live catalogs always win.
-enum ModelCatalog {
-    static func curated(for kind: ProviderKind) -> [RemoteModel] {
+public enum ModelCatalog {
+    public static func curated(for kind: ProviderKind) -> [RemoteModel] {
         switch kind {
         case .codex:
             return [
@@ -591,12 +569,12 @@ enum ModelCatalog {
         }
     }
 
-    static func automaticModel(for kind: ProviderKind) -> RemoteModel {
+    public static func automaticModel(for kind: ProviderKind) -> RemoteModel {
         let id = kind.automaticFallbackModel
         return RemoteModel(id: id, name: "Automatic · \(id)", supportsReasoning: kind == .deepSeek || kind == .codex)
     }
 
-    static func bestModel(for profile: ProviderProfile, models: [RemoteModel]) -> RemoteModel? {
+    public static func bestModel(for profile: ProviderProfile, models: [RemoteModel]) -> RemoteModel? {
         guard !models.isEmpty else { return nil }
         if !profile.model.isEmpty,
            !isLegacyAutomaticModel(profile.model),
@@ -619,11 +597,11 @@ enum ModelCatalog {
     /// the context readout falls back to for providers whose catalogs
     /// never reach this parsing path at all. One table, so the number a
     /// model gets can't depend on which provider happened to list it.
-    static func curatedContextLength(for id: String) -> Int? {
+    public static func curatedContextLength(for id: String) -> Int? {
         ContextWindowTable.contextLength(for: id)
     }
 
-    static func isLegacyAutomaticModel(_ value: String) -> Bool {
+    public static func isLegacyAutomaticModel(_ value: String) -> Bool {
         switch value.lowercased() {
         case "deepseek-chat", "deepseek-reasoner", "deepseek/deepseek-chat", "gpt-4o-mini", "gpt-5-codex", "llama3.2", "local-model", "default":
             return true
@@ -632,7 +610,7 @@ enum ModelCatalog {
         }
     }
 
-    static func inferCapabilities(for id: String) -> (reasoning: Bool, vision: Bool, tools: Bool) {
+    public static func inferCapabilities(for id: String) -> (reasoning: Bool, vision: Bool, tools: Bool) {
         let lower = id.lowercased()
         let reasoning = lower.contains("reason") || lower.contains("think") || lower.contains("r1") || lower.contains("o1") || lower.contains("o3") || lower.contains("o4") || lower.contains("qwen3") || lower.contains("qwen-qwq") || lower.contains("gpt-5") || lower.contains("deepseek-v") || lower.contains("claude")
         let vision = lower.contains("vision") || lower.contains("-vl") || lower.contains("gemini") || lower.contains("gpt-4o") || lower.contains("gpt-4.1") || lower.contains("pixtral") || lower.contains("claude")
@@ -642,7 +620,7 @@ enum ModelCatalog {
 
     /// Not private — the model picker uses this same heuristic to sort each
     /// provider's list strongest-to-weakest, instead of alphabetically.
-    static func score(_ model: RemoteModel, for kind: ProviderKind) -> Int {
+    public static func score(_ model: RemoteModel, for kind: ProviderKind) -> Int {
         let lower = model.id.lowercased()
         var score = model.supportsTools ? 20 : 0
         if model.supportsReasoning { score += 12 }
@@ -704,52 +682,52 @@ enum ModelCatalog {
 
 // MARK: - Chat
 
-struct ChatMessage: Identifiable, Codable, Equatable {
-    let id: UUID
-    let role: String
-    var content: String
-    var reasoning: String?
-    var error: String?
-    var isStreaming: Bool
-    let createdAt: Date
+public struct ChatMessage: Identifiable, Codable, Equatable {
+    public let id: UUID
+    public let role: String
+    public var content: String
+    public var reasoning: String?
+    public var error: String?
+    public var isStreaming: Bool
+    public let createdAt: Date
     /// The provider/model that actually generated this specific message —
     /// stamped at send time, not read live off whatever's currently
     /// selected. Without this, switching providers mid-conversation
     /// retroactively relabeled every earlier reply with the new provider's
     /// name. `nil` on messages saved before this field existed, or on user
     /// messages, which don't have a generating provider.
-    var providerName: String?
-    var modelID: String?
+    public var providerName: String?
+    public var modelID: String?
     /// Bookmarked within this conversation — distinct from pinning a whole
     /// conversation in the sidebar. Lets a long thread's important reply be
     /// jumped back to directly instead of scrolled for.
-    var isPinned: Bool = false
+    public var isPinned: Bool = false
     /// Files attached when this (user) message was sent — images get real
     /// multimodal wiring, everything else is folded into the outgoing text.
-    var attachments: [Attachment] = []
+    public var attachments: [Attachment] = []
     /// Real token usage for this reply, when the provider reported it —
     /// persisted (unlike `AppModel.usageByMessage`, the live in-memory
     /// cache) so lifetime usage statistics survive a relaunch.
-    var usage: UsageSummary?
+    public var usage: UsageSummary?
     /// Superseded replies from before an edit-and-regenerate, most recently
     /// superseded first. Elements never carry their own alternates — edit
     /// history stays a flat list on the current message rather than a tree.
-    var alternates: [ChatMessage] = []
+    public var alternates: [ChatMessage] = []
     /// The ordered render timeline (text runs + activity lines) — see
     /// `MessageSegment`. Empty on user messages and on assistant messages
     /// saved before this field existed; `content` remains canonical.
-    var segments: [MessageSegment] = []
+    public var segments: [MessageSegment] = []
     /// For `role: "notice"` cards only: "info", "success", or "warning"
     /// (the default) — a success toast should not wear a warning triangle.
-    var noticeKind: String?
+    public var noticeKind: String?
     /// Redactions applied to `content` before this message was sent. The
     /// message stores the redacted text — what actually went out — so the
     /// transcript never claims to have sent something it didn't, and the
     /// secret itself is never written to disk. These spans are what the
     /// transcript renders as chips.
-    var redactions: [RedactionSpan] = []
+    public var redactions: [RedactionSpan] = []
 
-    init(role: String, content: String, reasoning: String? = nil, error: String? = nil, isStreaming: Bool = false, providerName: String? = nil, modelID: String? = nil, isPinned: Bool = false, attachments: [Attachment] = [], alternates: [ChatMessage] = []) {
+    public init(role: String, content: String, reasoning: String? = nil, error: String? = nil, isStreaming: Bool = false, providerName: String? = nil, modelID: String? = nil, isPinned: Bool = false, attachments: [Attachment] = [], alternates: [ChatMessage] = []) {
         self.id = UUID()
         self.role = role
         self.content = content
@@ -764,7 +742,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         self.alternates = alternates
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         role = try container.decode(String.self, forKey: .role)
@@ -786,7 +764,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
 
     /// Full-field copy initializer — the only way to reproduce a message
     /// with a chosen id/createdAt (the memberwise init hardcodes both).
-    init(id: UUID, role: String, content: String, reasoning: String?, error: String?, isStreaming: Bool, createdAt: Date, providerName: String?, modelID: String?, isPinned: Bool, attachments: [Attachment], usage: UsageSummary?, alternates: [ChatMessage], segments: [MessageSegment], noticeKind: String?, redactions: [RedactionSpan] = []) {
+    public init(id: UUID, role: String, content: String, reasoning: String?, error: String?, isStreaming: Bool, createdAt: Date, providerName: String?, modelID: String?, isPinned: Bool, attachments: [Attachment], usage: UsageSummary?, alternates: [ChatMessage], segments: [MessageSegment], noticeKind: String?, redactions: [RedactionSpan] = []) {
         self.id = id
         self.role = role
         self.content = content
@@ -808,7 +786,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// A copy with a fresh identity (alternates re-id'd too) — used by
     /// conversation branching, where duplicated ids across two live
     /// conversations would confuse every id-keyed lookup.
-    func duplicatedWithFreshID() -> ChatMessage {
+    public func duplicatedWithFreshID() -> ChatMessage {
         ChatMessage(
             id: UUID(),
             role: role,
@@ -834,7 +812,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// question — `nil` while the block isn't complete yet (still
     /// streaming) or isn't present at all. Parsed on demand rather than
     /// stored, since it's cheap and only ever needed at render time.
-    var askQuestion: (prefix: String, payload: AskUserQuestionPayload, suffix: String)? {
+    public var askQuestion: (prefix: String, payload: AskUserQuestionPayload, suffix: String)? {
         AskUserQuestionPayload.parse(from: content)
     }
 
@@ -842,14 +820,14 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// markers — never real conversation content. Anywhere that builds
     /// what actually gets sent to a provider, or asks "has this
     /// conversation really been used," needs to look past both.
-    var isSynthetic: Bool { role == "notice" || role == "compaction" }
+    public var isSynthetic: Bool { role == "notice" || role == "compaction" }
 
     /// Text content plus any non-image attachments folded in as labeled
     /// blocks — the wire-format-agnostic way file attachments reach every
     /// provider, since it works over plain text with no special request
     /// shape needed. Images are handled separately (`imageAttachments`),
     /// since they need real multimodal content parts, not text.
-    var contentForRequest: String {
+    public var contentForRequest: String {
         let included = attachments.filter { $0.isIncluded && $0.kind != .image }
         guard !included.isEmpty else { return content }
         let blocks = included.compactMap { attachment -> String? in
@@ -863,7 +841,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
 
     /// Included image attachments, in order — real multimodal content for
     /// vision-capable models.
-    var imageAttachments: [Attachment] {
+    public var imageAttachments: [Attachment] {
         attachments.filter { $0.isIncluded && $0.kind == .image }
     }
 }
@@ -872,18 +850,18 @@ struct ChatMessage: Identifiable, Codable, Equatable {
 /// the same shape Claude Code's own `AskUserQuestion` tool uses, adapted to
 /// a fenced-block convention any OpenAI-compatible or Anthropic model can
 /// use without real function calling. Taught to the model via a fixed
-/// system-prompt instruction (`AppModel.askUserQuestionInstruction`).
-struct AskUserQuestionPayload: Decodable, Equatable {
-    struct Option: Decodable, Equatable, Identifiable {
-        var id: String { label }
-        let label: String
-        let description: String?
+/// system-prompt instruction (`SystemPrompt.askUserQuestionInstruction`).
+public struct AskUserQuestionPayload: Decodable, Equatable {
+    public struct Option: Decodable, Equatable, Identifiable {
+        public var id: String { label }
+        public let label: String
+        public let description: String?
         /// At most one per question — rendered with a "(Recommended)" tag.
-        var recommended: Bool = false
+        public var recommended: Bool = false
 
         private enum CodingKeys: String, CodingKey { case label, description, recommended }
 
-        init(from decoder: Decoder) throws {
+        public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             label = try AskUserQuestionPayload.lenientString(container, forKey: .label)
             description = try container.decodeIfPresent(String.self, forKey: .description)
@@ -891,25 +869,25 @@ struct AskUserQuestionPayload: Decodable, Equatable {
         }
     }
 
-    struct Question: Decodable, Equatable, Identifiable {
-        var id: String { question }
+    public struct Question: Decodable, Equatable, Identifiable {
+        public var id: String { question }
         /// Short chip label ("Approach", "Scope") shown above the question
         /// in multi-question cards.
-        let header: String?
-        let question: String
-        let options: [Option]
-        var multiSelect: Bool = false
+        public let header: String?
+        public let question: String
+        public let options: [Option]
+        public var multiSelect: Bool = false
 
         private enum CodingKeys: String, CodingKey { case header, question, options, multiSelect }
 
-        init(header: String?, question: String, options: [Option], multiSelect: Bool) {
+        public init(header: String?, question: String, options: [Option], multiSelect: Bool) {
             self.header = header
             self.question = question
             self.options = options
             self.multiSelect = multiSelect
         }
 
-        init(from decoder: Decoder) throws {
+        public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             header = try container.decodeIfPresent(String.self, forKey: .header)
             question = try container.decode(String.self, forKey: .question)
@@ -921,14 +899,14 @@ struct AskUserQuestionPayload: Decodable, Equatable {
     /// 1–4 questions per card. The legacy single-question JSON shape
     /// (top-level question/options/multiSelect) still decodes, as one
     /// entry here — older transcripts keep rendering.
-    let questions: [Question]
-    var allowNotes: Bool = true
+    public let questions: [Question]
+    public var allowNotes: Bool = true
 
     private enum CodingKeys: String, CodingKey {
         case question, options, multiSelect, allowNotes, questions
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         allowNotes = try container.decodeIfPresent(Bool.self, forKey: .allowNotes) ?? true
         if let multi = try container.decodeIfPresent([Question].self, forKey: .questions) {
@@ -961,11 +939,11 @@ struct AskUserQuestionPayload: Decodable, Equatable {
     /// the progression can be tested without a running SwiftUI hierarchy —
     /// the property that matters (every intermediate press advances, *only*
     /// the last submits) is exactly the kind that silently regresses.
-    enum PrimaryAction: Equatable {
+    public enum PrimaryAction: Equatable {
         case next(index: Int)
         case send
 
-        var title: String {
+        public var title: String {
             switch self {
             case .next: "Next"
             case .send: "Send"
@@ -973,7 +951,7 @@ struct AskUserQuestionPayload: Decodable, Equatable {
         }
     }
 
-    static func primaryAction(activeIndex: Int, questionCount: Int) -> PrimaryAction {
+    public static func primaryAction(activeIndex: Int, questionCount: Int) -> PrimaryAction {
         guard activeIndex < questionCount - 1 else { return .send }
         return .next(index: activeIndex + 1)
     }
@@ -1053,7 +1031,7 @@ struct AskUserQuestionPayload: Decodable, Equatable {
     /// the ```ask-user format (e.g. the model explaining the convention) no
     /// longer swallows the whole reply into a card. Text after the closing
     /// fence is preserved, not silently dropped.
-    static func parse(from content: String) -> (prefix: String, payload: AskUserQuestionPayload, suffix: String)? {
+    public static func parse(from content: String) -> (prefix: String, payload: AskUserQuestionPayload, suffix: String)? {
         guard let openMatch = content.range(of: openFencePattern, options: .regularExpression),
               let closeMatch = closingFenceRange(in: content, after: openMatch.upperBound) else {
             return nil
@@ -1083,7 +1061,7 @@ struct AskUserQuestionPayload: Decodable, Equatable {
     /// True while a line-start ```ask-user fence has opened but not closed —
     /// the streaming state where the raw JSON must be hidden behind a
     /// placeholder instead of typing itself out on screen.
-    static func hasUnterminatedFence(in content: String) -> Bool {
+    public static func hasUnterminatedFence(in content: String) -> Bool {
         guard let openMatch = content.range(of: openFencePattern, options: .regularExpression) else {
             return false
         }
@@ -1092,7 +1070,7 @@ struct AskUserQuestionPayload: Decodable, Equatable {
 
     /// The prose before an unterminated fence — shown above the
     /// "Preparing a question…" placeholder while streaming.
-    static func prefixBeforeUnterminatedFence(in content: String) -> String {
+    public static func prefixBeforeUnterminatedFence(in content: String) -> String {
         guard let openMatch = content.range(of: openFencePattern, options: .regularExpression) else {
             return content
         }
@@ -1103,51 +1081,51 @@ struct AskUserQuestionPayload: Decodable, Equatable {
 
 @MainActor
 @Observable
-final class Conversation: Identifiable {
-    let id: UUID
-    var title: String
-    var messages: [ChatMessage]
-    var providerID: UUID?
-    var model: String
-    var createdAt: Date
-    var updatedAt: Date
+public final class Conversation: Identifiable {
+    public nonisolated let id: UUID
+    public var title: String
+    public var messages: [ChatMessage]
+    public var providerID: UUID?
+    public var model: String
+    public var createdAt: Date
+    public var updatedAt: Date
 
-    var draftText: String
+    public var draftText: String
     /// Staged for the next send, not yet part of any message — deliberately
     /// not persisted across a relaunch (unlike `draftText`), so an unsent
     /// image doesn't bloat saved history on disk before it's even sent.
-    var draftAttachments: [Attachment] = []
-    var titleIsCustom: Bool
-    var isPinned: Bool
+    public var draftAttachments: [Attachment] = []
+    public var titleIsCustom: Bool
+    public var isPinned: Bool
     /// Skills invoked via the `/` menu, by folder path (stable across
     /// relaunches, unlike an in-memory `Skill` reference) — their bodies get
     /// appended as extra system context on every request for the rest of
     /// this conversation, the same shape custom instructions already use.
-    var activeSkillPaths: [String]
+    public var activeSkillPaths: [String]
     /// User-chosen local folder acting as this conversation's workspace
     /// root (file tools + run_command operate inside it). `nil` = the
     /// synthetic per-conversation directory.
-    var workspaceRootPath: String?
+    public var workspaceRootPath: String?
     /// Session-scoped run_command trust: armed "allow all" plus exact
     /// commands the user marked always-allowed. Deliberately not
     /// persisted — trust re-arms per app run. (Prefix rules that DO
     /// survive a relaunch live in `CommandTrust`, keyed by the attached
     /// folder rather than by the conversation.)
-    var allowAllCommands = false
-    var alwaysAllowedCommands: Set<String> = []
+    public var allowAllCommands = false
+    public var alwaysAllowedCommands: Set<String> = []
     /// Planning mode: while this is on, the tools that write anything are
     /// never attached to a request, and non-read-only commands are refused
     /// (see `PlanMode`). Persisted, because "I am still planning this"
     /// outlives a relaunch exactly the way an attached folder does.
-    var isPlanning: Bool
+    public var isPlanning: Bool
     /// Whether the one-time "want to plan this first?" offer has already
     /// been made here. Persisted so it stays one-time — an offer that
     /// reappears on every launch is the nagging this is designed not to be.
-    var didOfferPlanning: Bool
+    public var didOfferPlanning: Bool
 
-    var isGenerating: Bool = false
-    var generationProviderName: String = ""
-    var generationTask: Task<Void, Never>?
+    public var isGenerating: Bool = false
+    public var generationProviderName: String = ""
+    public var generationTask: Task<Void, Never>?
     /// The assistant message ID the *current* generation is for — checked
     /// by `finishGeneration`/`failGeneration` before they mutate
     /// `isGenerating`/`generationTask`. Without this, a Stop immediately
@@ -1156,9 +1134,9 @@ final class Conversation: Identifiable {
     /// already started) stomp the new generation's state once it woke up
     /// on its cancellation. Ephemeral, like `generationTask` — not
     /// persisted.
-    var currentGenerationID: UUID?
+    public var currentGenerationID: UUID?
 
-    init(id: UUID = UUID(), title: String = "New conversation", messages: [ChatMessage] = [], providerID: UUID? = nil, model: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
+    public init(id: UUID = UUID(), title: String = "New conversation", messages: [ChatMessage] = [], providerID: UUID? = nil, model: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1178,7 +1156,7 @@ final class Conversation: Identifiable {
     /// The directory every workspace tool (and run_command) resolves
     /// against — the user's chosen folder when one is attached, else the
     /// synthetic per-conversation dir.
-    var workspaceRoot: URL {
+    public var workspaceRoot: URL {
         if let workspaceRootPath, FileManager.default.fileExists(atPath: workspaceRootPath) {
             return URL(fileURLWithPath: workspaceRootPath, isDirectory: true)
         }
@@ -1194,7 +1172,7 @@ final class Conversation: Identifiable {
     /// check mirrors `workspaceRoot`: a folder that has since been moved
     /// or deleted falls back to the sandbox, and must not keep its rules
     /// live for a path that no longer resolves there.
-    var commandTrustFolderPath: String? {
+    public var commandTrustFolderPath: String? {
         guard let workspaceRootPath, FileManager.default.fileExists(atPath: workspaceRootPath) else { return nil }
         return workspaceRootPath
     }
@@ -1206,20 +1184,20 @@ final class Conversation: Identifiable {
     /// exchange so far" needs to look past them, or an unrelated notice
     /// would make an otherwise-empty conversation look used, break first-
     /// message title-setting, or throw off the AI-retitling trigger.
-    var realMessages: [ChatMessage] { messages.filter { !$0.isSynthetic } }
+    public var realMessages: [ChatMessage] { messages.filter { !$0.isSynthetic } }
 
-    var pinnedMessages: [ChatMessage] { messages.filter(\.isPinned) }
+    public var pinnedMessages: [ChatMessage] { messages.filter(\.isPinned) }
 
     /// The most recent compaction marker, if this conversation has been
     /// compacted at least once — everything up to and including it collapses
     /// into its `content` (the generated summary) for future requests;
     /// everything after it stays full, real messages.
-    var lastCompactionIndex: Int? { messages.lastIndex(where: { $0.role == "compaction" }) }
+    public var lastCompactionIndex: Int? { messages.lastIndex(where: { $0.role == "compaction" }) }
 
     /// A failed or still-empty-but-streaming last message used to render as
     /// "No messages yet" — indistinguishable from a genuinely new,
     /// never-used conversation, which hides real failures from the sidebar.
-    var lastMessage: String {
+    public var lastMessage: String {
         guard let last = realMessages.last else { return "No messages yet" }
         if let error = last.error, !error.isEmpty { return "⚠ \(error)" }
         if last.isStreaming { return last.content.isEmpty ? "Generating…" : last.content }
@@ -1232,26 +1210,26 @@ final class Conversation: Identifiable {
     }
 }
 
-struct SavedConversation: Codable {
-    let id: UUID
-    let title: String
-    let messages: [ChatMessage]
-    let providerID: UUID?
-    let model: String
-    let createdAt: Date
-    let updatedAt: Date
-    var draftText: String = ""
-    var titleIsCustom: Bool = false
-    var isPinned: Bool = false
-    var activeSkillPaths: [String] = []
+public struct SavedConversation: Codable {
+    public let id: UUID
+    public let title: String
+    public let messages: [ChatMessage]
+    public let providerID: UUID?
+    public let model: String
+    public let createdAt: Date
+    public let updatedAt: Date
+    public var draftText: String = ""
+    public var titleIsCustom: Bool = false
+    public var isPinned: Bool = false
+    public var activeSkillPaths: [String] = []
     /// User-chosen local folder acting as this conversation's workspace
     /// root instead of the synthetic per-conversation directory.
-    var workspaceRootPath: String?
+    public var workspaceRootPath: String?
     /// Planning mode, and whether its one-time offer has been made.
-    var isPlanning: Bool = false
-    var didOfferPlanning: Bool = false
+    public var isPlanning: Bool = false
+    public var didOfferPlanning: Bool = false
 
-    init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
+    public init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1268,7 +1246,7 @@ struct SavedConversation: Codable {
         self.didOfferPlanning = didOfferPlanning
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
@@ -1290,15 +1268,15 @@ struct SavedConversation: Codable {
 /// A provider's live rate-limit/quota state, parsed from response headers
 /// when the provider sends them (Anthropic's anthropic-ratelimit-*,
 /// OpenAI-style x-ratelimit-*). Session-only — never persisted.
-struct QuotaSnapshot: Sendable, Equatable, Codable {
+public struct QuotaSnapshot: Sendable, Equatable, Codable {
     /// A subscription-style usage window (Codex/ChatGPT plans): percent
     /// used of a rolling window, e.g. 5-hour and weekly.
-    struct Window: Sendable, Equatable, Codable {
-        var usedPercent: Double
-        var windowMinutes: Int?
-        var resetAt: Date?
+    public struct Window: Sendable, Equatable, Codable {
+        public var usedPercent: Double
+        public var windowMinutes: Int?
+        public var resetAt: Date?
 
-        var label: String {
+        public var label: String {
             switch windowMinutes {
             case .some(let minutes) where minutes >= 10_000: return "Weekly limit"
             case .some(let minutes) where minutes >= 60: return "\(minutes / 60)-hour limit"
@@ -1308,19 +1286,19 @@ struct QuotaSnapshot: Sendable, Equatable, Codable {
         }
     }
 
-    var requestsRemaining: Int?
-    var requestsLimit: Int?
-    var tokensRemaining: Int?
-    var tokensLimit: Int?
-    var resetAt: Date?
+    public var requestsRemaining: Int?
+    public var requestsLimit: Int?
+    public var tokensRemaining: Int?
+    public var tokensLimit: Int?
+    public var resetAt: Date?
     /// Codex subscription windows, verified live against the real
     /// backend's x-codex-* headers.
-    var primaryWindow: Window?
-    var secondaryWindow: Window?
-    var planName: String?
-    var capturedAt = Date()
+    public var primaryWindow: Window?
+    public var secondaryWindow: Window?
+    public var planName: String?
+    public var capturedAt = Date()
 
-    init?(headers rawHeaders: [AnyHashable: Any]) {
+    public init?(headers rawHeaders: [AnyHashable: Any]) {
         var headers: [String: String] = [:]
         for (headerKey, headerValue) in rawHeaders {
             headers[String(describing: headerKey).lowercased()] = String(describing: headerValue)
@@ -1384,7 +1362,7 @@ struct QuotaSnapshot: Sendable, Equatable, Codable {
     }
 
     /// 0…1 used fraction, from whichever limit pair is known.
-    var usedFraction: Double? {
+    public var usedFraction: Double? {
         if let remaining = requestsRemaining, let limit = requestsLimit, limit > 0 {
             return 1 - Double(remaining) / Double(limit)
         }
@@ -1398,17 +1376,17 @@ struct QuotaSnapshot: Sendable, Equatable, Codable {
 /// Cache-write tokens split by TTL tier. Writes are billed at 1.25x
 /// (5-minute) and 2x (1-hour) base input, so the split is not cosmetic —
 /// collapsing it would misprice by up to 60%.
-struct CacheCreationTokens: Sendable, Equatable {
-    var ephemeral5m: Int?
-    var ephemeral1h: Int?
+public struct CacheCreationTokens: Sendable, Equatable {
+    public var ephemeral5m: Int?
+    public var ephemeral1h: Int?
 
-    var total: Int? {
+    public var total: Int? {
         guard ephemeral5m != nil || ephemeral1h != nil else { return nil }
         return (ephemeral5m ?? 0) + (ephemeral1h ?? 0)
     }
 }
 
-enum ChatStreamEvent: Sendable {
+public enum ChatStreamEvent: Sendable {
     case delta(content: String, reasoning: String)
     /// `cachedTokens`: real provider-reported cache-hit tokens — OpenAI's
     /// `usage.prompt_tokens_details.cached_tokens`, DeepSeek's
@@ -1436,30 +1414,48 @@ enum ChatStreamEvent: Sendable {
     case quota(QuotaSnapshot)
 }
 
-struct UsageSummary: Codable, Equatable {
-    var promptTokens: Int?
-    var completionTokens: Int?
+public struct UsageSummary: Codable, Equatable {
+
+    public init(
+        promptTokens: Int? = nil,
+        completionTokens: Int? = nil,
+        cachedTokens: Int? = nil,
+        cacheCreation5mTokens: Int? = nil,
+        cacheCreation1hTokens: Int? = nil,
+        providerReportedCostUSD: Double? = nil,
+        isBatch: Bool = false
+    ) {
+        self.promptTokens = promptTokens
+        self.completionTokens = completionTokens
+        self.cachedTokens = cachedTokens
+        self.cacheCreation5mTokens = cacheCreation5mTokens
+        self.cacheCreation1hTokens = cacheCreation1hTokens
+        self.providerReportedCostUSD = providerReportedCostUSD
+        self.isBatch = isBatch
+    }
+    public var promptTokens: Int?
+    public var completionTokens: Int?
     /// Real provider-reported cache-hit tokens (cache *reads*) — see
     /// `ChatStreamEvent.usage`. Only ever what the provider actually
     /// reported, never estimated.
-    var cachedTokens: Int?
+    public var cachedTokens: Int?
     /// Cache *writes*, split by TTL tier. Anthropic reports these as
     /// `cache_creation.ephemeral_5m_input_tokens` /
     /// `ephemeral_1h_input_tokens`; verified against a recorded live
     /// session. OpenAI-compatible providers report neither, so `nil`
     /// stays meaningfully distinct from `0` — "not reported" is not
     /// "none were written".
-    var cacheCreation5mTokens: Int?
-    var cacheCreation1hTokens: Int?
+    public var cacheCreation5mTokens: Int?
+    public var cacheCreation1hTokens: Int?
     /// A cost the provider computed itself (OpenRouter, and Claude Code's
     /// `total_cost_usd`). Preferred over local math when present, and
     /// labelled as provider-reported so it is never confused with a
     /// figure VelaChat derived.
-    var providerReportedCostUSD: Double?
+    public var providerReportedCostUSD: Double?
     /// Batch requests bill at half rate.
-    var isBatch: Bool = false
+    public var isBatch: Bool = false
 
-    var label: String? {
+    public var label: String? {
         guard let completionTokens else { return nil }
         var text: String
         if let promptTokens { text = "\(promptTokens + completionTokens) tokens" } else { text = "\(completionTokens) tokens" }
@@ -1471,21 +1467,26 @@ struct UsageSummary: Codable, Equatable {
     /// neither. Kept separate from `cachedTokens` (reads) because they are
     /// billed at opposite ends of the scale: reads at 0.10×, writes at
     /// 1.25×/2×.
-    var cacheCreationTokens: Int? {
+    public var cacheCreationTokens: Int? {
         guard cacheCreation5mTokens != nil || cacheCreation1hTokens != nil else { return nil }
         return (cacheCreation5mTokens ?? 0) + (cacheCreation1hTokens ?? 0)
     }
 }
 
-struct WebSearchResult: Identifiable, Sendable {
-    let id = UUID()
-    let title: String
-    let url: String
-    let snippet: String
+public struct WebSearchResult: Identifiable, Sendable {
+    public let id = UUID()
+    public let title: String
+    public let url: String
+    public let snippet: String
 }
 
-struct WebSearchRecord {
-    let query: String
-    let results: [WebSearchResult]
+public struct WebSearchRecord {
+
+    public init(query: String, results: [WebSearchResult]) {
+        self.query = query
+        self.results = results
+    }
+    public let query: String
+    public let results: [WebSearchResult]
 }
 

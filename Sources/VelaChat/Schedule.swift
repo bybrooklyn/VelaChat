@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import EventKit
 
 /// Read-only calendar + reminders access for the `get_schedule` tool.

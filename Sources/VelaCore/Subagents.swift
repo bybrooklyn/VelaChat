@@ -1,27 +1,31 @@
 import Foundation
-import VelaCore
 
 /// Parallel sub-conversations for fan-out work ("research these three
 /// angles at once"). Each subagent is a plain, isolated request to the
 /// same provider with the read-only tools — no nesting, no shell, no
 /// memory writes — and its transcript is returned to the parent as the
 /// tool result, so nothing happens invisibly.
-enum Subagents {
-    static let definition = ToolCatalog.Definition(
+public enum Subagents {
+    public static let definition = ToolCatalog.Definition(
         name: "spawn_agents",
         description: "Run 1-3 independent sub-tasks at the same time, each handled by a fresh assistant that starts with an empty context and only the read-only tools (search, fetch, file reading — no writing, no shell). Returns their finished answers together, one \"## name\" section each, truncated at about 8,000 characters apiece. They run concurrently and cannot talk to each other or to you until they finish.",
         parametersJSON: #"{"type":"object","properties":{"tasks":{"type":"array","maxItems":3,"items":{"type":"object","properties":{"name":{"type":"string","description":"Very short label, e.g. \"pricing research\""},"prompt":{"type":"string","description":"The complete, self-contained instruction — the subagent sees none of this conversation"}},"required":["name","prompt"]}}},"required":["tasks"]}"#,
         guidance: "Each prompt must stand alone: state all the context it needs, since the subagent cannot see this conversation, your files, or the user's earlier messages. Prefer one subagent per genuinely separate question, and never use them for steps that must happen in order."
     )
 
-    struct Task: Sendable {
-        let name: String
-        let prompt: String
+    public struct Task: Sendable {
+
+        public init(name: String, prompt: String) {
+            self.name = name
+            self.prompt = prompt
+        }
+        public let name: String
+        public let prompt: String
     }
 
     /// Runs the tasks concurrently and returns one combined, labeled
     /// result. Failures are reported per-task rather than failing the set.
-    static func run(
+    public static func run(
         tasks: [Task],
         profile: ProviderProfile,
         credential: ProviderCredential,
@@ -80,7 +84,7 @@ enum Subagents {
 
     /// The read-only slice of the parent's tools a subagent may use:
     /// no shell, no memory writes, no planning, and never spawning more.
-    static func allowedTools(from tools: [ToolCatalog.Definition]) -> [ToolCatalog.Definition] {
+    public static func allowedTools(from tools: [ToolCatalog.Definition]) -> [ToolCatalog.Definition] {
         let blocked: Set<String> = [
             definition.name,
             ToolCatalog.runCommand.name,

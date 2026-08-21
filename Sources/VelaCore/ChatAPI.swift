@@ -1,19 +1,24 @@
 import Foundation
-import VelaCore
 
-struct ProviderCredential: Sendable {
-    let token: String?
-    let accountID: String?
-    let isCodexOAuth: Bool
+public struct ProviderCredential: Sendable {
+
+    public init(token: String?, accountID: String?, isCodexOAuth: Bool) {
+        self.token = token
+        self.accountID = accountID
+        self.isCodexOAuth = isCodexOAuth
+    }
+    public let token: String?
+    public let accountID: String?
+    public let isCodexOAuth: Bool
 }
 
-final class CompatibleChatClient: @unchecked Sendable {
-    static let shared = CompatibleChatClient()
+public final class CompatibleChatClient: @unchecked Sendable {
+    public static let shared = CompatibleChatClient()
 
     private let session: URLSession
     private let decoder = JSONDecoder()
 
-    init() {
+    public init() {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 120
         configuration.timeoutIntervalForResource = 3_600
@@ -24,7 +29,7 @@ final class CompatibleChatClient: @unchecked Sendable {
     /// keyless metasearch, per the explicit "permanently free, no key"
     /// requirement (a commercial keyed API, or Ollama's own hosted search,
     /// were both ruled out for exactly that reason).
-    func searchWeb(query: String, endpoint: String) async throws -> [WebSearchResult] {
+    public func searchWeb(query: String, endpoint: String) async throws -> [WebSearchResult] {
         guard var components = URLComponents(string: endpoint), components.host != nil else {
             throw APIError.message("Invalid web search endpoint URL.")
         }
@@ -55,7 +60,7 @@ final class CompatibleChatClient: @unchecked Sendable {
     /// way to get fresh numbers is to make a real request and look at what
     /// comes back — `/models` is the cheapest one that exists everywhere,
     /// and the app already calls it routinely for discovery.
-    func probeQuotaHeaders(profile: ProviderProfile, credential: ProviderCredential) async -> QuotaSnapshot? {
+    public func probeQuotaHeaders(profile: ProviderProfile, credential: ProviderCredential) async -> QuotaSnapshot? {
         guard profile.kind.speaksOpenAIProtocol || profile.kind == .anthropic else { return nil }
         guard let url = try? endpointURL(profile: profile, path: "models") else { return nil }
         var request = URLRequest(url: url)
@@ -67,7 +72,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         return QuotaSnapshot(headers: http.allHeaderFields)
     }
 
-    func fetchModels(profile: ProviderProfile, credential: ProviderCredential) async throws -> [RemoteModel] {
+    public func fetchModels(profile: ProviderProfile, credential: ProviderCredential) async throws -> [RemoteModel] {
         if profile.kind == .codex && credential.isCodexOAuth {
             return ModelCatalog.curated(for: .codex)
         }
@@ -220,12 +225,12 @@ final class CompatibleChatClient: @unchecked Sendable {
     /// One progress line from Ollama's `/api/pull` NDJSON stream — real
     /// fields straight off the wire (`status`, `digest`, `total`,
     /// `completed`, `error`), no guessing at download size ahead of time.
-    struct OllamaPullProgress: Decodable, Sendable {
-        let status: String
-        let digest: String?
-        let total: Int64?
-        let completed: Int64?
-        let error: String?
+    public struct OllamaPullProgress: Decodable, Sendable {
+        public let status: String
+        public let digest: String?
+        public let total: Int64?
+        public let completed: Int64?
+        public let error: String?
     }
 
     private struct OllamaPullRequest: Encodable {
@@ -236,7 +241,7 @@ final class CompatibleChatClient: @unchecked Sendable {
     /// Streams live pull progress for an Ollama model — the same NDJSON
     /// `/api/pull` endpoint the `ollama pull` CLI itself uses, so the
     /// progress shown here is exactly what the terminal would show.
-    func pullOllamaModel(profile: ProviderProfile, name: String) -> AsyncThrowingStream<OllamaPullProgress, Error> {
+    public func pullOllamaModel(profile: ProviderProfile, name: String) -> AsyncThrowingStream<OllamaPullProgress, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -269,7 +274,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         }
     }
 
-    func streamChat(
+    public func streamChat(
         profile: ProviderProfile,
         credential: ProviderCredential,
         model: String,
@@ -515,7 +520,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         ]
     }
 
-    func streamChatEvents(
+    public func streamChatEvents(
         profile: ProviderProfile,
         credential: ProviderCredential,
         model: String,
@@ -551,7 +556,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         }
     }
 
-    func sendNonStreaming(
+    public func sendNonStreaming(
         profile: ProviderProfile,
         credential: ProviderCredential,
         model: String,
@@ -1142,7 +1147,7 @@ final class CompatibleChatClient: @unchecked Sendable {
         }
     }
 
-    static func check(response: URLResponse?, data: Data?) throws {
+    public static func check(response: URLResponse?, data: Data?) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
             if let data, let message = GenericErrorEnvelope.message(from: data), !message.isEmpty {
@@ -1160,7 +1165,7 @@ final class CompatibleChatClient: @unchecked Sendable {
     /// Streaming responses hand back an `AsyncBytes` sequence with no upfront
     /// body, so a non-2xx status has to be drained (capped, in case a
     /// misbehaving server streams forever) before its error detail is usable.
-    static func checkStream(response: URLResponse?, bytes: URLSession.AsyncBytes) async throws {
+    public static func checkStream(response: URLResponse?, bytes: URLSession.AsyncBytes) async throws {
         guard let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else { return }
         var collected = Data()
         for try await byte in bytes {
@@ -1173,14 +1178,14 @@ final class CompatibleChatClient: @unchecked Sendable {
     /// Local/self-hosted servers (Ollama, LM Studio, vLLM…) are commonly slow
     /// to warm up or load a model into memory; hosted providers respond fast
     /// and shouldn't make the user wait 20s to discover a typo'd endpoint.
-    static func discoveryTimeout(for kind: ProviderKind) -> TimeInterval {
+    public static func discoveryTimeout(for kind: ProviderKind) -> TimeInterval {
         switch kind {
         case .ollama, .lmStudio, .compatible: 20
         default: 8
         }
     }
 
-    static func requireCredential(profile: ProviderProfile, credential: ProviderCredential) throws {
+    public static func requireCredential(profile: ProviderProfile, credential: ProviderCredential) throws {
         guard profile.kind.requiresKey else { return }
         if profile.kind == .codex && credential.isCodexOAuth {
             guard credential.accountID != nil else {
@@ -1803,7 +1808,7 @@ private struct GenericErrorEnvelope: Decodable {
 /// the base so the .usage events the app stores always carry the whole
 /// reply's spend — previously every round overwrote the last, and a
 /// five-round tool reply recorded only its final hop (~5x undercount).
-struct ToolLoopUsage {
+public struct ToolLoopUsage {
     private var basePrompt = 0, baseCompletion = 0, baseCached = 0
     private var base5m = 0, base1h = 0
     private var roundPrompt: Int?, roundCompletion: Int?, roundCached: Int?
@@ -1818,7 +1823,7 @@ struct ToolLoopUsage {
     /// would multiply the count. Across rounds `finishRound()` folds the
     /// finished round into the base, because each round is its own
     /// billed request.
-    mutating func observe(
+    public mutating func observe(
         prompt: Int?,
         completion: Int?,
         cached: Int?,
@@ -1845,7 +1850,7 @@ struct ToolLoopUsage {
     }
 
     /// Call between rounds — folds the finished round into the base.
-    mutating func finishRound() {
+    public mutating func finishRound() {
         basePrompt += roundPrompt ?? 0
         baseCompletion += roundCompletion ?? 0
         baseCached += roundCached ?? 0

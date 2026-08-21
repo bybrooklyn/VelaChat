@@ -1,5 +1,6 @@
 import XCTest
 @testable import VelaChat
+@testable import VelaCore
 
 /// The prompt is assembled per request, and the gating is the point:
 /// telling a model about capabilities it doesn't have is how it ends up

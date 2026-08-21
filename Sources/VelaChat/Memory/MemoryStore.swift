@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import SQLite3
 
 /// The persistence layer behind VelaChat's memory: durable facts about
