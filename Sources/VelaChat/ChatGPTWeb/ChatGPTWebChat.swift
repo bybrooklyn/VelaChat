@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 
 /// Streaming conversation turns over ChatGPT Web — ported from the
 /// reference runtime's direct transport: sentinel prefetch, the

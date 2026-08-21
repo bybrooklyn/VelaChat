@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 
 /// The sidebar's little usage gauge — sits beside New Chat/search, opens
 /// a provider-tailored usage view. Hidden entirely for local providers

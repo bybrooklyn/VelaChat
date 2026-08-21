@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// Redaction is an egress control: a rule that silently stops matching is
 /// a leak, not a cosmetic bug. These tests pin each built-in shape and the

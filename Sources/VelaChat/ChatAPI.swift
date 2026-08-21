@@ -1797,21 +1797,6 @@ private struct GenericErrorEnvelope: Decodable {
     }
 }
 
-enum APIError: Error, LocalizedError {
-    case status(Int, String)
-    case message(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .status(let code, let detail):
-            let suffix = detail.isEmpty ? "" : " \(detail)"
-            return "Request failed (\(code)).\(suffix)"
-        case .message(let message): return message
-        }
-    }
-}
-
-
 /// Sums token usage across the rounds of one reply's tool loop. Within a
 /// single round providers report cumulative totals for that request (so
 /// the latest value wins); each finished round's totals then bank into

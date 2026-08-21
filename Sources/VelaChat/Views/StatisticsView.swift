@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 
 private struct ProviderUsageRow: View {
     @Environment(AppModel.self) private var appModel

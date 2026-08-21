@@ -1,5 +1,6 @@
 import XCTest
 @testable import VelaChat
+@testable import VelaCore
 
 /// The context readout used to divide characters by a flat 4. That's
 /// roughly right for English prose and wrong by 20–50% on code — always in
