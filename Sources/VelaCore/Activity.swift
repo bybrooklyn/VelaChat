@@ -295,7 +295,7 @@ public extension ChatMessage {
     /// Appends revealed text to both the canonical `content` and the
     /// trailing text segment, creating one if the timeline's tail is an
     /// activity (or empty).
-    public mutating func appendTimelineText(_ chunk: String) {
+    mutating func appendTimelineText(_ chunk: String) {
         guard !chunk.isEmpty else { return }
         content += chunk
         if case .text(let id, let existing) = segments.last {
@@ -311,7 +311,7 @@ public extension ChatMessage {
     /// call, nothing at all) starts a new one. Everything downstream that
     /// reads `reasoning` — export, alternates, the pre-segment fallback
     /// view — keeps working without knowing segments carry it now.
-    public mutating func appendTimelineReasoning(_ chunk: String) {
+    mutating func appendTimelineReasoning(_ chunk: String) {
         guard !chunk.isEmpty else { return }
         reasoning = (reasoning ?? "") + chunk
         if case .reasoning(let id, let existing) = segments.last {
@@ -325,15 +325,15 @@ public extension ChatMessage {
     /// reasoning block is the fallback for transcripts saved before that was
     /// possible, so it keys off this rather than off `reasoning` being
     /// non-empty — otherwise both would render the same chain twice.
-    public var hasTimelineReasoning: Bool {
+    var hasTimelineReasoning: Bool {
         segments.contains { if case .reasoning = $0 { return true } else { return false } }
     }
 
-    public mutating func appendActivity(_ record: ActivityRecord) {
+    mutating func appendActivity(_ record: ActivityRecord) {
         segments.append(.activity(record))
     }
 
-    public mutating func updateActivity(id: UUID, result: String, isError: Bool, finishedAt: Date? = nil) {
+    mutating func updateActivity(id: UUID, result: String, isError: Bool, finishedAt: Date? = nil) {
         for index in segments.indices.reversed() {
             if case .activity(var record) = segments[index], record.id == id {
                 record.result = result
@@ -348,7 +348,7 @@ public extension ChatMessage {
 
     /// Flips any still-running activity to an interrupted error — used when
     /// restoring a session that died mid-stream.
-    public mutating func reconcileRunningActivities() {
+    mutating func reconcileRunningActivities() {
         for index in segments.indices {
             if case .activity(var record) = segments[index], record.isRunning {
                 record.isRunning = false

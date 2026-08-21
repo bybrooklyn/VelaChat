@@ -497,5 +497,5 @@ public actor ChatGPTWebClient {
 public extension QuotaSnapshot {
     /// Empty snapshot for programmatic (non-header) sources like the
     /// ChatGPT usage probe.
-    public init() {}
+    init() {}
 }
