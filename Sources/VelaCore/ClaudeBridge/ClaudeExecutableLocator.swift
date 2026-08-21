@@ -10,7 +10,7 @@ import Foundation
 /// GUI-launched app inherits `launchd`'s minimal PATH, not the login
 /// shell's, so `/usr/bin/env claude` fails in the bundled app while
 /// working perfectly from a terminal. The same bug exists at SDK level.
-public enum ClaudeExecutableLocator {
+enum ClaudeExecutableLocator {
     public struct Located: Equatable {
         public var url: URL
         public var version: String?

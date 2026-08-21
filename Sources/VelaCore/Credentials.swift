@@ -114,7 +114,7 @@ public enum CodexAuth {
     }
 }
 
-public enum CodexError: Error, LocalizedError {
+enum CodexError: Error, LocalizedError {
     case cliMissing
 
     public var errorDescription: String? {
