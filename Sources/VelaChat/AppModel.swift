@@ -1883,10 +1883,6 @@ final class AppModel {
     }
 
     /// One-shot latch for an approval card's answer (see `executeCommand`).
-    final class DecisionGuard: @unchecked Sendable {
-        var answered = false
-    }
-
     /// run_command's gate. Read-only commands run immediately; everything
     /// else pauses the generation on a real approval card in the
     /// transcript. A denial goes back to the model as a normal tool
@@ -1924,23 +1920,15 @@ final class AppModel {
         }
 
         if needsPrompt {
-            let decision: CommandApproval.Decision = await withCheckedContinuation { continuation in
-                // The card can be answered exactly once; a stray second tap
-                // must not crash on a double resume. `decide` is only ever
-                // called from the card's buttons, i.e. the main actor.
-                let box = DecisionGuard()
-                let approval = CommandApproval(
+            let decision: CommandApproval.Decision = await withOneShotResume { resume in
+                pendingApproval = CommandApproval(
                     conversationID: conversationID,
                     command: command,
                     directory: directory,
                     reason: reason,
-                    trustFolderPath: trustFolderPath
-                ) { decision in
-                    guard !box.answered else { return }
-                    box.answered = true
-                    continuation.resume(returning: decision)
-                }
-                pendingApproval = approval
+                    trustFolderPath: trustFolderPath,
+                    decide: resume
+                )
             }
             pendingApproval = nil
             switch decision {
