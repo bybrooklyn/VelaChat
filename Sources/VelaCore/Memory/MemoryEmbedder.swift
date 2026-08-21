@@ -1,5 +1,4 @@
 import Foundation
-import VelaCore
 import NaturalLanguage
 
 /// Turns text into a vector, on device.
@@ -24,8 +23,8 @@ import NaturalLanguage
 /// the user's text off the machine. Until it is wired into the store, a
 /// nil vector simply means keyword search does the work alone, which is
 /// why every caller treats embeddings as optional rather than required.
-final class MemoryEmbedder: @unchecked Sendable {
-    static let shared = MemoryEmbedder()
+public final class MemoryEmbedder: @unchecked Sendable {
+    public static let shared = MemoryEmbedder()
 
     private let lock = NSLock()
     private var contextual: NLContextualEmbedding?
@@ -38,7 +37,7 @@ final class MemoryEmbedder: @unchecked Sendable {
     /// standard way to get one sentence vector out of a contextual model,
     /// and normalising means cosine similarity is a plain dot product
     /// with a stable 0…1 range for ranking.
-    func vector(for text: String) -> [Float]? {
+    public func vector(for text: String) -> [Float]? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         // A long message would otherwise be dominated by whatever it
@@ -96,7 +95,7 @@ final class MemoryEmbedder: @unchecked Sendable {
     /// Whether semantic recall is actually available — surfaced in
     /// Settings so "memory seems worse than expected" has a visible
     /// explanation instead of being a mystery.
-    var isSemanticAvailable: Bool {
+    public var isSemanticAvailable: Bool {
         lock.lock()
         defer { lock.unlock() }
         loadIfNeeded()
@@ -127,22 +126,22 @@ final class MemoryEmbedder: @unchecked Sendable {
 /// AGENTS.md, "OpenAI-compatible" is a claim rather than a guarantee, so
 /// `verify()` exists to make an endpoint prove it before the user trusts
 /// it with anything.
-struct RemoteEmbedding: Sendable {
-    var endpoint: URL
-    var model: String
-    var apiKey: String
+public struct RemoteEmbedding: Sendable {
+    public var endpoint: URL
+    public var model: String
+    public var apiKey: String
 
     /// Reads the stored opt-in. False unless the user explicitly turned it
     /// on: nothing about memory should start leaving the Mac because a
     /// default flipped.
-    static var isEnabled: Bool {
+    public static var isEnabled: Bool {
         Defaults.bool(DefaultsKey.remoteEmbeddingsEnabled, default: false)
     }
 
     /// The configured endpoint, or nil when the opt-in is off or the
     /// settings are incomplete. `apiKey` is supplied by the caller because
     /// keys live in the Keychain behind `ProviderStore`, never here.
-    static func configured(apiKey: String) -> RemoteEmbedding? {
+    public static func configured(apiKey: String) -> RemoteEmbedding? {
         guard isEnabled else { return nil }
         guard let raw = Defaults.string(DefaultsKey.remoteEmbeddingEndpoint),
               let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -156,7 +155,7 @@ struct RemoteEmbedding: Sendable {
     /// blocked egress, a dead endpoint and an unparseable answer stay
     /// distinguishable — a silent nil here would read as "this text just
     /// isn't embeddable" and hide a misconfiguration forever.
-    func vector(for text: String) async throws -> [Float] {
+    public func vector(for text: String) async throws -> [Float] {
         // The gate, before anything is serialised, let alone sent.
         try EgressPolicy.check(endpoint)
         var request = URLRequest(url: endpoint)
@@ -184,7 +183,7 @@ struct RemoteEmbedding: Sendable {
     /// What the Settings "Test" button calls: returns the dimension the
     /// endpoint actually produced, so the user sees proof rather than a
     /// green tick that only means "the request didn't throw".
-    func verify() async -> Result<Int, Error> {
+    public func verify() async -> Result<Int, Error> {
         do {
             return .success(try await vector(for: "User prefers concise answers.").count)
         } catch {

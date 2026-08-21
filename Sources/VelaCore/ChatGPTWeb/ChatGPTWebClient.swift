@@ -49,9 +49,9 @@ public actor ChatGPTWebClient {
     private var cookie: String?
     private var accessToken: String?
     private var tokenExpiresAt: Date?
-    private(set) var accountID: String?
-    private(set) var accountLabel: String?
-    private(set) var planName: String?
+    public private(set) var accountID: String?
+    public private(set) var accountLabel: String?
+    public private(set) var planName: String?
     private var refreshTask: Task<String, Error>?
     private var keepAliveTask: Task<Void, Never>?
     private var modelCache: (at: Date, models: [RemoteModel])?

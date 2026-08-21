@@ -1,5 +1,4 @@
 import Foundation
-import VelaCore
 import SQLite3
 
 /// The persistence layer behind VelaChat's memory: durable facts about
@@ -16,59 +15,59 @@ import SQLite3
 /// Every failure here is non-fatal by design: memory is an enhancement,
 /// and a broken index must degrade to "no results", never to a crash or
 /// a blocked reply.
-actor MemoryStore {
-    static let shared = MemoryStore()
+public actor MemoryStore {
+    public static let shared = MemoryStore()
 
     /// `confirmed` is what `save_memory` and direct user edits create
     /// today — someone actually said or approved this. `inferred` is for
     /// a future background extractor that guesses facts from conversation
     /// without asking; those must still surface in recall, just ranked
     /// below anything a person actually confirmed. See `recall`'s scoring.
-    enum FactTier: String, Sendable {
+    public enum FactTier: String, Sendable {
         case confirmed
         case inferred
     }
 
-    struct Fact: Identifiable, Sendable, Equatable {
-        var id: UUID
-        var content: String
-        var topic: String?
-        var createdAt: Date
-        var updatedAt: Date
+    public struct Fact: Identifiable, Sendable, Equatable {
+        public var id: UUID
+        public var content: String
+        public var topic: String?
+        public var createdAt: Date
+        public var updatedAt: Date
         /// How often this fact has actually been recalled into a reply —
         /// the signal for what's worth keeping when memory grows.
-        var useCount: Int
+        public var useCount: Int
         /// Where it came from, so the user can always ask "why do you
         /// think that?" and get a real answer.
-        var sourceConversationID: UUID?
-        var tier: FactTier
+        public var sourceConversationID: UUID?
+        public var tier: FactTier
     }
 
     /// One rolling summary per conversation. The generated text itself
     /// comes from outside this file; this is only the storage contract.
-    struct Rollup: Sendable, Equatable {
-        var conversationID: UUID
-        var content: String
-        var createdAt: Date
-        var updatedAt: Date
+    public struct Rollup: Sendable, Equatable {
+        public var conversationID: UUID
+        public var content: String
+        public var createdAt: Date
+        public var updatedAt: Date
     }
 
-    struct Chunk: Sendable {
-        var id: Int64
-        var conversationID: UUID
-        var messageID: UUID
-        var role: String
-        var text: String
-        var createdAt: Date
+    public struct Chunk: Sendable {
+        public var id: Int64
+        public var conversationID: UUID
+        public var messageID: UUID
+        public var role: String
+        public var text: String
+        public var createdAt: Date
     }
 
     /// A retrieval hit, with the score that produced it so the UI can
     /// explain itself rather than presenting recall as magic.
-    struct Hit: Sendable {
-        enum Source: Sendable { case fact(UUID), chunk(conversationID: UUID, messageID: UUID) }
-        var source: Source
-        var text: String
-        var score: Double
+    public struct Hit: Sendable {
+        public enum Source: Sendable { case fact(UUID), chunk(conversationID: UUID, messageID: UUID) }
+        public var source: Source
+        public var text: String
+        public var score: Double
     }
 
     private var database: OpaquePointer?
@@ -85,13 +84,13 @@ actor MemoryStore {
         return base.appendingPathComponent("memory.sqlite")
     }
 
-    init(databaseURL: URL? = nil) {
+    public init(databaseURL: URL? = nil) {
         overrideURL = databaseURL
     }
 
     // MARK: - Lifecycle
 
-    func open() {
+    public func open() {
         guard database == nil else { return }
         var handle: OpaquePointer?
         guard sqlite3_open_v2(databaseURL.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK else {
@@ -298,18 +297,18 @@ actor MemoryStore {
 
     /// What a write actually did, for the paths that have to tell the user
     /// (or the model) which of the two things happened.
-    struct WriteResult: Sendable {
-        let id: UUID
+    public struct WriteResult: Sendable {
+        public let id: UUID
         /// The stored text, after `MemoryPhrasing.normalize` — the caller
         /// asked to save something, and this is what memory now says.
-        let content: String
+        public let content: String
         /// True when a near-identical fact already existed and was updated
         /// in place rather than twinned.
-        let didMerge: Bool
+        public let didMerge: Bool
     }
 
     /// The model-facing outcome of `save_memory`.
-    enum CaptureOutcome: Sendable {
+    public enum CaptureOutcome: Sendable {
         case saved(String)
         case merged(String)
         /// Already carries the reason, phrased for the model.
@@ -324,7 +323,7 @@ actor MemoryStore {
     /// model saved something on nearly every turn — task state, one-off
     /// details, its own summaries — and no amount of prose stopped it.
     /// A refusal with a reason does, and it costs one tool round.
-    func capture(content: String, topic: String?, sourceConversationID: UUID?) -> CaptureOutcome {
+    public func capture(content: String, topic: String?, sourceConversationID: UUID?) -> CaptureOutcome {
         if let rejection = MemoryCapture.rejection(for: content) {
             return .rejected(rejection.message)
         }
@@ -343,7 +342,7 @@ actor MemoryStore {
     /// to solve. Phrasing and dedupe apply to everything, because both are
     /// about the shape of the store rather than about who is writing.
     @discardableResult
-    func write(content: String, topic: String?, sourceConversationID: UUID?, tier: FactTier = .confirmed) -> WriteResult? {
+    public func write(content: String, topic: String?, sourceConversationID: UUID?, tier: FactTier = .confirmed) -> WriteResult? {
         open()
         let normalized = MemoryPhrasing.normalize(content)
         guard !normalized.isEmpty else { return nil }
@@ -377,7 +376,7 @@ actor MemoryStore {
         return WriteResult(id: id, content: normalized, didMerge: false)
     }
 
-    func saveFact(content: String, topic: String?, sourceConversationID: UUID?, tier: FactTier = .confirmed) -> UUID? {
+    public func saveFact(content: String, topic: String?, sourceConversationID: UUID?, tier: FactTier = .confirmed) -> UUID? {
         write(content: content, topic: topic, sourceConversationID: sourceConversationID, tier: tier)?.id
     }
 
@@ -411,7 +410,7 @@ actor MemoryStore {
     /// `saveFact`, just tagged so `recall` ranks it below anything the
     /// user actually confirmed.
     @discardableResult
-    func saveInferredFact(content: String, topic: String?, sourceConversationID: UUID?) -> UUID? {
+    public func saveInferredFact(content: String, topic: String?, sourceConversationID: UUID?) -> UUID? {
         saveFact(content: content, topic: topic, sourceConversationID: sourceConversationID, tier: .inferred)
     }
 
@@ -423,7 +422,7 @@ actor MemoryStore {
     /// Always writes `confirmed`: a fact carried over from the user's own
     /// list, or edited by hand, is confirmed by definition even if the row
     /// started out some other way.
-    func upsertFact(id: UUID, content: String, topic: String?) {
+    public func upsertFact(id: UUID, content: String, topic: String?) {
         open()
         // Normalized like every other write, so a fact carried in by the
         // migration reads the same as one saved today — which is also what
@@ -448,7 +447,7 @@ actor MemoryStore {
         sqlite3_step(statement)
     }
 
-    func updateFact(id: UUID, content: String?, topic: String?) {
+    public func updateFact(id: UUID, content: String?, topic: String?) {
         open()
         // Normalized here too: an edit is a write, and a fact edited into
         // a different voice would stop matching its own duplicates.
@@ -474,7 +473,7 @@ actor MemoryStore {
         }
     }
 
-    func deleteFact(id: UUID) {
+    public func deleteFact(id: UUID) {
         open()
         guard let statement = prepare("DELETE FROM facts WHERE id = ?;") else { return }
         defer { sqlite3_finalize(statement) }
@@ -488,14 +487,14 @@ actor MemoryStore {
     /// the rest of the process, so everything in it would go on being
     /// recalled until the app was quit. Emptying the tables is what makes
     /// the reset take effect immediately.
-    func deleteEverything() {
+    public func deleteEverything() {
         open()
         execute("DELETE FROM facts;")
         execute("DELETE FROM chunks;")
         execute("DELETE FROM rollups;")
     }
 
-    func allFacts() -> [Fact] {
+    public func allFacts() -> [Fact] {
         open()
         guard let statement = prepare("SELECT id, content, topic, created_at, updated_at, use_count, source_conversation, tier FROM facts ORDER BY updated_at DESC;") else { return [] }
         defer { sqlite3_finalize(statement) }
@@ -516,7 +515,7 @@ actor MemoryStore {
         return facts
     }
 
-    func noteFactUsed(_ ids: [UUID]) {
+    public func noteFactUsed(_ ids: [UUID]) {
         open()
         for id in ids {
             guard let statement = prepare("UPDATE facts SET use_count = use_count + 1 WHERE id = ?;") else { continue }
@@ -538,7 +537,7 @@ actor MemoryStore {
     /// Idempotent per (message, passage): re-running the backfill can't
     /// create duplicates, because `UNIQUE(message_id, passage_index)` and
     /// `INSERT OR IGNORE` do that work rather than a caller having to.
-    func index(messageID: UUID, conversationID: UUID, role: String, text messageText: String, createdAt: Date) {
+    public func index(messageID: UUID, conversationID: UUID, role: String, text messageText: String, createdAt: Date) {
         open()
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         // Very short messages ("ok", "thanks") are noise in a semantic
@@ -562,7 +561,7 @@ actor MemoryStore {
         }
     }
 
-    func isIndexed(messageID: UUID) -> Bool {
+    public func isIndexed(messageID: UUID) -> Bool {
         open()
         guard let statement = prepare("SELECT 1 FROM chunks WHERE message_id = ? LIMIT 1;") else { return false }
         defer { sqlite3_finalize(statement) }
@@ -572,7 +571,7 @@ actor MemoryStore {
 
     /// Drops one message (all its passages) from the index — the "don't
     /// use this again" action, which has to actually stop it coming back.
-    func forgetMessage(_ messageID: UUID) {
+    public func forgetMessage(_ messageID: UUID) {
         open()
         guard let statement = prepare("DELETE FROM chunks WHERE message_id = ?;") else { return }
         defer { sqlite3_finalize(statement) }
@@ -580,7 +579,7 @@ actor MemoryStore {
         sqlite3_step(statement)
     }
 
-    func forgetConversation(_ conversationID: UUID) {
+    public func forgetConversation(_ conversationID: UUID) {
         open()
         if let statement = prepare("DELETE FROM chunks WHERE conversation_id = ?;") {
             bindText(statement, 1, conversationID.uuidString)
@@ -599,7 +598,7 @@ actor MemoryStore {
 
     /// Distinct messages, not chunk rows — one message can now be several
     /// passages, and a rollup isn't a message the user sent at all.
-    func indexedMessageCount() -> Int {
+    public func indexedMessageCount() -> Int {
         open()
         guard let statement = prepare("SELECT COUNT(DISTINCT message_id) FROM chunks WHERE role != ?;") else { return 0 }
         defer { sqlite3_finalize(statement) }
@@ -614,7 +613,7 @@ actor MemoryStore {
     /// `MemoryEmbedder`'s 2000-char cap exists to limit, one level up).
     /// Short text is returned as a single passage — most messages never
     /// hit this at all.
-    static func passages(for text: String) -> [String] {
+    public static func passages(for text: String) -> [String] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         guard trimmed.count > maxPassageChars else { return [trimmed] }
@@ -663,7 +662,7 @@ actor MemoryStore {
     /// through the exact same FTS query as real messages, with no
     /// rollup-specific retrieval path.
     @discardableResult
-    func upsertRollup(conversationID: UUID, content: String) -> Bool {
+    public func upsertRollup(conversationID: UUID, content: String) -> Bool {
         open()
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -699,7 +698,7 @@ actor MemoryStore {
         return true
     }
 
-    func rollup(for conversationID: UUID) -> Rollup? {
+    public func rollup(for conversationID: UUID) -> Rollup? {
         open()
         guard let statement = prepare("SELECT content, created_at, updated_at FROM rollups WHERE conversation_id = ?;") else { return nil }
         defer { sqlite3_finalize(statement) }
@@ -716,7 +715,7 @@ actor MemoryStore {
     /// Removes both the summary itself and its mirrored, searchable copy —
     /// unlike `forgetConversation`/`forgetMessage`, which only ever touch
     /// the searchable copy, this is a real delete of the rollup.
-    func deleteRollup(for conversationID: UUID) {
+    public func deleteRollup(for conversationID: UUID) {
         open()
         if let statement = prepare("DELETE FROM rollups WHERE conversation_id = ?;") {
             bindText(statement, 1, conversationID.uuidString)
@@ -769,7 +768,7 @@ actor MemoryStore {
     /// discounted (`contextTermDiscount`) rather than treated as equal to
     /// the query's own words, so a message that only the context happens
     /// to mention still ranks below one the query itself actually matched.
-    func recall(query: String, context: String = "", factLimit: Int = 6, chunkLimit: Int = 4, excluding conversationID: UUID? = nil) -> [Hit] {
+    public func recall(query: String, context: String = "", factLimit: Int = 6, chunkLimit: Int = 4, excluding conversationID: UUID? = nil) -> [Hit] {
         open()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -915,7 +914,7 @@ actor MemoryStore {
     /// embeddings failed to provide and that the whole design rests on.
     /// BM25 then orders what did match, and the embedding re-rank in
     /// `recall` reorders that.
-    static func matchExpression(for terms: [String]) -> String {
+    public static func matchExpression(for terms: [String]) -> String {
         terms.map { "\"\($0)\"*" }.joined(separator: " OR ")
     }
 
@@ -957,7 +956,7 @@ actor MemoryStore {
     /// function with no access to term frequencies across the store — and
     /// longer words are reliably more specific than short ones in
     /// practice ("budgets" carries the query; "just" and "real" don't).
-    static func searchTerms(_ query: String) -> [String] {
+    public static func searchTerms(_ query: String) -> [String] {
         let stopWords: Set<String> = [
             "the", "and", "for", "with", "that", "this", "what", "where", "when", "which",
             "was", "are", "you", "your", "about", "from", "how", "did", "does", "should",
@@ -1006,15 +1005,15 @@ actor MemoryStore {
 
     // MARK: - Vector helpers
 
-    static func encode(_ vector: [Float]) -> Data {
+    public static func encode(_ vector: [Float]) -> Data {
         vector.withUnsafeBufferPointer { Data(buffer: $0) }
     }
 
-    static func decode(_ data: Data) -> [Float] {
+    public static func decode(_ data: Data) -> [Float] {
         data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
     }
 
-    static func cosine(_ a: [Float], _ b: [Float]) -> Double {
+    public static func cosine(_ a: [Float], _ b: [Float]) -> Double {
         guard a.count == b.count, !a.isEmpty else { return 0 }
         var dot: Double = 0, normA: Double = 0, normB: Double = 0
         for index in a.indices {

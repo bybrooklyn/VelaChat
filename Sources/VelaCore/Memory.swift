@@ -1,5 +1,4 @@
 import Foundation
-import VelaCore
 
 /// A durable fact that persists across every conversation, not just the one
 /// it was learned in. Global rather than per-conversation, on purpose: the
@@ -13,23 +12,23 @@ import VelaCore
 /// mirror the UI can render synchronously. It stays `Codable` because it
 /// is also the shape of the pre-store `velachat.memories` array that
 /// `LegacyMemoryMigration` decodes once and then deletes.
-struct MemoryItem: Identifiable, Codable, Equatable {
-    let id: UUID
-    var content: String
-    var createdAt: Date
+public struct MemoryItem: Identifiable, Codable, Equatable {
+    public let id: UUID
+    public var content: String
+    public var createdAt: Date
     /// Project/topic grouping — supplied by the model when saving, editable
     /// by the user in Settings. `nil` groups under "General" (and on every
     /// memory saved before this field existed).
-    var topic: String?
+    public var topic: String?
 
-    init(id: UUID = UUID(), content: String, createdAt: Date = Date(), topic: String? = nil) {
+    public init(id: UUID = UUID(), content: String, createdAt: Date = Date(), topic: String? = nil) {
         self.id = id
         self.content = content
         self.createdAt = createdAt
         self.topic = topic
     }
 
-    var displayTopic: String {
+    public var displayTopic: String {
         let trimmed = topic?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? "General" : trimmed
     }
@@ -51,11 +50,11 @@ struct MemoryItem: Identifiable, Codable, Equatable {
 ///
 /// Pure and static so it can be unit-tested directly, with no store, no
 /// database, and no model call.
-enum MemoryPhrasing {
+public enum MemoryPhrasing {
     /// Idempotent: normalising an already-normalised fact returns it
     /// unchanged, which is what makes it safe to run on every write
     /// including the legacy migration's re-save.
-    static func normalize(_ raw: String) -> String {
+    public static func normalize(_ raw: String) -> String {
         var text = collapsingWhitespace(raw)
         text = strippingWrappingQuotes(text)
         text = strippingPreamble(text)
@@ -73,7 +72,7 @@ enum MemoryPhrasing {
     /// Word set used for dedupe comparison: case-folded, punctuation-free,
     /// and with the canonical subject removed so "User prefers X" and
     /// "User strongly prefers X" are compared on what actually differs.
-    static func comparisonTokens(_ text: String) -> Set<String> {
+    public static func comparisonTokens(_ text: String) -> Set<String> {
         let words = text
             .lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -93,7 +92,7 @@ enum MemoryPhrasing {
     /// works mainly in Swift" 0.75, "User prefers concise answers" vs
     /// "User strongly prefers concise answers" 0.75. A missed merge costs
     /// a duplicate row; a wrong merge destroys a true fact.
-    static func similarity(_ a: String, _ b: String) -> Double {
+    public static func similarity(_ a: String, _ b: String) -> Double {
         let left = comparisonTokens(a)
         let right = comparisonTokens(b)
         guard !left.isEmpty, !right.isEmpty else { return 0 }
@@ -260,7 +259,7 @@ enum MemoryPhrasing {
     /// this file recognises are conjugated; anything else is returned
     /// untouched, original casing and all, on the assumption that it is
     /// already in third person.
-    static func thirdPerson(_ verb: String) -> String {
+    public static func thirdPerson(_ verb: String) -> String {
         let lower = verb.lowercased()
         if let irregular = irregulars[lower] { return irregular }
         if modals.contains(lower) { return lower }
@@ -340,8 +339,8 @@ enum MemoryPhrasing {
 /// decidable from the fact alone — the write path never sees the
 /// transcript. Duplicates of things already *stored* are handled instead,
 /// by dedupe in `MemoryStore.saveFact`.
-enum MemoryCapture {
-    enum Rejection: Equatable, Sendable {
+public enum MemoryCapture {
+    public enum Rejection: Equatable, Sendable {
         case empty
         case tooShort
         case tooLong(Int)
@@ -356,7 +355,7 @@ enum MemoryCapture {
         /// What the tool returns to the model. Every case names the fix,
         /// because "rejected" alone just produces a retry of the same
         /// thing.
-        var message: String {
+        public var message: String {
             switch self {
             case .empty:
                 return "Error: the memory content is empty."
@@ -379,7 +378,7 @@ enum MemoryCapture {
     /// Runs against the *raw* text, before `MemoryPhrasing.normalize`.
     /// Order matters: normalization rewrites "I " to "User ", which would
     /// disguise exactly the assistant-voice sentences this has to catch.
-    static func rejection(for raw: String) -> Rejection? {
+    public static func rejection(for raw: String) -> Rejection? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .empty }
         if trimmed.count > Limits.memoryFactCharacters { return .tooLong(Limits.memoryFactCharacters) }
@@ -427,7 +426,7 @@ enum MemoryCapture {
     /// Chosen for precision over coverage: every phrase here is one that
     /// makes a *durable* fact read wrong, so a false rejection is close to
     /// impossible and the model just rephrases.
-    static let taskStatePhrases = [
+    public static let taskStatePhrases = [
         "today", "tomorrow", "yesterday", "tonight",
         "this morning", "this afternoon", "this evening",
         "right now", "just now", "at the moment", "for now", "so far",
@@ -441,7 +440,7 @@ enum MemoryCapture {
     /// The model describing itself. A saved memory in this voice is a
     /// self-reinforcing loop: it recalls its own summary as if the user
     /// had stated it.
-    static let assistantVoicePhrases = [
+    public static let assistantVoicePhrases = [
         "i suggested", "i recommended", "i told", "i explained", "i mentioned",
         "i said", "i wrote", "i created", "i generated", "i provided", "i helped",
         "as i mentioned", "as i said", "my previous", "the assistant", "as an ai",
@@ -466,13 +465,13 @@ enum MemoryCapture {
 /// the legacy copy. A verification failure leaves the legacy array
 /// completely untouched and the migration flag unset, so the next launch
 /// tries again from an intact source.
-enum LegacyMemoryMigration {
+public enum LegacyMemoryMigration {
     /// Returns whether the migration is complete — either it just
     /// finished and verified, or there was nothing to migrate, or it had
     /// already run. `false` means the legacy data is still there,
     /// untouched, and will be retried.
     @discardableResult
-    static func run(store: MemoryStore, defaults: UserDefaults) async -> Bool {
+    public static func run(store: MemoryStore, defaults: UserDefaults) async -> Bool {
         if defaults.object(forKey: DefaultsKey.memoriesMigrationV1) != nil { return true }
 
         guard let data = defaults.data(forKey: DefaultsKey.memories),

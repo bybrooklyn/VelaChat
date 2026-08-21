@@ -1,5 +1,4 @@
 import Foundation
-import VelaCore
 import Observation
 
 /// Keeps the memory index in step with the conversation history.
@@ -10,24 +9,24 @@ import Observation
 /// few seconds behind is invisible, while a stuttering transcript is not.
 @MainActor
 @Observable
-final class MemoryIndexer {
+public final class MemoryIndexer {
     /// Progress for the Settings screen, so a long backfill is visible
     /// rather than mysterious background CPU.
-    private(set) var isBackfilling = false
-    private(set) var backfilled = 0
-    private(set) var backfillTotal = 0
-    private(set) var indexedMessages = 0
+    public private(set) var isBackfilling = false
+    public private(set) var backfilled = 0
+    public private(set) var backfillTotal = 0
+    public private(set) var indexedMessages = 0
 
     private let store: MemoryStore
     private var backfillTask: Task<Void, Never>?
 
-    init(store: MemoryStore = .shared) {
+    public init(store: MemoryStore = .shared) {
         self.store = store
     }
 
     /// Indexes one finished exchange. Called when a reply completes, not
     /// per token.
-    func indexFinished(conversation: Conversation, assistantID: UUID) {
+    public func indexFinished(conversation: Conversation, assistantID: UUID) {
         let messages = conversation.messages
             .filter { !$0.isSynthetic && !$0.content.isEmpty }
             .suffix(2)
@@ -52,7 +51,7 @@ final class MemoryIndexer {
     /// searchable within seconds and older ones fill in behind them.
     /// Resumable: anything already indexed is skipped, so an interrupted
     /// pass costs nothing on the next launch.
-    func startBackfill(conversations: [Conversation]) {
+    public func startBackfill(conversations: [Conversation]) {
         guard backfillTask == nil else { return }
         let work = conversations
             .sorted { $0.updatedAt > $1.updatedAt }
@@ -93,13 +92,13 @@ final class MemoryIndexer {
         }
     }
 
-    func cancelBackfill() {
+    public func cancelBackfill() {
         backfillTask?.cancel()
         backfillTask = nil
         isBackfilling = false
     }
 
-    func forget(conversationID: UUID) {
+    public func forget(conversationID: UUID) {
         Task { [store] in
             await store.forgetConversation(conversationID)
             let total = await store.indexedMessageCount()
@@ -107,7 +106,7 @@ final class MemoryIndexer {
         }
     }
 
-    func refreshCount() {
+    public func refreshCount() {
         Task { [store] in
             let total = await store.indexedMessageCount()
             await MainActor.run { self.indexedMessages = total }
@@ -117,21 +116,26 @@ final class MemoryIndexer {
 
 /// One thing that informed a reply, kept alongside the message so the
 /// user can see what was recalled and correct it.
-struct MemoryRecall: Identifiable, Equatable, Sendable {
-    enum Origin: Equatable, Sendable {
+public struct MemoryRecall: Identifiable, Equatable, Sendable {
+
+    public init(origin: Origin, text: String) {
+        self.origin = origin
+        self.text = text
+    }
+    public enum Origin: Equatable, Sendable {
         case fact(UUID)
         case conversation(id: UUID, messageID: UUID)
     }
-    var id: String {
+    public var id: String {
         switch origin {
         case .fact(let factID): "fact:\(factID)"
         case .conversation(_, let messageID): "chat:\(messageID)"
         }
     }
-    let origin: Origin
-    let text: String
+    public let origin: Origin
+    public let text: String
 
-    var isFact: Bool {
+    public var isFact: Bool {
         if case .fact = origin { return true }
         return false
     }
