@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import PDFKit
 
 /// A file attached to a message. Images get real multimodal wiring (base64

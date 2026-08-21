@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// Persisted "always allow" rules decide what runs on the user's machine
 /// without asking, so — like `CommandClassifierTests` — a regression here

@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import Observation
 
 /// Egress controls: what may leave this machine, and in what form.

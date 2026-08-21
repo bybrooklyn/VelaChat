@@ -7,50 +7,50 @@ import Foundation
 /// hard: knowing whether two limits were deliberately different or just
 /// drifted apart, and changing any of them with confidence. Naming them
 /// also documents what each one is protecting against.
-enum Limits {
+public enum Limits {
     // MARK: - Truncation
 
     /// A single tool result persisted into history. The model already saw
     /// the full text; this only bounds what gets stored and re-sent.
-    static let toolResultBytes = 4_096
+    public static let toolResultBytes = 4_096
     /// Clipboard and schedule reads — enough to be useful, bounded so one
     /// enormous paste can't dominate the context.
-    static let systemReadBytes = 8_192
+    public static let systemReadBytes = 8_192
     /// One subagent's returned report.
-    static let subagentOutputBytes = 8_000
+    public static let subagentOutputBytes = 8_000
     /// A skill's body, and the total across all active skills.
-    static let skillBodyBytes = 8_000
-    static let skillTotalBytes = 20_000
+    public static let skillBodyBytes = 8_000
+    public static let skillTotalBytes = 20_000
     /// Command output surfaced to the model.
-    static let commandOutputBytes = 20_000
+    public static let commandOutputBytes = 20_000
     /// Remembered run_command prefix rules (and denials) kept per attached
     /// folder. A ceiling, not a target: this list is written one deliberate
     /// button press at a time, and an unbounded one would grow forever in
     /// preferences.
-    static let commandRulesPerFolder = 50
+    public static let commandRulesPerFolder = 50
     /// Conversation titles, and exported filenames derived from them.
-    static let titleCharacters = 60
+    public static let titleCharacters = 60
     /// One stored memory. A durable fact about a person is a sentence;
     /// anything past this is a summary of a conversation wearing a fact's
     /// clothes, and `MemoryCapture` refuses it rather than truncating —
     /// half a fact is worse than none.
-    static let memoryFactCharacters = 240
+    public static let memoryFactCharacters = 240
 
     /// An older round's tool result, as replayed into *later* rounds of
     /// the same reply. Distinct from `toolResultBytes` above, which bounds
     /// what gets stored: this bounds what gets re-sent and re-billed on
     /// every subsequent round. Generous enough that a condensed result
     /// still says what it found.
-    static let replayedToolResultBytes = 1_024
+    public static let replayedToolResultBytes = 1_024
     /// How many of the most recent tool rounds replay their results in
     /// full. Two, because the round just finished and the one before it are
     /// what the model is still actually reasoning over; anything older it
     /// has already folded into its plan.
-    static let toolResultReplayRounds = 2
+    public static let toolResultReplayRounds = 2
 
     /// Attachment bytes above this go to the blob store instead of into
     /// the conversation history (see `AttachmentStore`).
-    static let inlineAttachmentBytes = 8_192
+    public static let inlineAttachmentBytes = 8_192
 
     // MARK: - Timeouts (seconds)
 
@@ -60,21 +60,21 @@ enum Limits {
     /// quit mid-stream doesn't lose the turn. Low enough to keep the loss
     /// window small, high enough that encoding every conversation doesn't
     /// compete with the stream itself.
-    static let streamingPersistInterval: TimeInterval = 4
+    public static let streamingPersistInterval: TimeInterval = 4
 
-    static let streamIdleTimeout: TimeInterval = 180
+    public static let streamIdleTimeout: TimeInterval = 180
     /// Ordinary JSON round trips.
-    static let requestTimeout: TimeInterval = 60
+    public static let requestTimeout: TimeInterval = 60
     /// Auth and discovery calls, where waiting long is worse than failing.
-    static let authTimeout: TimeInterval = 30
+    public static let authTimeout: TimeInterval = 30
     /// Cheap probes whose failure is never fatal (quota headers, warm-up).
-    static let probeTimeout: TimeInterval = 15
+    public static let probeTimeout: TimeInterval = 15
     /// One tool call. Bounds a hung tool without cutting off slow-but-real
     /// work like a large fetch.
-    static let toolTimeout: TimeInterval = 120
+    public static let toolTimeout: TimeInterval = 120
     /// An MCP server's tools/list at send time — a dead server should cost
     /// seconds, not half a minute of stalled reply.
-    static let mcpListTimeout: TimeInterval = 10
+    public static let mcpListTimeout: TimeInterval = 10
 
     // MARK: - Loops
 
@@ -87,13 +87,13 @@ enum Limits {
     /// Before those, every extra round re-sent and re-billed the entire
     /// growing exchange at full price, so a higher budget would have made
     /// the quadratic blow-up worse rather than buying more work done.
-    static let maxToolRounds = 16
+    public static let maxToolRounds = 16
     /// Concurrent subagents.
-    static let maxSubagents = 3
+    public static let maxSubagents = 3
     /// Silent continuations after a provider truncates at its output cap.
-    static let maxAutoContinues = 2
+    public static let maxAutoContinues = 2
     /// Automatic retries for transient failures before the error surfaces.
-    static let maxTransientRetries = 2
+    public static let maxTransientRetries = 2
 
     // MARK: - Retry backoff (seconds)
 
@@ -103,12 +103,12 @@ enum Limits {
     /// that was trying again. This is short enough that a human waits
     /// through it rather than assuming it's broken, while still giving a
     /// blip (a dropped packet, a momentary 503) a real chance to clear.
-    static let transientRetryFirstDelay: TimeInterval = 1.0
+    public static let transientRetryFirstDelay: TimeInterval = 1.0
     /// Delay before the second automatic retry — longer than the first
     /// because a failure that survived one retry is more likely to need
     /// real recovery time (e.g. a provider mid-restart), not just a blip.
-    static let transientRetryFollowupDelay: TimeInterval = 3.0
+    public static let transientRetryFollowupDelay: TimeInterval = 3.0
     /// Random spread added to each retry delay so many concurrent tabs
     /// hitting the same flaky provider don't all retry in lockstep.
-    static let transientRetryJitter: TimeInterval = 0.5
+    public static let transientRetryJitter: TimeInterval = 0.5
 }

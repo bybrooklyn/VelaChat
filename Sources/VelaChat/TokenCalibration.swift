@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import Observation
 
 /// The characters-per-token model the context readout runs on, and the

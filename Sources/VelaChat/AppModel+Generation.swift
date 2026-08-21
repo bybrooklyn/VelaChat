@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import SwiftUI
 import AppKit
 import UserNotifications

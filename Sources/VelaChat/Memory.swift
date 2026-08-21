@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 
 /// A durable fact that persists across every conversation, not just the one
 /// it was learned in. Global rather than per-conversation, on purpose: the

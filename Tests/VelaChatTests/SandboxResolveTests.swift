@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// `SandboxManager.resolve` is the only thing standing between a
 /// model-supplied path and the rest of the disk — there is no process

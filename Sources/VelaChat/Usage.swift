@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import Observation
 
 /// Local, per-provider usage accounting — the layer that makes

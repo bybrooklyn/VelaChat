@@ -32,16 +32,16 @@ import Foundation
 /// whose following line is a half-typed list marker waits one tick (a bare
 /// `-` becomes a list item the moment its space arrives, which would
 /// retroactively un-split a block already on screen).
-enum StreamingMarkdown {
-    struct Split: Equatable {
+public enum StreamingMarkdown {
+    public struct Split: Equatable {
         /// Settled blocks, in order, each still carrying its own trailing
         /// blank line(s) so concatenation reproduces the input byte for byte.
-        var blocks: [String]
+        public var blocks: [String]
         /// The still-growing fragment. Renders as plain text.
-        var tail: String
+        public var tail: String
     }
 
-    static func split(_ text: String) -> Split {
+    public static func split(_ text: String) -> Split {
         guard !text.isEmpty else { return Split(blocks: [], tail: "") }
 
         var blocks: [String] = []

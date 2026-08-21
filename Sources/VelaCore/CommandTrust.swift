@@ -32,8 +32,8 @@ import Foundation
 /// and test bodies — code the model may have written moments earlier —
 /// as the user, unconfined. See `SandboxManager` for why no confinement
 /// exists, and the README's security note for the honest version.
-enum CommandTrust {
-    enum Decision: Equatable {
+public enum CommandTrust {
+    public enum Decision: Equatable {
         /// A stored rule covers this command; run it without asking.
         case allowed(rule: String)
         /// Ask the user. Also what a previously-denied command gets, even
@@ -60,7 +60,7 @@ enum CommandTrust {
 
     /// The rules remembered for an attached folder. A nil path (a sandbox
     /// workspace) has none, and never will.
-    static func rules(for folderPath: String?) -> [String] {
+    public static func rules(for folderPath: String?) -> [String] {
         guard let folderPath, !folderPath.isEmpty else { return [] }
         return load()[folderPath]?.rules ?? []
     }
@@ -69,7 +69,7 @@ enum CommandTrust {
     /// nothing for a sandbox workspace or a rule that isn't one simple
     /// command — the caller is a UI button, and refusing loudly there
     /// would be noise about a state the UI doesn't offer.
-    static func allow(rule: String, for folderPath: String?) {
+    public static func allow(rule: String, for folderPath: String?) {
         guard let folderPath, !folderPath.isEmpty else { return }
         let trimmed = rule.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, CommandRunner.isSingleSimpleCommand(trimmed) else { return }
@@ -84,7 +84,7 @@ enum CommandTrust {
 
     /// Records a denial so no later rule can auto-approve this exact
     /// command.
-    static func noteDenied(_ command: String, for folderPath: String?) {
+    public static func noteDenied(_ command: String, for folderPath: String?) {
         guard let folderPath, !folderPath.isEmpty else { return }
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -99,7 +99,7 @@ enum CommandTrust {
 
     /// Drops everything remembered for a folder — the Settings "forget"
     /// action, and the only way rules ever go away.
-    static func forget(folderPath: String?) {
+    public static func forget(folderPath: String?) {
         guard let folderPath, !folderPath.isEmpty else { return }
         var store = load()
         store.removeValue(forKey: folderPath)
@@ -113,7 +113,7 @@ enum CommandTrust {
     /// `.ask`, not to an automatic re-denial, because the person who said
     /// no once is exactly the person who should decide the second time,
     /// with the command in front of them.
-    static func decision(for command: String, folderPath: String?) -> Decision {
+    public static func decision(for command: String, folderPath: String?) -> Decision {
         guard let folderPath, !folderPath.isEmpty else { return .ask }
         guard CommandRunner.isSingleSimpleCommand(command) else { return .ask }
         guard let trust = load()[folderPath] else { return .ask }
@@ -129,7 +129,7 @@ enum CommandTrust {
     /// `cargo test --lib`; it does not match `cargo` (too short),
     /// `cargotest` (a different binary), or anything carrying a shell
     /// operator (not statically one command at all).
-    static func matches(rule: String, command: String) -> Bool {
+    public static func matches(rule: String, command: String) -> Bool {
         guard CommandRunner.isSingleSimpleCommand(command) else { return false }
         let ruleTokens = tokens(rule)
         let commandTokens = tokens(command)
@@ -143,7 +143,7 @@ enum CommandTrust {
     /// part of a rule — `cargo test --lib` and `cargo test` are the same
     /// permission, and a rule that included the flags would ask again on
     /// the next invocation, which is the whole problem.
-    static func suggestedRule(for command: String) -> String? {
+    public static func suggestedRule(for command: String) -> String? {
         guard CommandRunner.isSingleSimpleCommand(command) else { return nil }
         let parts = tokens(command)
         guard let binary = parts.first, !binary.isEmpty else { return nil }

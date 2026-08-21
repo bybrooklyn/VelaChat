@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 import WebKit
 
 /// HTML/SVG/Mermaid code blocks the model writes become real, live-rendered

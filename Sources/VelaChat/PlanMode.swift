@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 
 /// Planning mode: a hard constraint on what the model *can* do, not a
 /// polite request in the prompt.

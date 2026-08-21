@@ -25,15 +25,15 @@ import Foundation
 /// round, which is what keeps it inside the 20-block lookback as the loop
 /// grows. Two leaves headroom under the limit of four; it is not an
 /// accident that it is not four.
-enum AnthropicPromptCache {
+public enum AnthropicPromptCache {
     /// Anthropic's hard cap, counted across system + tools + messages.
-    static let maxBreakpoints = 4
+    public static let maxBreakpoints = 4
 
     /// What this app actually places: the static head, and the moving
     /// marker on the newest turn.
-    static let breakpointsUsed = 2
+    public static let breakpointsUsed = 2
 
-    static let control: [String: Any] = ["type": "ephemeral"]
+    public static let control: [String: Any] = ["type": "ephemeral"]
 
     /// Re-places the moving breakpoint on the last content block of the
     /// last turn, removing any previous one first.
@@ -41,7 +41,7 @@ enum AnthropicPromptCache {
     /// Stripping before adding is the whole reason the count can't drift:
     /// the turns array only ever holds one marker, no matter how many
     /// rounds have appended to it.
-    static func markLatestTurn(_ turns: inout [[String: Any]]) {
+    public static func markLatestTurn(_ turns: inout [[String: Any]]) {
         stripBreakpoints(&turns)
         guard let lastIndex = turns.indices.last else { return }
         var turn = turns[lastIndex]
@@ -65,7 +65,7 @@ enum AnthropicPromptCache {
     }
 
     /// Removes every `cache_control` in the turns array.
-    static func stripBreakpoints(_ turns: inout [[String: Any]]) {
+    public static func stripBreakpoints(_ turns: inout [[String: Any]]) {
         for index in turns.indices {
             guard var blocks = turns[index]["content"] as? [[String: Any]] else { continue }
             var changed = false
@@ -81,7 +81,7 @@ enum AnthropicPromptCache {
     /// Anthropic counts them: across `system`, `tools` and `messages`
     /// together. The whole point of a single traversal is that a future
     /// breakpoint added in any of the three sections shows up here.
-    static func breakpointCount(inBody body: [String: Any]) -> Int {
+    public static func breakpointCount(inBody body: [String: Any]) -> Int {
         ["system", "tools", "messages"].reduce(0) { $0 + count(in: body[$1]) }
     }
 
@@ -129,16 +129,16 @@ enum AnthropicPromptCache {
 /// never touched, so the largest cacheable chunk keeps hitting either way.
 /// Each result is condensed exactly once, so the rewrite is not a moving
 /// target that could thrash the cache round after round.
-enum ToolResultReplay {
+public enum ToolResultReplay {
     /// True when a result produced in `round` should be condensed for a
     /// request being built for `currentRound`.
-    static func shouldCondense(round: Int, currentRound: Int) -> Bool {
+    public static func shouldCondense(round: Int, currentRound: Int) -> Bool {
         currentRound - round > Limits.toolResultReplayRounds
     }
 
     /// The short form of a result, or the result unchanged when it is
     /// already small enough to be cheap.
-    static func condensed(_ result: String) -> String {
+    public static func condensed(_ result: String) -> String {
         let bytes = result.utf8.count
         guard bytes > Limits.replayedToolResultBytes else { return result }
         return head(of: result, bytes: Limits.replayedToolResultBytes)

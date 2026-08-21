@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// Anthropic allows **at most four** `cache_control` blocks per request,
 /// counted across `system`, `tools` and `messages` together. A fifth is an

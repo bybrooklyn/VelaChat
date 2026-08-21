@@ -3,7 +3,7 @@ import Foundation
 /// Where a context-window figure came from. The UI shows this so a
 /// fallback number never reads as something the provider actually
 /// published (house rule: unobserved numbers are never implied).
-enum ContextWindowSource: String, Codable, Sendable {
+public enum ContextWindowSource: String, Codable, Sendable {
     /// The user typed it into the context popover.
     case manual
     /// Parsed out of the endpoint's own error text — the only *observed*
@@ -16,7 +16,7 @@ enum ContextWindowSource: String, Codable, Sendable {
     case curated
 
     /// Short provenance label for the context popover.
-    var label: String {
+    public var label: String {
         switch self {
         case .manual: "manually set"
         case .learned: "learned from this endpoint"
@@ -27,7 +27,7 @@ enum ContextWindowSource: String, Codable, Sendable {
 
     /// True when the number was actually reported by something rather than
     /// assumed from a model's name.
-    var isObserved: Bool { self != .curated }
+    public var isObserved: Bool { self != .curated }
 }
 
 /// Resolves the one context-window number the ring, the pre-send estimate
@@ -53,13 +53,18 @@ enum ContextWindowSource: String, Codable, Sendable {
 /// Learned values are stored separately from manual overrides rather than
 /// written into them, so this ordering stays expressible and so a user's
 /// correction survives whatever the endpoint says next.
-enum ContextWindowResolver {
-    struct Resolved: Equatable {
-        let value: Int
-        let source: ContextWindowSource
+public enum ContextWindowResolver {
+    public struct Resolved: Equatable {
+        public let value: Int
+        public let source: ContextWindowSource
+
+        public init(value: Int, source: ContextWindowSource) {
+            self.value = value
+            self.source = source
+        }
     }
 
-    static func resolve(manual: Int?, learned: Int?, catalog: Int?, modelID: String) -> Resolved? {
+    public static func resolve(manual: Int?, learned: Int?, catalog: Int?, modelID: String) -> Resolved? {
         if let manual, manual > 0 { return Resolved(value: manual, source: .manual) }
         if let learned, learned > 0 { return Resolved(value: learned, source: .learned) }
         if let catalog, catalog > 0 { return Resolved(value: catalog, source: .catalog) }
@@ -94,9 +99,9 @@ enum ContextWindowResolver {
 ///   it.
 /// - Anything not recognized returns `nil`. A wrong number is worse than
 ///   no number, because the ring presents whatever it gets as the truth.
-enum ContextWindowTable {
+public enum ContextWindowTable {
     /// How an entry's pattern is compared against a model id.
-    enum Match {
+    public enum Match {
         /// Anywhere in the lowercased id. The default: it survives the
         /// `vendor/model:tag` and `-2025-01-31` decorations providers add.
         case contains
@@ -107,7 +112,7 @@ enum ContextWindowTable {
         case leafPrefix
     }
 
-    struct Entry {
+    public struct Entry {
         let pattern: String
         let contextLength: Int
         var match: Match = .contains
@@ -201,7 +206,7 @@ enum ContextWindowTable {
     /// The window for a model id, or `nil` when this table has no
     /// documented figure for it. Case-insensitive, and tolerant of the
     /// `vendor/model:tag` shapes OpenRouter and Ollama use.
-    static func contextLength(for modelID: String) -> Int? {
+    public static func contextLength(for modelID: String) -> Int? {
         let lower = modelID.lowercased()
         guard !lower.isEmpty else { return nil }
         let leaf = lower.split(separator: "/").last.map(String.init) ?? lower
@@ -228,10 +233,10 @@ enum ContextWindowTable {
 /// is smaller than the catalog claims. The endpoint states the number in
 /// the 400 it returns; before this it was thrown away with the rest of the
 /// error string.
-enum ContextWindowLearning {
+public enum ContextWindowLearning {
     /// Below this a "context window" is almost certainly a misparse (a
     /// message count, an HTTP status); above it, a fantasy.
-    static let plausibleRange = 512...20_000_000
+    public static let plausibleRange = 512...20_000_000
 
     /// Ordered regexes, each with exactly one capture group holding the
     /// window. Written against error bodies these providers really emit —
@@ -258,7 +263,7 @@ enum ContextWindowLearning {
     /// model would make the ring lie and auto-compaction thrash — so every
     /// pattern requires the words "context length/window/size", and text
     /// that only talks about output is left alone.
-    static func contextLength(fromErrorText text: String) -> Int? {
+    public static func contextLength(fromErrorText text: String) -> Int? {
         guard !text.isEmpty else { return nil }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         for pattern in patterns {

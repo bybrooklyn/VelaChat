@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 
 /// Parallel sub-conversations for fan-out work ("research these three
 /// angles at once"). Each subagent is a plain, isolated request to the

@@ -2,7 +2,7 @@ import Foundation
 
 extension FileManager {
     /// Total on-disk size of a directory tree — used to guard repo clones.
-    func allocatedSizeOfDirectory(at url: URL) throws -> Int64 {
+    public func allocatedSizeOfDirectory(at url: URL) throws -> Int64 {
         var total: Int64 = 0
         let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .isRegularFileKey]
         guard let enumerator = enumerator(at: url, includingPropertiesForKeys: Array(keys)) else { return 0 }
@@ -28,8 +28,8 @@ extension FileManager {
 /// validated file read/write is a fundamentally safer boundary — a
 /// candidate path either resolves inside the workspace folder or the call
 /// is refused, with no code execution surface at all.
-enum SandboxManager {
-    static func directory(for conversationID: UUID) -> URL {
+public enum SandboxManager {
+    public static func directory(for conversationID: UUID) -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("VelaChat/Workspaces/\(conversationID.uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -39,7 +39,7 @@ enum SandboxManager {
     /// Deletes a conversation's workspace folder without creating it
     /// first — `directory(for:)` creates on access, so deleting a
     /// conversation must not route through it.
-    static func cleanup(for conversationID: UUID) {
+    public static func cleanup(for conversationID: UUID) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("VelaChat/Workspaces/\(conversationID.uuidString)", isDirectory: true)
         try? FileManager.default.removeItem(at: base)
@@ -50,7 +50,7 @@ enum SandboxManager {
     /// segments, absolute paths, or a standardized path that no longer has
     /// the workspace directory as its prefix. This (not process sandboxing)
     /// is the actual safety boundary for these tools.
-    static func resolve(_ relativePath: String, in directory: URL) -> URL? {
+    public static func resolve(_ relativePath: String, in directory: URL) -> URL? {
         guard !relativePath.isEmpty, !relativePath.hasPrefix("/"), !relativePath.contains("..") else { return nil }
         let base = directory.standardizedFileURL.resolvingSymlinksInPath()
         let candidate = base.appendingPathComponent(relativePath).standardizedFileURL

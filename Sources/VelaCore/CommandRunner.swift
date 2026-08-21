@@ -8,8 +8,8 @@ import Foundation
 /// Anything else — unknown binaries, writes, network, redirection,
 /// substitution, sudo — asks the user first. Approval is a real human
 /// decision in the transcript, not a heuristic pretending to be one.
-enum CommandRunner {
-    enum Classification: Equatable {
+public enum CommandRunner {
+    public enum Classification: Equatable {
         /// Safe to run without asking: read-only inspection.
         case readOnly
         /// Needs the user's explicit approval, with the stated reason.
@@ -80,12 +80,12 @@ enum CommandRunner {
     /// Whether this is one simple command whose leading tokens mean what
     /// they look like. False for anything empty, multi-line, or containing
     /// a shell operator.
-    static func isSingleSimpleCommand(_ command: String) -> Bool {
+    public static func isSingleSimpleCommand(_ command: String) -> Bool {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         return !trimmed.isEmpty && unanalyzableReason(trimmed) == nil
     }
 
-    static func classify(_ command: String) -> Classification {
+    public static func classify(_ command: String) -> Classification {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .needsApproval(reason: "empty command") }
 
@@ -127,10 +127,16 @@ enum CommandRunner {
         return .needsApproval(reason: "\(binary) is not a known read-only command")
     }
 
-    struct Output: Sendable {
-        var text: String
-        var exitCode: Int32
-        var timedOut: Bool
+    public struct Output: Sendable {
+        public var text: String
+        public var exitCode: Int32
+        public var timedOut: Bool
+
+        public init(text: String, exitCode: Int32, timedOut: Bool) {
+            self.text = text
+            self.exitCode = exitCode
+            self.timedOut = timedOut
+        }
     }
 
     /// One bool, written by the timeout watchdog and read by the waiter —
@@ -155,7 +161,7 @@ enum CommandRunner {
 
     /// Runs the command via `/bin/zsh -lc` in `directory`, capturing
     /// combined output with a hard timeout and an output cap.
-    static func run(_ command: String, in directory: URL, timeout: TimeInterval = Limits.toolTimeout) async -> Output {
+    public static func run(_ command: String, in directory: URL, timeout: TimeInterval = Limits.toolTimeout) async -> Output {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
@@ -208,7 +214,7 @@ enum CommandRunner {
 
     /// The tool-result string the model sees: exit status first (it must
     /// never assume success), then output.
-    static func formatted(_ output: Output, command: String) -> String {
+    public static func formatted(_ output: Output, command: String) -> String {
         if output.timedOut {
             return "Error: `\(command)` timed out. Partial output:\n\(output.text)"
         }

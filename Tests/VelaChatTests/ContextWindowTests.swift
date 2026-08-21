@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// The context window drives three things at once: the ring, the pre-send
 /// cost estimate, and the 95% auto-compact trigger. Before this it came

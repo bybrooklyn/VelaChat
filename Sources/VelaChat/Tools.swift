@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 
 /// Real tool calling, not the pre-fetch trick the old "web search" used —
 /// tool definitions go in the request, the model decides whether to call

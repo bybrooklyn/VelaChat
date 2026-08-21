@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import NaturalLanguage
 
 /// Turns text into a vector, on device.

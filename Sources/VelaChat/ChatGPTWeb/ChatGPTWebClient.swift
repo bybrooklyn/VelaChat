@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 
 /// Scoped Swift port of the `chatgpt-web-runtime` direct transport
 /// (reference: ~/data/chatgpt-web-runtime-v0.9.0, docs/SWIFT_PORT.md).

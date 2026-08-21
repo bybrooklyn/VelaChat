@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 
 struct ProviderCredential: Sendable {
     let token: String?

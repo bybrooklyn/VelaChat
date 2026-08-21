@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// `StreamingMarkdown.split` is what lets a reply format itself as it types
 /// without re-parsing the whole document on every reveal tick — the cost
