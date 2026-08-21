@@ -10,15 +10,20 @@ import Foundation
 /// GUI-launched app inherits `launchd`'s minimal PATH, not the login
 /// shell's, so `/usr/bin/env claude` fails in the bundled app while
 /// working perfectly from a terminal. The same bug exists at SDK level.
-enum ClaudeExecutableLocator {
-    struct Located: Equatable {
-        var url: URL
-        var version: String?
+public enum ClaudeExecutableLocator {
+    public struct Located: Equatable {
+        public var url: URL
+        public var version: String?
+
+        public init(url: URL, version: String? = nil) {
+            self.url = url
+            self.version = version
+        }
     }
 
     /// Where `claude` actually installs, most specific first. The user
     /// override in Settings wins over all of these.
-    static func candidatePaths() -> [URL] {
+    public static func candidatePaths() -> [URL] {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return [
             home.appendingPathComponent(".local/bin/claude"),
@@ -35,7 +40,7 @@ enum ClaudeExecutableLocator {
     /// installed. `nil` is a state the UI renders ("Claude Code not
     /// installed", with install instructions) — the provider never
     /// silently disappears from the list.
-    static func locate(override: String? = nil) -> Located? {
+    public static func locate(override: String? = nil) -> Located? {
         if let override, !override.trimmingCharacters(in: .whitespaces).isEmpty {
             let url = URL(fileURLWithPath: override)
             guard isExecutable(url) else { return nil }
@@ -51,7 +56,7 @@ enum ClaudeExecutableLocator {
         return nil
     }
 
-    static func isExecutable(_ url: URL) -> Bool {
+    public static func isExecutable(_ url: URL) -> Bool {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               !isDirectory.boolValue else { return false }
@@ -80,7 +85,7 @@ enum ClaudeExecutableLocator {
     /// `claude --version` → "2.1.236 (Claude Code)". Captured for display
     /// and diagnostics only — behavior is decided by the `capabilities`
     /// array in the init handshake, never by parsing this.
-    static func version(of url: URL) -> String? {
+    public static func version(of url: URL) -> String? {
         let process = Process()
         process.executableURL = url
         process.arguments = ["--version"]
@@ -108,7 +113,7 @@ enum ClaudeExecutableLocator {
     ///   Keychain, which defeats the entire point of the bridge.
     /// - `--verbose` is mandatory; `--output-format stream-json` is
     ///   rejected without it.
-    static func arguments(includePartialMessages: Bool) -> [String] {
+    public static func arguments(includePartialMessages: Bool) -> [String] {
         var args = [
             "--output-format", "stream-json",
             "--input-format", "stream-json",

@@ -15,7 +15,7 @@ import Foundation
 ///   (`ClaudeCapabilities`).
 ///
 /// Re-record the fixture when Claude Code updates; expect drift.
-enum ClaudeStreamFrame: Decodable {
+public enum ClaudeStreamFrame: Decodable {
     case system(ClaudeInitEvent)
     case assistant(ClaudeAssistantEvent)
     case user(ClaudeUserEvent)
@@ -29,7 +29,7 @@ enum ClaudeStreamFrame: Decodable {
 
     private enum TypeKey: String, CodingKey { case type }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: TypeKey.self)
         let type = (try? container.decode(String.self, forKey: .type)) ?? ""
         switch type {
@@ -48,7 +48,7 @@ enum ClaudeStreamFrame: Decodable {
     /// output that isn't JSON at all — Claude Code writes human-readable
     /// diagnostics to the same stream under some failure modes, and one
     /// stray line must not kill the session.
-    static func decode(line: String) -> ClaudeStreamFrame? {
+    public static func decode(line: String) -> ClaudeStreamFrame? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("{"), let data = trimmed.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(ClaudeStreamFrame.self, from: data)
@@ -59,23 +59,23 @@ enum ClaudeStreamFrame: Decodable {
 
 /// The `system`/`init` frame — the handshake. Everything the bridge needs
 /// to decide what it may offer the user comes from here.
-struct ClaudeInitEvent: Decodable {
-    var subtype: String?
-    var sessionID: String?
-    var cwd: String?
-    var model: String?
-    var claudeCodeVersion: String?
-    var permissionMode: String?
-    var apiKeySource: String?
-    var tools: [String]
-    var slashCommands: [String]
-    var skills: [String]
-    var agents: [String]
-    var mcpServers: [ClaudeMcpServerStatus]
+public struct ClaudeInitEvent: Decodable {
+    public var subtype: String?
+    public var sessionID: String?
+    public var cwd: String?
+    public var model: String?
+    public var claudeCodeVersion: String?
+    public var permissionMode: String?
+    public var apiKeySource: String?
+    public var tools: [String]
+    public var slashCommands: [String]
+    public var skills: [String]
+    public var agents: [String]
+    public var mcpServers: [ClaudeMcpServerStatus]
     /// Protocol behaviors this Claude Code implements, e.g.
     /// `interrupt_receipt_v1`. Feature-detect against this; never compare
     /// version strings.
-    var capabilities: [String]
+    public var capabilities: [String]
 
     private enum CodingKeys: String, CodingKey {
         case subtype, cwd, model, tools, skills, agents, capabilities
@@ -87,7 +87,7 @@ struct ClaudeInitEvent: Decodable {
         case mcpServers = "mcp_servers"
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         subtype = try c.decodeIfPresent(String.self, forKey: .subtype)
         sessionID = try c.decodeIfPresent(String.self, forKey: .sessionID)
@@ -104,37 +104,37 @@ struct ClaudeInitEvent: Decodable {
         capabilities = try c.decodeIfPresent([String].self, forKey: .capabilities) ?? []
     }
 
-    var isIsolated: Bool { mcpServers.isEmpty && skills.isEmpty && slashCommands.isEmpty }
+    public var isIsolated: Bool { mcpServers.isEmpty && skills.isEmpty && slashCommands.isEmpty }
 }
 
-struct ClaudeMcpServerStatus: Decodable, Equatable {
-    var name: String
-    var status: String?
+public struct ClaudeMcpServerStatus: Decodable, Equatable {
+    public var name: String
+    public var status: String?
 }
 
 /// Named protocol behaviors. Values are compared as strings and unknown
 /// ones ignored, so a newer Claude Code advertising more capabilities is
 /// simply understood less completely, never rejected.
-enum ClaudeCapability: String {
+public enum ClaudeCapability: String {
     case interruptReceipt = "interrupt_receipt_v1"
     case interruptCancelQueued = "interrupt_cancel_queued_v1"
     case messageLifecycle = "msg_lifecycle_v1"
 }
 
-struct ClaudeCapabilities: Equatable {
+public struct ClaudeCapabilities: Equatable {
     private let names: Set<String>
-    init(_ names: [String]) { self.names = Set(names) }
-    func has(_ capability: ClaudeCapability) -> Bool { names.contains(capability.rawValue) }
-    func has(_ raw: String) -> Bool { names.contains(raw) }
-    var all: Set<String> { names }
+    public init(_ names: [String]) { self.names = Set(names) }
+    public func has(_ capability: ClaudeCapability) -> Bool { names.contains(capability.rawValue) }
+    public func has(_ raw: String) -> Bool { names.contains(raw) }
+    public var all: Set<String> { names }
 }
 
 // MARK: - assistant / user turns
 
-struct ClaudeAssistantEvent: Decodable {
-    var sessionID: String?
-    var message: ClaudeMessage
-    var parentToolUseID: String?
+public struct ClaudeAssistantEvent: Decodable {
+    public var sessionID: String?
+    public var message: ClaudeMessage
+    public var parentToolUseID: String?
 
     private enum CodingKeys: String, CodingKey {
         case message
@@ -143,20 +143,20 @@ struct ClaudeAssistantEvent: Decodable {
     }
 }
 
-struct ClaudeMessage: Decodable {
-    var id: String?
-    var model: String?
-    var role: String?
-    var stopReason: String?
-    var content: [ClaudeContentBlock]
-    var usage: ClaudeUsage?
+public struct ClaudeMessage: Decodable {
+    public var id: String?
+    public var model: String?
+    public var role: String?
+    public var stopReason: String?
+    public var content: [ClaudeContentBlock]
+    public var usage: ClaudeUsage?
 
     private enum CodingKeys: String, CodingKey {
         case id, model, role, content, usage
         case stopReason = "stop_reason"
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id)
         model = try c.decodeIfPresent(String.self, forKey: .model)
@@ -166,22 +166,22 @@ struct ClaudeMessage: Decodable {
         usage = try c.decodeIfPresent(ClaudeUsage.self, forKey: .usage)
     }
 
-    var text: String {
+    public var text: String {
         content.compactMap { if case .text(let value) = $0 { return value } else { return nil } }
             .joined()
     }
 
-    var thinking: String {
+    public var thinking: String {
         content.compactMap { if case .thinking(let value) = $0 { return value } else { return nil } }
             .joined()
     }
 
-    var toolUses: [ClaudeToolUse] {
+    public var toolUses: [ClaudeToolUse] {
         content.compactMap { if case .toolUse(let use) = $0 { return use } else { return nil } }
     }
 }
 
-enum ClaudeContentBlock: Decodable {
+public enum ClaudeContentBlock: Decodable {
     case text(String)
     case thinking(String)
     case toolUse(ClaudeToolUse)
@@ -195,7 +195,7 @@ enum ClaudeContentBlock: Decodable {
         case isError = "is_error"
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let type = (try? c.decode(String.self, forKey: .type)) ?? ""
         switch type {
@@ -221,14 +221,20 @@ enum ClaudeContentBlock: Decodable {
     }
 }
 
-struct ClaudeToolUse: Equatable {
-    var id: String
-    var name: String
-    var input: JSONValue
+public struct ClaudeToolUse: Equatable {
+    public var id: String
+    public var name: String
+    public var input: JSONValue
+
+    public init(id: String, name: String, input: JSONValue) {
+        self.id = id
+        self.name = name
+        self.input = input
+    }
 
     /// A one-line argument summary for the activity timeline — the same
     /// shape VelaChat's own tool rows use.
-    var summary: String {
+    public var summary: String {
         guard case .object(let fields) = input else { return "" }
         for key in ["command", "file_path", "path", "pattern", "query", "url", "description"] {
             if case .string(let value)? = fields[key] { return value }
@@ -237,12 +243,18 @@ struct ClaudeToolUse: Equatable {
     }
 }
 
-struct ClaudeToolResult: Equatable {
-    var toolUseID: String
-    var content: JSONValue
-    var isError: Bool
+public struct ClaudeToolResult: Equatable {
+    public var toolUseID: String
+    public var content: JSONValue
+    public var isError: Bool
 
-    var text: String {
+    public init(toolUseID: String, content: JSONValue, isError: Bool) {
+        self.toolUseID = toolUseID
+        self.content = content
+        self.isError = isError
+    }
+
+    public var text: String {
         switch content {
         case .string(let value): return value
         case .array(let items):
@@ -258,16 +270,16 @@ struct ClaudeToolResult: Equatable {
 
 /// A `user` frame in this stream is Claude Code replaying a tool result
 /// back into the conversation — not something the human typed.
-struct ClaudeUserEvent: Decodable {
-    var sessionID: String?
-    var message: ClaudeMessage
+public struct ClaudeUserEvent: Decodable {
+    public var sessionID: String?
+    public var message: ClaudeMessage
 
     private enum CodingKeys: String, CodingKey {
         case message
         case sessionID = "session_id"
     }
 
-    var toolResults: [ClaudeToolResult] {
+    public var toolResults: [ClaudeToolResult] {
         message.content.compactMap { if case .toolResult(let result) = $0 { return result } else { return nil } }
     }
 }
@@ -277,12 +289,12 @@ struct ClaudeUserEvent: Decodable {
 /// Claude's own usage shape. Note `cacheCreation`, which splits cache
 /// writes by TTL tier — the exact field Phase 2's cost math needs and
 /// which no OpenAI-compatible provider reports.
-struct ClaudeUsage: Decodable, Equatable {
-    var inputTokens: Int?
-    var outputTokens: Int?
-    var cacheReadInputTokens: Int?
-    var cacheCreationInputTokens: Int?
-    var cacheCreation: ClaudeCacheCreation?
+public struct ClaudeUsage: Decodable, Equatable {
+    public var inputTokens: Int?
+    public var outputTokens: Int?
+    public var cacheReadInputTokens: Int?
+    public var cacheCreationInputTokens: Int?
+    public var cacheCreation: ClaudeCacheCreation?
 
     private enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens"
@@ -293,9 +305,9 @@ struct ClaudeUsage: Decodable, Equatable {
     }
 }
 
-struct ClaudeCacheCreation: Decodable, Equatable {
-    var ephemeral5m: Int?
-    var ephemeral1h: Int?
+public struct ClaudeCacheCreation: Decodable, Equatable {
+    public var ephemeral5m: Int?
+    public var ephemeral1h: Int?
 
     private enum CodingKeys: String, CodingKey {
         case ephemeral5m = "ephemeral_5m_input_tokens"
@@ -303,16 +315,16 @@ struct ClaudeCacheCreation: Decodable, Equatable {
     }
 }
 
-struct ClaudeResultEvent: Decodable {
-    var sessionID: String?
-    var isError: Bool
-    var stopReason: String?
-    var numTurns: Int?
-    var durationAPIms: Int?
+public struct ClaudeResultEvent: Decodable {
+    public var sessionID: String?
+    public var isError: Bool
+    public var stopReason: String?
+    public var numTurns: Int?
+    public var durationAPIms: Int?
     /// Claude Code's own cost figure. Provider-reported, so it is used as
     /// observed rather than recomputed — see invariant 5.
-    var totalCostUSD: Double?
-    var usage: ClaudeUsage?
+    public var totalCostUSD: Double?
+    public var usage: ClaudeUsage?
 
     private enum CodingKeys: String, CodingKey {
         case usage
@@ -324,7 +336,7 @@ struct ClaudeResultEvent: Decodable {
         case totalCostUSD = "total_cost_usd"
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         sessionID = try c.decodeIfPresent(String.self, forKey: .sessionID)
         isError = try c.decodeIfPresent(Bool.self, forKey: .isError) ?? false
@@ -342,21 +354,21 @@ struct ClaudeResultEvent: Decodable {
 /// and carries a real reset timestamp. It is a far better quota source
 /// than polling an OAuth endpoint, because it costs nothing and cannot be
 /// rate-limited itself.
-struct ClaudeRateLimitEvent: Decodable {
-    var info: Info?
+public struct ClaudeRateLimitEvent: Decodable {
+    public var info: Info?
 
-    struct Info: Decodable, Equatable {
-        var status: String?
-        var resetsAt: Double?
-        var rateLimitType: String?
-        var isUsingOverage: Bool?
+    public struct Info: Decodable, Equatable {
+        public var status: String?
+        public var resetsAt: Double?
+        public var rateLimitType: String?
+        public var isUsingOverage: Bool?
 
-        var resetDate: Date? { resetsAt.map { Date(timeIntervalSince1970: $0) } }
+        public var resetDate: Date? { resetsAt.map { Date(timeIntervalSince1970: $0) } }
 
         /// Minutes in the window named by `rateLimitType`, when it maps to
         /// one VelaChat already models. Unknown values stay `nil` rather
         /// than being guessed at.
-        var windowMinutes: Int? {
+        public var windowMinutes: Int? {
             switch rateLimitType {
             case "five_hour": return 300
             case "seven_day", "weekly": return 10_080
@@ -372,37 +384,37 @@ struct ClaudeRateLimitEvent: Decodable {
 
 /// Bidirectional control channel. Claude Code sends a request; the host
 /// answers with a matching `response.request_id`.
-struct ClaudeControlRequest: Decodable {
-    var requestID: String?
-    var subtype: String?
-    var request: JSONValue?
+public struct ClaudeControlRequest: Decodable {
+    public var requestID: String?
+    public var subtype: String?
+    public var request: JSONValue?
 
     private enum CodingKeys: String, CodingKey {
         case subtype, request
         case requestID = "request_id"
     }
 
-    var isPermission: Bool {
+    public var isPermission: Bool {
         subtype == "permission" || subtype == "can_use_tool"
     }
 
     /// Tool name a permission request is asking about, when present.
-    var toolName: String? {
+    public var toolName: String? {
         guard case .object(let fields)? = request else { return nil }
         if case .string(let name)? = fields["tool_name"] { return name }
         if case .string(let name)? = fields["name"] { return name }
         return nil
     }
 
-    var toolInput: JSONValue? {
+    public var toolInput: JSONValue? {
         guard case .object(let fields)? = request else { return nil }
         return fields["input"] ?? fields["tool_input"]
     }
 }
 
-struct ClaudeControlResponse: Decodable {
-    var requestID: String?
-    var response: JSONValue?
+public struct ClaudeControlResponse: Decodable {
+    public var requestID: String?
+    public var response: JSONValue?
 
     private enum CodingKeys: String, CodingKey {
         case response
@@ -411,13 +423,13 @@ struct ClaudeControlResponse: Decodable {
 }
 
 /// Frames VelaChat writes to Claude Code's stdin.
-enum ClaudeOutboundFrame {
+public enum ClaudeOutboundFrame {
     case userTurn(text: String)
     case interrupt(requestID: String)
     case permissionAllow(requestID: String, updatedInput: JSONValue?)
     case permissionDeny(requestID: String, reason: String)
 
-    func encoded() throws -> Data {
+    public func encoded() throws -> Data {
         let object: [String: Any]
         switch self {
         case .userTurn(let text):

@@ -8,7 +8,7 @@ import Foundation
 /// Modelling each one would mean tracking every tool Claude Code ships,
 /// which is exactly the coupling `ClaudeControlProtocol` is written to
 /// avoid.
-enum JSONValue: Decodable, Equatable, Sendable {
+public enum JSONValue: Decodable, Equatable, Sendable {
     case null
     case bool(Bool)
     case number(Double)
@@ -16,7 +16,7 @@ enum JSONValue: Decodable, Equatable, Sendable {
     case array([JSONValue])
     case object([String: JSONValue])
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() {
             self = .null
@@ -38,7 +38,7 @@ enum JSONValue: Decodable, Equatable, Sendable {
     /// Back to Foundation types, for re-encoding through
     /// `JSONSerialization` when a value has to be echoed back unchanged
     /// (an approved tool call's input, for example).
-    var anyValue: Any? {
+    public var anyValue: Any? {
         switch self {
         case .null: return nil
         case .bool(let value): return value
@@ -49,16 +49,16 @@ enum JSONValue: Decodable, Equatable, Sendable {
         }
     }
 
-    var stringValue: String? { if case .string(let value) = self { return value } else { return nil } }
-    var intValue: Int? { if case .number(let value) = self { return Int(value) } else { return nil } }
+    public var stringValue: String? { if case .string(let value) = self { return value } else { return nil } }
+    public var intValue: Int? { if case .number(let value) = self { return Int(value) } else { return nil } }
 
-    subscript(key: String) -> JSONValue? {
+    public subscript(key: String) -> JSONValue? {
         if case .object(let fields) = self { return fields[key] }
         return nil
     }
 
     /// Compact single-line rendering for an activity row's detail text.
-    var compactDescription: String {
+    public var compactDescription: String {
         switch self {
         case .null: return "null"
         case .bool(let value): return value ? "true" : "false"

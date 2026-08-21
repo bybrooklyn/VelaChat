@@ -17,21 +17,26 @@ import Foundation
 ///
 /// That last case is not hypothetical: VelaChat's own repo ships
 /// `CLAUDE.md` as a symlink to `AGENTS.md`.
-enum InstructionFiles {
-    static let agentsName = "AGENTS.md"
-    static let claudeName = "CLAUDE.md"
+public enum InstructionFiles {
+    public static let agentsName = "AGENTS.md"
+    public static let claudeName = "CLAUDE.md"
 
-    struct Resolution: Equatable {
+    public struct Resolution: Equatable {
         /// Files to materialize, in the order they should be written.
-        var files: [URL]
+        public var files: [URL]
         /// True when both names exist but resolve to the same file on disk.
-        var collapsedSymlink: Bool
+        public var collapsedSymlink: Bool
 
-        var isEmpty: Bool { files.isEmpty }
+        public var isEmpty: Bool { files.isEmpty }
+
+        public init(files: [URL], collapsedSymlink: Bool) {
+            self.files = files
+            self.collapsedSymlink = collapsedSymlink
+        }
     }
 
     /// Which instruction files a source directory really has.
-    static func resolve(in directory: URL) -> Resolution {
+    public static func resolve(in directory: URL) -> Resolution {
         let fileManager = FileManager.default
         let agents = directory.appendingPathComponent(agentsName)
         let claude = directory.appendingPathComponent(claudeName)
@@ -79,7 +84,7 @@ enum InstructionFiles {
     /// Claude Code may write to, and a symlink there would expose the
     /// user's real file to modification through it.
     @discardableResult
-    static func materialize(from source: URL, into destination: URL) throws -> [String] {
+    public static func materialize(from source: URL, into destination: URL) throws -> [String] {
         let resolution = resolve(in: source)
         guard !resolution.isEmpty else { return [] }
         var written: [String] = []

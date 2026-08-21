@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// All four resolution cases plus the symlink. The symlink case is the
 /// one that matters: VelaChat's own repo ships `CLAUDE.md` as a symlink to

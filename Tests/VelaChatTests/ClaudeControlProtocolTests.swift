@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// Decodes `Fixtures/claude-stream.jsonl`, which was **recorded from real
 /// `claude` 2.1.236 sessions**, not hand-authored from a specification.
