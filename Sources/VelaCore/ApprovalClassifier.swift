@@ -312,7 +312,8 @@ public enum ApprovalClassifier {
 enum SensitiveTargetVocabulary {
     private static let markers: [String] = [
         "send", "delete", "remove permanently", "purchase", "buy", "checkout",
-        "pay", "sign in", "log in", "login", "password", "empty trash",
+        "pay", "payment", "credit card", "sign in", "log in", "login",
+        "password", "empty trash",
     ]
 
     static func matches(_ label: String) -> Bool {
