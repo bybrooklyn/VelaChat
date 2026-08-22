@@ -752,6 +752,15 @@ extension AppModel {
         saveHistory()
     }
 
+    /// Stops every background run — the background-runs surface's "Stop
+    /// All". Same per-conversation path as a manual Stop (pending questions
+    /// resolved, partial replies kept), just applied across the board.
+    func stopAll() {
+        for conversation in conversations where conversation.isGenerating {
+            stopGeneration(for: conversation)
+        }
+    }
+
     func stopGeneration(for conversation: Conversation? = nil) {
         guard let conversation = conversation ?? activeConversation else { return }
         // An `ask_user` call suspends on a continuation that only the card

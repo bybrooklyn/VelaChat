@@ -18,6 +18,59 @@ final class AppModel {
         var id: String { rawValue }
     }
 
+    /// The two navigation destinations: the main conversation list and
+    /// Design (which owns canvas state and stays separate). Tasks are NOT a
+    /// third surface — a task is an ordinary conversation with a goal or
+    /// schedule attached, and shows in the one list with a running
+    /// indicator. The sidebar's primary button derives its label, symbol,
+    /// and action from this enum so adding a surface never means hunting
+    /// down per-view switches.
+    enum Surface: String, CaseIterable, Identifiable {
+        case conversations
+        case design
+
+        var id: String { rawValue }
+
+        var primaryActionTitle: String {
+            switch self {
+            case .conversations: "New Chat"
+            case .design: "New Design"
+            }
+        }
+
+        var primaryActionSymbol: String {
+            switch self {
+            case .conversations: "square.and.pencil"
+            case .design: "scribble.variable"
+            }
+        }
+
+        var primaryActionHelp: String {
+            switch self {
+            case .conversations: "Start a new conversation (⌘N)"
+            case .design: "Start a new design session"
+            }
+        }
+
+        @MainActor
+        func performPrimaryAction(_ appModel: AppModel) {
+            switch self {
+            case .conversations:
+                _ = appModel.newConversation()
+                appModel.section = .chat
+            case .design:
+                // The design canvas ships after the planned phases; until
+                // then nothing can select this surface.
+                break
+            }
+        }
+    }
+
+    /// The surface the navigation chrome is showing. Only `.conversations`
+    /// is reachable today — the design canvas is a later phase — but every
+    /// derivation site reads through this so the seam already exists.
+    var activeSurface: Surface = .conversations
+
     static let appVersion = "1.0"
 
     // The old fenced ```remember``` propose-and-confirm flow is gone: the
