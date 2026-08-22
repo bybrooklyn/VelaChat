@@ -43,7 +43,7 @@ struct NoticeCard: View {
             RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
                 .stroke(tint.opacity(0.25), lineWidth: 1)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .messageColumn()
     }
 }
 
@@ -72,7 +72,7 @@ struct CompactionCard: View {
                     .textSelection(.enabled)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .messageColumn()
     }
 }
 
@@ -358,7 +358,7 @@ struct PlanCard: View {
             }
         }
         .padding(11)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .messageColumn()
         .background(Theme.surfaceLow, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
         .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous), emphasis: 0.4)
         .animation(.easeOut(duration: 0.2), value: steps)
@@ -484,7 +484,7 @@ struct AskUserQuestionCard: View {
             }
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .messageColumn()
         .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)

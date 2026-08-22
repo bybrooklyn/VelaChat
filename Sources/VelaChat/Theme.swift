@@ -232,3 +232,14 @@ extension Color {
         )
     }
 }
+
+extension View {
+    /// The width/alignment contract for in-transcript cards — notices,
+    /// compaction markers, approvals, plans, ask-user. Cards apply this one
+    /// modifier instead of private `maxWidth: .infinity` frames, so the
+    /// column they fill is decided in one place and the card system reads
+    /// as one system rather than five independent widths.
+    func messageColumn() -> some View {
+        frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
