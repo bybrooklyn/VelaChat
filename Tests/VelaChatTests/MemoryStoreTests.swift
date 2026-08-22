@@ -1,5 +1,4 @@
 import XCTest
-@testable import VelaChat
 @testable import VelaCore
 
 /// Memory is an enhancement, so the contract these pin is as much about

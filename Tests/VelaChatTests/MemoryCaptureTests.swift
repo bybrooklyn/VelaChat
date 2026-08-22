@@ -1,5 +1,4 @@
 import XCTest
-@testable import VelaChat
 @testable import VelaCore
 
 /// What memory is allowed to write, how it is phrased, and what happens

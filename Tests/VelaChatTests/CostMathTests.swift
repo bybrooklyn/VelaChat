@@ -1,5 +1,4 @@
 import XCTest
-@testable import VelaChat
 @testable import VelaCore
 
 /// Table-driven cost math. The formula this replaces captured

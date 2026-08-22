@@ -1,5 +1,4 @@
 import XCTest
-@testable import VelaChat
 @testable import VelaCore
 
 /// Planning mode is only worth anything if it is a real constraint, so

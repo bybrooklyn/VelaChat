@@ -1,5 +1,4 @@
 import XCTest
-@testable import VelaChat
 @testable import VelaCore
 
 /// `AskUserQuestionPayload.parse` turns a ````ask-user` fenced block into an

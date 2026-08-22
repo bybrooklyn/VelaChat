@@ -59,3 +59,56 @@ public enum CachePricing {
     /// Batch requests bill at half.
     public static let batch = 0.5
 }
+
+extension UsageSummary {
+    /// Real-priced cost for one reply — nil unless BOTH prices are known.
+    ///
+    /// Previously this was `(prompt × input + completion × output)` with
+    /// `cachedTokens` captured and then ignored, which was wrong in
+    /// *opposite directions* depending on the provider:
+    ///
+    /// - **Anthropic** excludes cached tokens from `input_tokens` and
+    ///   reports reads and writes separately. Neither was priced at all,
+    ///   so the total undercounted — badly, since a cache write costs
+    ///   1.25–2× base input.
+    /// - **OpenAI-compatible** providers include cached tokens inside
+    ///   `prompt_tokens`. The cached portion was therefore billed at full
+    ///   input price instead of 0.10×, so the total overcounted.
+    ///
+    /// `promptIncludesCached` is the per-provider capability that decides
+    /// which correction applies. It is passed in from `ProviderKind`
+    /// rather than guessed at the call site.
+    public func costUSD(for model: RemoteModel?, promptIncludesCached: Bool) -> Double? {
+        // A cost the provider computed itself always wins: it is observed,
+        // not derived (house rule — unobserved numbers are never implied).
+        if let providerReportedCostUSD { return providerReportedCostUSD }
+        guard let model,
+              let inputPrice = model.inputPricePerMillion,
+              let outputPrice = model.outputPricePerMillion,
+              let prompt = promptTokens, let completion = completionTokens else { return nil }
+
+        let cacheReads = cachedTokens ?? 0
+        // Fresh input is what was neither read from nor written to cache.
+        // When the provider folds cache reads into its prompt count, they
+        // have to come back out before pricing the remainder at full rate.
+        let freshInput = promptIncludesCached ? max(0, prompt - cacheReads) : prompt
+
+        var total = Double(freshInput) * inputPrice
+        total += Double(completion) * outputPrice
+        total += Double(cacheCreation5mTokens ?? 0) * inputPrice * CachePricing.write5m
+        total += Double(cacheCreation1hTokens ?? 0) * inputPrice * CachePricing.write1h
+        total += Double(cacheReads) * inputPrice * CachePricing.read
+        total /= 1_000_000
+        return isBatch ? total * CachePricing.batch : total
+    }
+
+    /// Convenience for call sites that have the provider rather than the
+    /// raw capability flag.
+    public func costUSD(for model: RemoteModel?, providerKind: ProviderKind?) -> Double? {
+        costUSD(for: model, promptIncludesCached: providerKind?.promptTokensIncludeCached ?? true)
+    }
+
+    /// True when the figure came from the provider rather than from this
+    /// formula — the UI labels those differently.
+    public var isCostProviderReported: Bool { providerReportedCostUSD != nil }
+}

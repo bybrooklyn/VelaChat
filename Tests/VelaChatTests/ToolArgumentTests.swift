@@ -1,5 +1,4 @@
 import XCTest
-@testable import VelaChat
 @testable import VelaCore
 
 /// Models emit almost-JSON more often than anyone would like. These are
