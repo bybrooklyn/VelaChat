@@ -274,6 +274,12 @@ final class AppModel {
         /// Subagent fan-out reuses this card, but must not offer command
         /// editing or the always-allow paths.
         var isSubagentRequest = false
+        /// The classifier's hard-stop verdict (§3): this command publishes,
+        /// deletes broadly, sends, touches credentials, or hides its
+        /// payload behind an interpreter. Session trust never absorbs it,
+        /// and the card offers no always-allow paths — approve once or
+        /// deny, every time.
+        var isSensitive = false
         /// The attached folder that may remember a prefix rule for this
         /// command, or nil for a sandbox workspace — which is also how the
         /// card knows whether to offer the "Always allow …" button at all.
@@ -1951,6 +1957,7 @@ final class AppModel {
         }
         let trustFolderPath = conversation?.commandTrustFolderPath
         let classification = CommandRunner.classify(command)
+        let tier = ApprovalClassifier.classify(.shellCommand(command))
         var approvedCommand = command
         var needsPrompt = false
         var reason = ""
@@ -1959,14 +1966,22 @@ final class AppModel {
         case .readOnly:
             break
         case .needsApproval(let why):
-            if conversation?.allowAllCommands == true || conversation?.alwaysAllowedCommands.contains(command) == true {
-                break
-            }
-            // Rules remembered for the attached folder — the only trust
-            // here that survives a relaunch, and never consulted for a
-            // sandbox workspace (`trustFolderPath` is nil for one).
-            if case .allowed = CommandTrust.decision(for: command, folderPath: trustFolderPath) {
-                break
+            // Session trust (allow-all, remembered exact commands) and the
+            // durable folder rules exist to stop tap-fatigue on ordinary
+            // commands. A sensitive one — push/publish/delete/credentials/
+            // inline code — is exactly the decision trust must never
+            // swallow, so none of those paths are even consulted and the
+            // card always appears.
+            if ApprovalClassifier.sessionTrustMayAllow(tier) {
+                if conversation?.allowAllCommands == true || conversation?.alwaysAllowedCommands.contains(command) == true {
+                    break
+                }
+                // Rules remembered for the attached folder — the only trust
+                // here that survives a relaunch, and never consulted for a
+                // sandbox workspace (`trustFolderPath` is nil for one).
+                if case .allowed = CommandTrust.decision(for: command, folderPath: trustFolderPath) {
+                    break
+                }
             }
             needsPrompt = true
             reason = why
@@ -1979,6 +1994,7 @@ final class AppModel {
                     command: command,
                     directory: directory,
                     reason: reason,
+                    isSensitive: !ApprovalClassifier.sessionTrustMayAllow(tier),
                     trustFolderPath: trustFolderPath,
                     decide: resume
                 )

@@ -126,7 +126,10 @@ struct CommandApprovalCard: View {
                     .buttonStyle(.glassProminent)
                     .tint(Theme.accent)
                     .keyboardShortcut(.defaultAction)
-                if !approval.isSubagentRequest {
+                // Sensitive commands offer no trust paths at all — the
+                // classifier decided this is a publish/delete/send/
+                // credential decision, and those are made fresh every time.
+                if !approval.isSubagentRequest, !approval.isSensitive {
                     Button("Always Allow This") { approval.decide(.approveAlways(trimmed)) }
                         .buttonStyle(.bordered)
                 }
@@ -135,7 +138,12 @@ struct CommandApprovalCard: View {
                     .buttonStyle(.bordered)
                     .keyboardShortcut(.cancelAction)
             }
-            if !approval.isSubagentRequest {
+            if approval.isSensitive {
+                Label("This publishes, deletes, sends, or touches credentials — it always asks, even with \"allow all\" on.", systemImage: "hand.raised")
+                    .font(.caption)
+                    .foregroundStyle(Theme.warning)
+            }
+            if !approval.isSubagentRequest, !approval.isSensitive {
                 if let rule = alwaysAllowRule, let folder = approval.trustFolderPath {
                     let folderName = (folder as NSString).lastPathComponent
                     VStack(alignment: .leading, spacing: 4) {
