@@ -243,6 +243,11 @@ final class ProviderStore {
         guard !didStartDiscovery else { return }
         didStartDiscovery = true
 
+        // The models.dev registry refresh is background maintenance: the
+        // vendored snapshot already answers lookups, this just replaces it
+        // with current data when the network allows.
+        Task.detached { await ModelsDevRegistry.refreshIfStale() }
+
         let hasExplicitChoice = defaults.bool(forKey: explicitSelectionKey)
         let currentIsUsable = selected.map(isConfigured) ?? false
         guard !hasExplicitChoice, !currentIsUsable else {
@@ -586,7 +591,11 @@ final class ProviderStore {
 
         statusByID[id] = .connecting
         do {
-            let models = try await fetchModelsWithRetry(profile: profile)
+            let fetched = try await fetchModelsWithRetry(profile: profile)
+            // models.dev fills what the provider's own catalog doesn't say
+            // (context, pricing, capabilities) — observed values win, the
+            // registry only fills nils / upgrades capability flags.
+            let models = ModelsDevRegistry.enrich(fetched, kind: profile.kind, baseURL: profile.endpoint)
             modelsByID[id] = models
             refreshedAtByID[id] = Date()
             catalogCache[id] = CachedModelCatalog(models: models, fetchedAt: Date())

@@ -375,6 +375,19 @@ final class AppModel {
         return false
     }
 
+    /// A rate-limit failure that is really "the plan window ran out": a
+    /// 429 on a provider whose quota snapshot carries a future reset time,
+    /// inside the window-resume bound. Returns how long to wait — `nil`
+    /// means this is an ordinary transient failure, or the reset is too
+    /// far out (or already past) to sleep on.
+    nonisolated static func quotaWindowResetWait(for error: Error, quota: QuotaSnapshot?) -> TimeInterval? {
+        guard case APIError.status(let code, _) = error, code == 429 else { return nil }
+        guard let resetAt = quota?.resetAt else { return nil }
+        let wait = resetAt.timeIntervalSinceNow + 5
+        guard wait > 0, wait <= Limits.quotaWindowResumeMaxDelay else { return nil }
+        return wait
+    }
+
     /// Terminal finish reason per reply (transient) — "length" means the
     /// provider cut the reply at its output cap and drives auto-continue.
     var finishReasonByMessage: [UUID: String] = [:]
