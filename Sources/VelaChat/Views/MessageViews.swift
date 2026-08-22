@@ -1033,7 +1033,10 @@ struct ReasoningDisclosure: View {
 
     private func row(title: String) -> some View {
         ActivityRow(
-            symbol: "brain",
+            // "thought.bubble", not "brain" — the brain glyph belongs to the
+            // memory activity rows, and reading "memory" onto every reasoning
+            // step conflated two different subsystems.
+            symbol: "thought.bubble",
             title: title,
             tint: Theme.reasoningAccent,
             isActive: isThinking,
