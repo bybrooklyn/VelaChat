@@ -1,5 +1,26 @@
 # VelaChat — working notes
 
+## 2026-08-22 — Phase 3: shared approval classifier (phase-3-approval-classifier)
+
+`ApprovalClassifier` in VelaCore: one `classify(Action) -> Tier`
+(free / confirmable / sensitive) over a single Action vocabulary spanning
+every §3 consumer — shell commands, first-class git ops, browsing actions,
+computer-use actuation with scope containment, publishing, sending.
+Sensitive shell set: elevation, inline-code interpreters (`sh -c`, eval,
+osascript, expect, xargs), curl|sh, git push / gh pr/gist/release/auth,
+keychain + credential paths (`security`, ssh-add, ~/.ssh|aws|gnupg,
+.netrc, .env), broad recursive rm, mkfs/diskutil erase, dd to /dev.
+Shell free/confirmable still comes from `CommandRunner.classify` — its
+verdicts are unchanged; this layer only adds hard-stop above them.
+`executeCommand` now consults it: sensitive skips session trust AND
+durable rules entirely (first wiring caught a regression where folder
+rules were skipped when allow-all was off — fixed before push), and
+`CommandApproval.isSensitive` strips every always-allow path from the card
+plus a warning line. `ApprovalClassifierTests` pins the plan's own
+assertions; CI caught "credit card" missing from the target vocabulary —
+added. Bridge routing (§7), browsing/computer-use/git-tool consumers ride
+their own phases.
+
 ## 2026-08-22 — Phase 1 close-out + Phase 2 UI substrate (velacore-extraction, phase-2-ui-substrate; per velachat-plan-v2.md)
 
 Phase 1 finished: the `costUSD` pricing extension moved from VelaChat to
