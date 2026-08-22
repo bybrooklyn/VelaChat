@@ -1412,6 +1412,12 @@ public enum ChatStreamEvent: Sendable {
     case activityFinished(id: UUID, result: String, isError: Bool)
     /// Live rate-limit headers seen on a response.
     case quota(QuotaSnapshot)
+    /// The provider refused — an official, structured "no" (OpenAI's
+    /// safety classifier) rather than content or a transport error. The
+    /// turn completed; the answer just isn't the one wanted. Rendered as
+    /// a typed refusal row so a policy decision doesn't look like a
+    /// broken reply.
+    case refusal(String)
 }
 
 public struct UsageSummary: Codable, Equatable {

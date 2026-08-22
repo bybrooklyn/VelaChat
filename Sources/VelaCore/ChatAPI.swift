@@ -375,6 +375,7 @@ public final class CompatibleChatClient: @unchecked Sendable {
             var pendingToolCalls: [Int: (id: String, name: String, arguments: String)] = [:]
             var sawToolCalls = false
             var textForThisRound = ""
+            var refusalForThisRound = ""
 
             for try await line in bytes.lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -408,6 +409,7 @@ public final class CompatibleChatClient: @unchecked Sendable {
                 if !content.isEmpty || !reasoning.isEmpty {
                     onEvent(.delta(content: content, reasoning: reasoning))
                 }
+                if let refusal = choice.delta.refusal, !refusal.isEmpty { refusalForThisRound += refusal }
                 if let deltas = choice.delta.toolCalls {
                     sawToolCalls = true
                     for delta in deltas {
@@ -425,6 +427,12 @@ public final class CompatibleChatClient: @unchecked Sendable {
             }
 
             guard sawToolCalls, !pendingToolCalls.isEmpty, let toolContext, round < maxRounds - 1, !toolsDisabled else {
+                // An official refusal is the round's answer — emitted whole,
+                // once, so the transcript renders one typed refusal row
+                // rather than a stream of fragments.
+                if !refusalForThisRound.isEmpty {
+                    onEvent(.refusal(refusalForThisRound))
+                }
                 onEvent(.finished(reason: lastFinishReason))
                 return
             }
@@ -1443,10 +1451,17 @@ private struct StreamChunk: Decodable {
             let reasoningContent: String?
             let reasoning: String?
             let toolCalls: [ToolCallDelta]?
+            /// OpenAI's structured refusal field — set when their safety
+            /// classifier (or a policy layer) blocked the answer and sent
+            /// an official "no" instead of content. Most OpenAI-compatible
+            /// providers never send it, which decodes as nil and changes
+            /// nothing.
+            let refusal: String?
             enum CodingKeys: String, CodingKey {
                 case content, reasoning
                 case reasoningContent = "reasoning_content"
                 case toolCalls = "tool_calls"
+                case refusal
             }
             var contentText: String { content ?? "" }
             var reasoningText: String { reasoningContent ?? reasoning ?? "" }

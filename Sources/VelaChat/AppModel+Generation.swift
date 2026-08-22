@@ -1061,6 +1061,15 @@ extension AppModel {
                     ? String(result.prefix(Limits.toolResultBytes)) + "\n\n[Truncated — kept the first 4 KB.]"
                     : result
                 enqueue(.activityUpdate(id: id, result: capped, isError: isError, finishedAt: Date()), for: assistantID, conversation: conversation)
+            case .refusal(let text):
+                // A provider refusal is not a crash and not content: it's a
+                // decision. It lands as its own notice message so the
+                // transcript shows an intentional typed row.
+                postNotice(
+                    "The provider declined this request:\n\n\(text)",
+                    kind: "refusal",
+                    to: conversation
+                )
             }
         }
         if promptTokens != nil || completionTokens != nil {

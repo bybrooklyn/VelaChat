@@ -14,6 +14,7 @@ struct NoticeCard: View {
         switch message.noticeKind {
         case "success": "checkmark.circle"
         case "info": "info.circle"
+        case "refusal": "hand.raised"
         default: "exclamationmark.triangle"
         }
     }
@@ -22,6 +23,7 @@ struct NoticeCard: View {
         switch message.noticeKind {
         case "success": Theme.success
         case "info": Theme.secondaryText
+        case "refusal": Theme.accent
         default: Theme.warning
         }
     }
