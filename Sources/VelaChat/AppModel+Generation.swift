@@ -457,10 +457,15 @@ extension AppModel {
                     self.recallByMessage[assistantID] = recalled
                     // Facts are already in the prompt via relevantMemoryText;
                     // only the conversation excerpts need adding here.
+                    // Excerpts are DATA: any tool-call syntax a past reply
+                    // contained (raw ask-user fences, card JSON) is
+                    // neutralized before injection, so retrieved history can
+                    // never hand the model a template to parrot back as a
+                    // live-looking artifact.
                     let excerpts = recalled
                         .filter { !$0.isFact }
                         .prefix(4)
-                        .map { "- \($0.text.prefix(400))" }
+                        .map { "- \(AskUserQuestionPayload.neutralizingToolCallSyntax(in: String($0.text.prefix(400))))" }
                         .joined(separator: "\n")
                     if !excerpts.isEmpty {
                         finalMessages.insert(ChatMessage(

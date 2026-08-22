@@ -235,6 +235,28 @@ struct MessageRow: View {
                                 RichMessageText(text: ask.suffix, isUser: false)
                             }
                         }
+                    } else if alternateIndex == 0,
+                              AskUserQuestionPayload.hasCompleteAskUserFence(in: displayedMessage.content) {
+                        // A complete ```ask-user block that wouldn't decode
+                        // even after lenient repair — the model tried to ask.
+                        // A typed "couldn't render" row keeps the failure
+                        // looking intentional; raw JSON with an Inspector
+                        // button is exactly what this replaces.
+                        VStack(alignment: .leading, spacing: 10) {
+                            let prefix = AskUserQuestionPayload.prefixBeforeUnterminatedFence(in: displayedMessage.content)
+                            if !prefix.isEmpty {
+                                RichMessageText(text: prefix, isUser: false)
+                            }
+                            HStack(spacing: 8) {
+                                Image(systemName: "questionmark.circle.dashed")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Theme.warning)
+                                Text("The model asked a question, but it couldn't be rendered — reply normally to answer.")
+                                    .font(.callout)
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
+                            .messageColumn()
+                        }
                     } else if message.isStreaming, alternateIndex == 0,
                               AskUserQuestionPayload.hasUnterminatedFence(in: displayedMessage.content) {
                         // Mid-stream, fence open: never show the raw JSON

@@ -1038,8 +1038,13 @@ public struct AskUserQuestionPayload: Decodable, Equatable {
         }
         let jsonText = content[openMatch.upperBound..<closeMatch.lowerBound]
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strict decode first; on failure, retry once over repaired text —
+        // a weak model emits almost-JSON (smart quotes, trailing commas)
+        // and the difference between "renders as a card" and "dumps raw
+        // JSON into the transcript" should not be a stray curly quote.
         guard let data = jsonText.data(using: .utf8),
-              let payload = try? JSONDecoder().decode(AskUserQuestionPayload.self, from: data),
+              let payload = (try? JSONDecoder().decode(AskUserQuestionPayload.self, from: data))
+                ?? repairedJSONText(String(jsonText)).data(using: .utf8).flatMap({ try? JSONDecoder().decode(AskUserQuestionPayload.self, from: $0) }),
               !payload.questions.isEmpty else {
             return nil
         }
@@ -1068,6 +1073,17 @@ public struct AskUserQuestionPayload: Decodable, Equatable {
         return closingFenceRange(in: content, after: openMatch.upperBound) == nil
     }
 
+    /// True when the message contains a complete ```ask-user fence that
+    /// failed to decode as a question — the model tried to ask, so the
+    /// transcript shows the typed "couldn't render" row rather than the
+    /// raw JSON it would otherwise fall through to.
+    public static func hasCompleteAskUserFence(in content: String) -> Bool {
+        guard let openMatch = content.range(of: openFencePattern, options: .regularExpression) else {
+            return false
+        }
+        return closingFenceRange(in: content, after: openMatch.upperBound) != nil
+    }
+
     /// The prose before an unterminated fence — shown above the
     /// "Preparing a question…" placeholder while streaming.
     public static func prefixBeforeUnterminatedFence(in content: String) -> String {
@@ -1076,6 +1092,60 @@ public struct AskUserQuestionPayload: Decodable, Equatable {
         }
         return String(content[content.startIndex..<openMatch.lowerBound])
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: Retrieved history is data, not instructions
+
+    /// Neutralizes tool-call syntax in text pulled from *past* turns before
+    /// that text re-enters a prompt as retrieved data. Memory recall can
+    /// surface chunks of prior assistant replies verbatim, raw ```ask-user
+    /// blocks included; a weak model parrots the block back and the
+    /// renderer faces stale JSON it was never meant to execute. A past
+    /// question returns as "(asked a question)" — never the raw fence.
+    public static func neutralizingToolCallSyntax(in text: String) -> String {
+        var result = text
+        var searchStart = result.startIndex
+        while let openMatch = result.range(
+            of: openFencePattern,
+            options: .regularExpression,
+            range: searchStart..<result.endIndex
+        ) {
+            if let closeMatch = closingFenceRange(in: result, after: openMatch.upperBound) {
+                result.replaceSubrange(openMatch.lowerBound..<closeMatch.upperBound, with: "(asked a question)")
+                searchStart = result.index(openMatch.lowerBound, offsetBy: "(asked a question)".count, limitedBy: result.endIndex) ?? result.endIndex
+            } else {
+                // Unterminated open (a chunk boundary cut the block in half):
+                // everything from the fence on is one broken artifact.
+                result.replaceSubrange(openMatch.lowerBound..<result.endIndex, with: "(asked a question)")
+                break
+            }
+        }
+        // The replacement plus surrounding whitespace can leave pileups.
+        result = result.replacingOccurrences(
+            of: #"\n{3,}"#,
+            with: "\n\n",
+            options: .regularExpression
+        )
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Repairs the near-miss shapes models emit instead of JSON — curly
+    /// quotes standing in for straight ones, trailing commas before a
+    /// closing brace/bracket. Same spirit as `ToolCatalog.parseArguments`'s
+    /// salvage pass, but string-level so `Decodable` still does the real
+    /// parsing afterward.
+    static func repairedJSONText(_ source: String) -> String {
+        var repaired = source
+            .replacingOccurrences(of: "\u{201C}", with: "\"")
+            .replacingOccurrences(of: "\u{201D}", with: "\"")
+            .replacingOccurrences(of: "\u{2018}", with: "'")
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+        repaired = repaired.replacingOccurrences(
+            of: #",\s*([}\]])"#,
+            with: "$1",
+            options: .regularExpression
+        )
+        return repaired
     }
 }
 
