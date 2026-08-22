@@ -36,7 +36,7 @@ public enum BrowserCookieImport {
             case .unreadable(let detail):
                 "Couldn't read that browser's cookies: \(detail)"
             case .needsFullDiskAccess:
-                "macOS blocks reading Safari's cookies until VelaChat has Full Disk Access (System Settings → Privacy & Security → Full Disk Access). Another browser, or pasting the token manually, avoids this."
+                "macOS blocked reading that browser's cookies. Grant VelaChat Full Disk Access (System Settings → Privacy & Security → Full Disk Access) and try again — or use another browser, or paste the token manually."
             case .noSession(let name):
                 "No ChatGPT session found in \(name). Log in to chatgpt.com there first, then try again."
             }
@@ -80,15 +80,36 @@ public enum BrowserCookieImport {
         case .safari:
             return manager.fileExists(atPath: browser.path.path)
         case .chromium:
-            return ["Default", "Profile 1", "Profile 2", "Profile 3"].contains {
-                manager.fileExists(atPath: browser.path.appendingPathComponent("\($0)/Cookies").path)
-            }
+            return !chromiumProfileURLs(browser).isEmpty
         case .firefox:
             let profiles = (try? manager.contentsOfDirectory(at: browser.path, includingPropertiesForKeys: nil)) ?? []
             return profiles.contains {
                 manager.fileExists(atPath: $0.appendingPathComponent("cookies.sqlite").path)
             }
         }
+    }
+
+    /// Every Chromium profile directory that carries a cookie store, found
+    /// by scanning rather than by name. The hardcoded `Default` +
+    /// `Profile 1-3` list silently missed a fifth Chrome profile, and Arc
+    /// lays its `User Data` out differently again — a directory containing
+    /// a `Cookies` file is a profile, whatever it is called.
+    private static func chromiumProfileURLs(_ browser: Browser) -> [URL] {
+        let manager = FileManager.default
+        let contents = (try? manager.contentsOfDirectory(
+            at: browser.path,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        )) ?? []
+        return contents.filter { url in
+            var isDirectory: ObjCBool = false
+            guard manager.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else { return false }
+            let name = url.lastPathComponent
+            // System/Guest profiles exist but hold nothing user-relevant.
+            guard !name.hasPrefix("System"), !name.hasPrefix("Guest") else { return false }
+            return manager.fileExists(atPath: url.appendingPathComponent("Cookies").path)
+        }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     /// Returns a `name=value; …` Cookie header for chatgpt.com, or throws
@@ -122,12 +143,10 @@ public enum BrowserCookieImport {
 
     private static func chromiumCookies(_ browser: Browser) throws -> [(name: String, value: String)] {
         guard let service = browser.keychainService else { throw ImportError.notInstalled }
-        let profiles = ["Default", "Profile 1", "Profile 2", "Profile 3"]
         var lastError: Error = ImportError.noSession(browser.name)
         let key = try chromiumKey(service: service)
-        for profile in profiles {
-            let file = browser.path.appendingPathComponent("\(profile)/Cookies")
-            guard FileManager.default.fileExists(atPath: file.path) else { continue }
+        for profile in chromiumProfileURLs(browser) {
+            let file = profile.appendingPathComponent("Cookies")
             do {
                 let rows = try readSQLite(
                     file: file,
@@ -312,22 +331,72 @@ public enum BrowserCookieImport {
     /// Reads a locked-or-not cookie DB. The file is copied first: browsers
     /// hold a write lock while running, and a copy is also the only way to
     /// be certain nothing here can modify the user's real profile.
+    ///
+    /// The copy carries the `-wal` and `-shm` sidecars along, and the
+    /// database is opened read-write — on the copy only. A running browser
+    /// keeps its newest commits in the WAL, and the cookie that proves
+    /// you're logged into ChatGPT was written seconds ago: copying the main
+    /// file alone read a database without it, so import "found no session"
+    /// right after a fresh login. With the sidecars present, SQLite replays
+    /// the WAL into the copied page set; opening read-only would leave that
+    /// replay unable to write.
     private static func readSQLite(
         file: URL,
         query: String,
         columns: Int,
         kind: (OpaquePointer?, Int) -> Column
     ) throws -> [[Value]] {
-        let temporary = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vela-cookies-\(UUID().uuidString).sqlite")
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vela-cookies-\(UUID().uuidString)", isDirectory: true)
         do {
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: false)
+            let temporary = temporaryDirectory.appendingPathComponent(file.lastPathComponent)
             try FileManager.default.copyItem(at: file, to: temporary)
+            for suffix in ["-wal", "-shm"] {
+                let sidecar = URL(fileURLWithPath: file.path + suffix)
+                if FileManager.default.fileExists(atPath: sidecar.path) {
+                    try? FileManager.default.copyItem(
+                        at: sidecar,
+                        to: URL(fileURLWithPath: temporary.path + suffix)
+                    )
+                }
+            }
+            defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+            return try querySQLite(file: temporary, query: query, columns: columns, kind: kind)
+        } catch let error as ImportError {
+            throw error
         } catch {
-            throw ImportError.needsFullDiskAccess
+            throw Self.mapCopyError(error as NSError, source: file)
         }
+    }
+
+    /// A failed copy means one of three very different things, and mapping
+    /// them all to "grant Full Disk Access" sent users hunting for a
+    /// permission they didn't need (or have any way to fix, when the real
+    /// problem was a vanished profile).
+    private static func mapCopyError(_ error: NSError, source: URL) -> ImportError {
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            return .notInstalled
+        }
+        let cocoaDenied = [NSFileReadNoPermissionError, NSFileWriteNoPermissionError].contains(error.code)
+        let posixDenied = error.domain == NSPOSIXErrorDomain && [Int(EPERM), Int(EACCES)].contains(Int(error.code))
+        if cocoaDenied || posixDenied {
+            return .needsFullDiskAccess
+        }
+        return .unreadable("the cookie database couldn't be copied (\(error.localizedDescription)).")
+    }
+
+    private static func querySQLite(
+        file: URL,
+        query: String,
+        columns: Int,
+        kind: (OpaquePointer?, Int) -> Column
+    ) throws -> [[Value]] {
         var db: OpaquePointer?
-        guard sqlite3_open_v2(temporary.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+        // Read-write deliberately: with a WAL sidecar in the copy, replay
+        // needs to write. This is VelaChat's temp copy — the user's real
+        // profile stays untouched.
+        guard sqlite3_open_v2(file.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
             throw ImportError.unreadable("the cookie database couldn't be opened.")
         }
         defer { sqlite3_close(db) }
