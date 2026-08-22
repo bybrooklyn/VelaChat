@@ -226,7 +226,10 @@ struct MessageRow: View {
                             }
                             AskUserQuestionCard(
                                 payload: ask.payload,
-                                interactive: isLastMessage && !appModel.isGenerating
+                                interactive: isLastMessage && !appModel.isGenerating,
+                                // Anything but the live open question is a
+                                // record — collapse it to the answered line.
+                                resolved: !(isLastMessage && !appModel.isGenerating)
                             )
                             if !ask.suffix.isEmpty {
                                 RichMessageText(text: ask.suffix, isUser: false)

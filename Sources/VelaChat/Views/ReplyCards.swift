@@ -412,6 +412,10 @@ struct AskUserQuestionCard: View {
     /// sets this instead, so the answer resumes the suspended tool call
     /// rather than starting another turn.
     var onAnswer: ((String) -> Void)? = nil
+    /// A resolved card is a record, not a live control: the picker
+    /// collapses to a settled line so an answered question stops looking
+    /// like it still wants input. Only the live mount passes `false`.
+    var resolved: Bool = false
 
     /// Selections keyed by question text — each question answers
     /// independently, and any of them may stay empty.
@@ -420,6 +424,7 @@ struct AskUserQuestionCard: View {
     @State private var submitted = false
     @State private var activeIndex = 0
     @State private var showingIncompleteConfirm = false
+    @State private var showsResolvedDetail = false
 
     private var questions: [AskUserQuestionPayload.Question] { payload.questions }
 
@@ -441,6 +446,47 @@ struct AskUserQuestionCard: View {
     }
 
     var body: some View {
+        if resolved {
+            resolvedCard
+        } else {
+            liveCard
+        }
+    }
+
+    /// The answered-state record: one settled line, expandable to what was
+    /// asked. The selections aren't replayed here — they traveled to the
+    /// model as the composed answer message, and duplicating them would
+    /// invent a state this view no longer owns.
+    private var resolvedCard: some View {
+        ActivityRow(
+            symbol: "checkmark.circle",
+            title: questions.count == 1
+                ? "User answered the question"
+                : "User answered \(questions.count) questions",
+            tint: Theme.success,
+            isActive: false,
+            isExpanded: $showsResolvedDetail
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(questions) { question in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(question.question)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(Theme.secondaryText)
+                        ForEach(question.options) { option in
+                            Text("· " + option.label)
+                                .font(.caption)
+                                .foregroundStyle(Theme.tertiaryText)
+                        }
+                    }
+                }
+            }
+            .padding(.top, 2)
+        }
+        .messageColumn()
+    }
+
+    private var liveCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             if questions.count > 1 {
                 tabStrip
