@@ -220,6 +220,7 @@ public struct ActivityRecord: Identifiable, Codable, Equatable, Sendable {
     /// carries information, so a fast call doesn't read as "0s".
     public var durationLabel: String? {
         guard let duration else { return nil }
+        if duration < 0.1 { return "<0.1s" }
         if duration < 10 { return String(format: "%.1fs", duration) }
         if duration < 60 { return "\(Int(duration.rounded()))s" }
         let total = Int(duration.rounded())

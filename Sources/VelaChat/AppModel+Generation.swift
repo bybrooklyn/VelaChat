@@ -692,7 +692,10 @@ extension AppModel {
         record.startedAt = Date()
         enqueue(.activity(record), for: assistantID, conversation: conversation)
         if let finish {
-            enqueue(.activityUpdate(id: record.id, result: finish, isError: false, finishedAt: Date()), for: assistantID, conversation: conversation)
+            // Resolved in the same block it was posted: no duration was
+            // observed, so none is stamped — a finishedAt here would
+            // manufacture a "0.0s" label for an instantaneous note.
+            enqueue(.activityUpdate(id: record.id, result: finish, isError: false, finishedAt: nil), for: assistantID, conversation: conversation)
         }
         return record.id
     }
