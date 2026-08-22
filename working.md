@@ -1,5 +1,30 @@
 # VelaChat — working notes
 
+## 2026-08-22 — Phase 4: providers + cost (phase-4-providers)
+
+§4.3 cookie import, all four diagnosed bugs: `readSQLite` now copies
+`-wal`/`-shm` sidecars and opens the COPY read-write so WAL replay sees the
+just-written session cookie (the "no session right after login" failure);
+Chromium profiles enumerated by scanning for any dir containing a `Cookies`
+file (fifth-profile bug; Arc layout) instead of hardcoded Default/Profile
+1-3; copy failures mapped honestly — missing source → notInstalled,
+EACCES/EPERM → needsFullDiskAccess (text now engine-neutral), else
+unreadable(detail). §4.2: browser cookie import is now the PRIMARY ChatGPT
+sign-in path (Google blocks embedded windows); embedded WebKit sign-in
+demoted to secondary, paste stays fallback. §4.1 models.dev registry:
+vendored snapshot pruned to shippable providers (~315 KB) bundled in
+VelaCore resources; live fetch of full api.json cached on disk in App
+Support (never UserDefaults), refreshed if >7 days old at ProviderStore
+start; `enrich` fills ONLY nils / upgrades capability flags — observed
+provider data always wins (incl. Ollama's /api/show). Wired into
+refreshModels. §5 auto-resume: a 429 whose quota snapshot has a future
+resetAt inside `Limits.quotaWindowResumeMaxDelay` (6 h) queues the reply
+with a visible note and retries at the reset moment, once per reply.
+Verified already-built since the plan was pinned: two meters in
+UsagePopover (subscription % windows vs. metered $ rows), pre-send labeled
+cost estimate in ContextInspector, capability badges in the model picker,
+Test Connection button, §4.5 paste (clipboard images + big-text→file).
+
 ## 2026-08-22 — Phase 3: shared approval classifier (phase-3-approval-classifier)
 
 `ApprovalClassifier` in VelaCore: one `classify(Action) -> Tier`
