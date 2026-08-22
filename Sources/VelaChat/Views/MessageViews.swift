@@ -753,8 +753,18 @@ struct ActivityLine: View {
     @Environment(ArtifactPresenter.self) private var artifactPresenter
     @Environment(AppModel.self) private var appModel
     let records: [ActivityRecord]
-    @State private var isExpanded = false
+    @State private var isExpanded: Bool
+    @State private var didInteract = false
     @State private var isHovering = false
+
+    /// A line made only of failures starts open — and opens live if a
+    /// call fails in place — because a blocked/errored call must not fold
+    /// into something a reader has to know to click (§2.1). Once the user
+    /// has toggled the row themselves, their choice wins.
+    init(records: [ActivityRecord]) {
+        self.records = records
+        _isExpanded = State(initialValue: !records.isEmpty && records.allSatisfy(\.isError))
+    }
 
     private var isRunning: Bool { records.contains { $0.isRunning } }
 
@@ -869,10 +879,16 @@ struct ActivityLine: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 guard !isRunning else { return }
+                didInteract = true
                 withAnimation(.easeOut(duration: 0.16)) { isExpanded.toggle() }
             }
             .onHover { isHovering = $0 }
             .animation(.easeOut(duration: 0.12), value: isHovering)
+            .onChange(of: showsErrorTint) { _, failed in
+                if failed, !didInteract {
+                    withAnimation(.easeOut(duration: 0.16)) { isExpanded = true }
+                }
+            }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityDescription)
             .accessibilityAddTraits(isRunning ? [] : .isButton)
