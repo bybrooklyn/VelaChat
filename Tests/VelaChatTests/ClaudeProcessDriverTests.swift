@@ -26,7 +26,7 @@ final class ClaudeProcessDriverTests: XCTestCase {
         let reset = resetsAt.map { String($0) } ?? "null"
         let statusJSON = status.map { "\"\($0)\"" } ?? "null"
         let json = """
-        {"type":"rate_limit_event","rate_limit_info":{"status":\(statusJSON),"resets_at":\(reset),"rate_limit_type":"five_hour"}}
+        {"type":"rate_limit_event","rate_limit_info":{"status":\(statusJSON),"resetsAt":\(reset),"rateLimitType":"five_hour"}}
         """
         let frame = try XCTUnwrap(ClaudeStreamFrame.decode(line: json))
         return try XCTUnwrap({
