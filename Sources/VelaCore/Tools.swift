@@ -238,6 +238,13 @@ public enum ToolCatalog {
         public var analyzeImage: (@Sendable (Data, String) async -> String)? = nil
         /// Routes mcp_-prefixed tool names to the MCP manager.
         public var mcpCall: (@Sendable (String, String) async -> String)? = nil
+        /// True when the workspace is a user-ATTACHED project folder rather
+        /// than the app's own sandbox: file writes then require §3
+        /// confirmation (reads stay free). The sandbox keeps silent writes.
+        public var requiresWriteApproval = false
+        /// Ask the host to approve one write; `true` proceeds. Consulted
+        /// only when `requiresWriteApproval` is set.
+        public var approveWrite: (@Sendable (_ relativePath: String) async -> Bool)? = nil
         /// run_command approval + execution, injected only when the agent
         /// abilities are enabled. Returns the command's combined output (or
         /// an "Error:"/denied message). nil = the tool is disabled.
@@ -402,14 +409,14 @@ public enum ToolCatalog {
             guard let path = arguments?["path"] as? String, let content = arguments?["content"] as? String else {
                 return "Error: both \"path\" and \"content\" are required."
             }
-            return writeFileResult(path: path, content: content, context: context)
+            return await writeFileResult(path: path, content: content, context: context)
         case editFile.name:
             guard let path = arguments?["path"] as? String,
                   let oldString = arguments?["old_string"] as? String,
                   let newString = arguments?["new_string"] as? String else {
                 return "Error: \"path\", \"old_string\", and \"new_string\" are required."
             }
-            return editFileResult(path: path, oldString: oldString, newString: newString, replaceAll: arguments?["replace_all"] as? Bool ?? false, context: context)
+            return await editFileResult(path: path, oldString: oldString, newString: newString, replaceAll: arguments?["replace_all"] as? Bool ?? false, context: context)
         case searchFiles.name:
             return searchFilesResult(glob: arguments?["glob"] as? String, query: arguments?["query"] as? String, context: context)
         case runCommand.name:
@@ -700,9 +707,24 @@ public enum ToolCatalog {
         }
     }
 
-    private static func writeFileResult(path: String, content: String, context: ExecutionContext) -> String {
+    /// §6 write gate: in an ATTACHED project folder, every file write
+    /// confirms through the shared approval flow first (reads stay free).
+    /// The app-owned sandbox keeps silent writes. `false` = declined.
+    private static func writeApproved(path: String, context: ExecutionContext) async -> Bool {
+        guard context.requiresWriteApproval else { return true }
+        guard let approve = context.approveWrite else {
+            // Attached folder but no approval channel wired — refuse closed.
+            return false
+        }
+        return await approve(path)
+    }
+
+    private static func writeFileResult(path: String, content: String, context: ExecutionContext) async -> String {
         guard let url = SandboxManager.resolve(path, in: context.workspaceDirectory) else {
             return "Error: \"\(path)\" is outside the workspace folder — only relative paths within it are allowed."
+        }
+        guard await writeApproved(path: path, context: context) else {
+            return "The user declined this write to \(path). Don't retry unchanged — ask what they'd prefer instead."
         }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -744,9 +766,12 @@ public enum ToolCatalog {
         return visible.joined(separator: "\n") + suffix
     }
 
-    private static func editFileResult(path: String, oldString: String, newString: String, replaceAll: Bool, context: ExecutionContext) -> String {
+    private static func editFileResult(path: String, oldString: String, newString: String, replaceAll: Bool, context: ExecutionContext) async -> String {
         guard let url = SandboxManager.resolve(path, in: context.workspaceDirectory) else {
             return "Error: \"\(path)\" is outside the workspace folder — only relative paths within it are allowed."
+        }
+        guard await writeApproved(path: path, context: context) else {
+            return "The user declined this edit to \(path). Don't retry unchanged — ask what they'd prefer instead."
         }
         guard let text = try? String(contentsOf: url, encoding: .utf8) else {
             return "Error: could not read \(path) — it may not exist yet. Use write_file to create it."

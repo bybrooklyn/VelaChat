@@ -274,6 +274,10 @@ final class AppModel {
         /// Subagent fan-out reuses this card, but must not offer command
         /// editing or the always-allow paths.
         var isSubagentRequest = false
+        /// The §6 write gate reuses the card for file edits in an attached
+        /// folder: the "command" is a relative path (not editable), and the
+        /// trust paths are "allow once" / "allow all edits this chat" only.
+        var isFileWrite = false
         /// The classifier's hard-stop verdict (§3): this command publishes,
         /// deletes broadly, sends, touches credentials, or hides its
         /// payload behind an interpreter. Session trust never absorbs it,
@@ -298,6 +302,10 @@ final class AppModel {
         }
     }
     var pendingApproval: CommandApproval?
+    /// Session-scoped "allow all edits in this folder" answers (the §6
+    /// write gate) — keyed by attached folder path, deliberately not
+    /// persisted: a relaunch re-asks.
+    var workspaceWriteApprovals: Set<String> = []
 
     /// A question the model asked through the real `ask_user` tool, holding
     /// the generation open until it's answered.

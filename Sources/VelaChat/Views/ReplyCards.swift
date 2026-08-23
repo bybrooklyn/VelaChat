@@ -93,14 +93,14 @@ struct CommandApprovalCard: View {
             HStack(spacing: 8) {
                 Image(systemName: approval.isSubagentRequest ? "person.2" : "terminal")
                     .foregroundStyle(Theme.warning)
-                Text(approval.isSubagentRequest ? "Run subagents?" : "Run this command?")
+                Text(approval.isSubagentRequest ? "Run subagents?" : approval.isFileWrite ? "Edit this file?" : "Run this command?")
                     .font(.body.weight(.semibold))
                 Spacer(minLength: 0)
             }
             Text(approval.reason)
                 .font(.caption)
                 .foregroundStyle(Theme.secondaryText)
-            if approval.isSubagentRequest {
+            if approval.isSubagentRequest || approval.isFileWrite {
                 Text(approval.command)
                     .font(.callout)
                     .foregroundStyle(Theme.text)
@@ -122,14 +122,14 @@ struct CommandApprovalCard: View {
                 .foregroundStyle(Theme.tertiaryText)
             }
             HStack(spacing: 8) {
-                Button(approval.isSubagentRequest ? "Run" : "Run") { approval.decide(.approveOnce(trimmed)) }
+                Button(approval.isFileWrite ? "Allow" : "Run") { approval.decide(.approveOnce(trimmed)) }
                     .buttonStyle(.glassProminent)
                     .tint(Theme.accent)
                     .keyboardShortcut(.defaultAction)
                 // Sensitive commands offer no trust paths at all — the
                 // classifier decided this is a publish/delete/send/
                 // credential decision, and those are made fresh every time.
-                if !approval.isSubagentRequest, !approval.isSensitive {
+                if !approval.isSubagentRequest, !approval.isSensitive, !approval.isFileWrite {
                     Button("Always Allow This") { approval.decide(.approveAlways(trimmed)) }
                         .buttonStyle(.bordered)
                 }
@@ -143,7 +143,7 @@ struct CommandApprovalCard: View {
                     .font(.caption)
                     .foregroundStyle(Theme.warning)
             }
-            if !approval.isSubagentRequest, !approval.isSensitive {
+            if !approval.isSubagentRequest, !approval.isSensitive, !approval.isFileWrite {
                 if let rule = alwaysAllowRule, let folder = approval.trustFolderPath {
                     let folderName = (folder as NSString).lastPathComponent
                     VStack(alignment: .leading, spacing: 4) {

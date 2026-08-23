@@ -273,6 +273,17 @@ extension AppModel {
             searchEndpoint: trimmedSearchEndpoint,
             workspaceDirectory: conversation.workspaceRoot
         )
+        // §6 write gate: an ATTACHED project folder confirms every file
+        // write through the shared approval flow (reads stay free). The
+        // app-owned sandbox keeps silent writes.
+        if conversation.projectWorkspace != nil {
+            toolContext.requiresWriteApproval = true
+            let folderPath = conversation.projectWorkspace?.path ?? conversation.workspaceRoot.path
+            toolContext.approveWrite = { [weak self] relativePath in
+                guard let self else { return false }
+                return await self.approveWorkspaceWrite(relativePath: relativePath, folderPath: folderPath, conversationID: conversation.id)
+            }
+        }
         toolContext.attachmentTexts = attachmentTexts
         toolContext.memory = ToolCatalog.MemoryAccess(
             snapshot: facts.map { ToolCatalog.MemorySnapshot(id: $0.id, content: $0.content, topic: $0.topic) },
@@ -670,6 +681,40 @@ extension AppModel {
             }
         }
     }
+
+    /// The §6 write gate's host side: one card per write in an attached
+    /// folder until the user grants "all edits this chat" for that folder.
+    /// Session-scoped on purpose — a relaunch re-asks, exactly like
+    /// `allowAllCommands`.
+    @MainActor
+    func approveWorkspaceWrite(relativePath: String, folderPath: String, conversationID: UUID) async -> Bool {
+        if workspaceWriteApprovals.contains(folderPath) { return true }
+        let decision: CommandApproval.Decision = await withOneShotResume { resume in
+            pendingApproval = CommandApproval(
+                conversationID: conversationID,
+                command: relativePath,
+                directory: URL(fileURLWithPath: folderPath, isDirectory: true),
+                reason: "The model wants to modify a file in your attached folder.",
+                isFileWrite: true,
+                decide: resume
+            )
+        }
+        pendingApproval = nil
+        switch decision {
+        case .approveOnce:
+            return true
+        case .approveAll:
+            workspaceWriteApprovals.insert(folderPath)
+            return true
+        case .deny:
+            CommandTrust.noteDenied("file-write:\(relativePath)", for: folderPath)
+            return false
+        case .approveAlways, .approveRule:
+            // Not offered by the file-write card; treat as one-shot.
+            return true
+        }
+    }
+
 
     /// The `ask_user` tool's gate: decodes the payload, puts a real
     /// question card on screen, and suspends the tool call until the user
