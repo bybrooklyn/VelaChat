@@ -1884,7 +1884,7 @@ final class AppModel {
     /// the bookmark itself is re-created fresh on every reattach).
     private static let recentProjectsLimit = 8
 
-    private var recentProjects: [String] {
+    private(set) var recentProjects: [String] {
         get { UserDefaults.standard.stringArray(forKey: DefaultsKey.recentProjects) ?? [] }
         set { UserDefaults.standard.set(newValue, forKey: DefaultsKey.recentProjects) }
     }

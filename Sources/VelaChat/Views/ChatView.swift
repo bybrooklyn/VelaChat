@@ -511,6 +511,7 @@ struct ChatView: View {
                                 onFile: { isAttachMenuShown = false; presentAttachPanel() },
                                 onFolder: { isAttachMenuShown = false; presentFolderPanel() },
                                 onPasteboard: { isAttachMenuShown = false; pasteFromClipboard() },
+                                onDismiss: { isAttachMenuShown = false },
                                 onRepo: { repo in
                                     isAttachMenuShown = false
                                     appModel.cloneGitHubRepo(repo)
@@ -632,11 +633,11 @@ struct ChatView: View {
     private func addAttachment(from url: URL) {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            if let attachment = Attachment.fromGitFolder(url: url) {
-                draftAttachments.wrappedValue.append(attachment)
-            } else {
-                appModel.postNotice("\(url.lastPathComponent) isn't a git repository — only git-repo folders can be attached right now.")
-            }
+            // A dropped folder means "work in here": it becomes the
+            // conversation's workspace root — file tools, commands, and the
+            // write gate all operate inside it — not a file attachment.
+            // (Cloned repos still land a git summary via their own flow.)
+            appModel.setWorkspaceRoot(url)
             return
         }
         guard let attachment = Attachment.fromFile(url: url) else { return }
