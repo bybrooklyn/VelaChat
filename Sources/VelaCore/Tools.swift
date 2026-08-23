@@ -91,6 +91,17 @@ public enum ToolCatalog {
         guidance: "If an attachment looks cut off, or the user asks about a part of it you cannot see, read the whole file here before answering rather than reasoning from the visible fragment."
     )
 
+    /// §9.10 — the agent scratchpad: one plain file per conversation,
+    /// agent-only, living on disk so its contents survive context
+    /// compaction with no re-injection machinery. Distinct from write_file:
+    /// never shown to the user as a deliverable, and append-shaped.
+    public static let scratchpad = Definition(
+        name: "scratchpad",
+        description: "Read or append to your private scratchpad for this conversation — persistent notes that survive even when older parts of this conversation leave the context window. One action per call: \"read\" returns everything written so far; \"append\" adds text under an optional heading.",
+        parametersJSON: #"{"type":"object","properties":{"action":{"type":"string","enum":["read","append"],"description":"\"read\" returns the full pad; \"append\" adds text at the end."},"text":{"type":"string","description":"For append: what to add. Keep it dense — findings, decisions, open questions, next steps."},"heading":{"type":"string","description":"Optional heading appended before the text, e.g. 'Findings 1-10'."}},"required":["action"]}"#,
+        guidance: "Write down anything you will need later: intermediate results while processing a long list, candidate answers before choosing, where you left off in a multi-step task. Read it back after any context compaction notice rather than working from memory."
+    )
+
     /// A real, private, per-conversation folder on disk — not a general
     /// filesystem. See `SandboxManager` for the actual safety boundary
     /// (path validation, not process sandboxing) and why a shell-execution
@@ -456,6 +467,9 @@ public enum ToolCatalog {
         case readFile.name:
             guard let path = arguments?["path"] as? String else { return "Error: \"path\" is required." }
             return readFileResult(path: path, context: context)
+        case scratchpad.name:
+            let action = arguments?["action"] as? String ?? ""
+            return scratchpadResult(action: action, text: arguments?["text"] as? String ?? "", heading: arguments?["heading"] as? String, context: context)
         case listWorkspaceFiles.name:
             return listWorkspaceFilesResult(context: context)
         case fetchURL.name:
@@ -749,6 +763,45 @@ public enum ToolCatalog {
         return text
     }
 
+    // MARK: - Scratchpad (§9.10)
+
+    static let scratchpadFilename = ".scratchpad.md"
+
+    private static func scratchpadResult(action: String, text: String, heading: String?, context: ExecutionContext) -> String {
+        let url = context.workspaceDirectory.appendingPathComponent(scratchpadFilename)
+        switch action {
+        case "read":
+            guard let current = try? String(contentsOf: url, encoding: .utf8), !current.isEmpty else {
+                return "(the scratchpad is empty)"
+            }
+            // A compaction-surviving note must itself survive the reply cap.
+            if current.count > Limits.toolResultBytes {
+                return String(current.suffix(Limits.toolResultBytes)) + "\n[Older scratchpad entries were trimmed.]"
+            }
+            return current
+        case "append":
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return "Error: \"text\" is required when appending."
+            }
+            var addition = ""
+            if let heading, !heading.isEmpty {
+                addition += "\n\n## \(heading)\n"
+            } else {
+                addition += "\n\n"
+            }
+            addition += text
+            let current = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            do {
+                try (current + addition).write(to: url, atomically: true, encoding: .utf8)
+                return "Appended to the scratchpad."
+            } catch {
+                return "Error writing the scratchpad: \(error.localizedDescription)"
+            }
+        default:
+            return "Error: \"action\" must be \"read\" or \"append\"."
+        }
+    }
+
     private static func listWorkspaceFilesResult(context: ExecutionContext) -> String {
         let root = context.workspaceDirectory
         guard let items = try? FileManager.default.contentsOfDirectory(atPath: root.path), !items.isEmpty else {
@@ -759,7 +812,7 @@ public enum ToolCatalog {
         // (An explicit read_file of an ignored path still works — hiding a
         // file from the overview must not make it unopenable.)
         let ignoreRules = GitIgnore.load(from: root)
-        let visible = items.sorted().filter { !GitIgnore.ignores(ignoreRules, relativePath: $0) }
+        let visible = items.sorted().filter { !$0.hasPrefix(".") && !GitIgnore.ignores(ignoreRules, relativePath: $0) }
         if visible.isEmpty {
             return items.count > 0
                 ? "All \(items.count) entries are git-ignored; nothing to list. Use read_file with an exact name if you need one anyway."

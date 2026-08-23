@@ -175,6 +175,9 @@ extension AppModel {
                 if isAgentToolsEnabled {
                     tools.append(contentsOf: [ToolCatalog.editFile, ToolCatalog.searchFiles])
                 }
+                // Compaction-surviving notes ride the workspace too, but are
+                // agent-only and never listed as a workspace file.
+                tools.append(ToolCatalog.scratchpad)
             }
             // Also attached while planning even with the agent abilities
             // off: update_plan is how a plan gets posted, and the plan card
