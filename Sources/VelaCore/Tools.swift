@@ -102,6 +102,39 @@ public enum ToolCatalog {
         guidance: "Write down anything you will need later: intermediate results while processing a long list, candidate answers before choosing, where you left off in a multi-step task. Read it back after any context compaction notice rather than working from memory."
     )
 
+    // MARK: - Git / PR tools (§9.7)
+
+    public static let gitStatus = Definition(
+        name: "get_git_status",
+        description: "Structured working-tree state of this conversation's attached folder as a git repository: current branch, ahead/behind counts, staged, unstaged, and untracked files. Read-only.",
+        parametersJSON: #"{"type":"object","properties":{}}"#,
+        guidance: "Check before proposing changes so commits and diffs reference reality. Requires an attached folder that is a real repository."
+    )
+    public static let gitDiff = Definition(
+        name: "git_diff",
+        description: "Unified diff of uncommitted changes in the attached repository (staged and unstaged combined, capped in size). Read-only.",
+        parametersJSON: #"{"type":"object","properties":{"staged":{"type":"boolean","description":"true = only what is staged; omit for everything uncommitted."}}}"#,
+        guidance: "Read a diff before writing commit messages or claiming what changed — never reconstruct edits from memory."
+    )
+    public static let gitLog = Definition(
+        name: "git_log",
+        description: "Recent commit history (hash + subject), newest first. Read-only.",
+        parametersJSON: #"{"type":"object","properties":{"count":{"type":"integer","description":"How many commits (default 20, max 100)."}}}"#,
+        guidance: "Use to learn conventions for messages or find where work left off."
+    )
+    public static let gitCommit = Definition(
+        name: "git_commit",
+        description: "Commit STAGED changes with the given message in the attached repository. Does not stage anything itself.",
+        parametersJSON: #"{"type":"object","properties":{"message":{"type":"string","description":"The full commit message."}},"required":["message"]}"#,
+        guidance: "Stage first with get_git_status + the user's confirmation flow, read git_diff before writing the message, and follow the repository's own message style from git_log."
+    )
+    public static let createPullRequest = Definition(
+        name: "create_pr",
+        description: "Open a pull request on GitHub via the gh CLI: pushes the current branch if needed, then creates the PR. Always asks for explicit approval — publishing to a shared repository is not auto-allowed.",
+        parametersJSON: #"{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string","description":"Full PR description in markdown."},"base":{"type":"string","description":"Target branch; defaults to the repo's default."}},"required":["title","body"]}"#,
+        guidance: "Only after the user has seen and approved the diff. If gh isn't installed the tool says so instead of failing opaquely."
+    )
+
     /// A real, private, per-conversation folder on disk — not a general
     /// filesystem. See `SandboxManager` for the actual safety boundary
     /// (path validation, not process sandboxing) and why a shell-execution
@@ -256,6 +289,10 @@ public enum ToolCatalog {
         /// Ask the host to approve one write; `true` proceeds. Consulted
         /// only when `requiresWriteApproval` is set.
         public var approveWrite: (@Sendable (_ relativePath: String) async -> Bool)? = nil
+        /// The §9.7 git tools' approval channel for mutating operations
+        /// (commit/push/PR): `true` proceeds. The host decides tiering via
+        /// the classifier; sensitive ops must always ask.
+        public var approveGitWrite: (@Sendable (_ summary: String, _ isSensitive: Bool) async -> Bool)? = nil
         /// The Claude bridge's permission channel: claude asks to use one
         /// of ITS tools; `true` writes an allow frame, `false` a deny (with
         /// a mandatory reason). nil = every request auto-denies.
@@ -464,6 +501,23 @@ public enum ToolCatalog {
             guard !steps.isEmpty else { return "Error: no valid steps provided." }
             guard let sink = context.updatePlan else { return "Error: planning is unavailable." }
             return await sink(steps)
+        case gitStatus.name:
+            return await GitToolExecutor.status(context: context)
+        case gitDiff.name:
+            return await GitToolExecutor.diff(stagedOnly: arguments?["staged"] as? Bool ?? false, context: context)
+        case gitLog.name:
+            let requested = arguments?["count"] as? Int ?? Int(arguments?["count"] as? Double ?? 20)
+            return await GitToolExecutor.log(count: requested, context: context)
+        case gitCommit.name:
+            guard let message = arguments?["message"] as? String, !message.isEmpty else { return "Error: \"message\" is required." }
+            return await GitToolExecutor.commit(message: message, context: context)
+        case createPullRequest.name:
+            guard let title = arguments?["title"] as? String, !title.isEmpty,
+                  let body = arguments?["body"] as? String else {
+                return "Error: \"title\" and \"body\" are required."
+            }
+            let base = arguments?["base"] as? String
+            return await GitToolExecutor.pullRequest(title: title, body: body, base: base, context: context)
         case readFile.name:
             guard let path = arguments?["path"] as? String else { return "Error: \"path\" is required." }
             return readFileResult(path: path, context: context)

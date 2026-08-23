@@ -375,6 +375,33 @@ final class AppModel {
         }
     }
 
+    /// The §9.7 git tools' host side: mutating operations confirm via the
+    /// same card; `sensitive` (push/PR — public, shared state) strips every
+    /// session-allow path.
+    @MainActor
+    func approveGitOperation(summary: String, folderPath: String, sensitive: Bool, conversationID: UUID) async -> Bool {
+        let decision: CommandApproval.Decision = await withOneShotResume { resume in
+            pendingApproval = CommandApproval(
+                conversationID: conversationID,
+                command: summary,
+                directory: URL(fileURLWithPath: folderPath, isDirectory: true),
+                reason: sensitive
+                    ? "This publishes to a repository others share. It always asks."
+                    : "The model wants to modify this repository's state.",
+                isSensitive: sensitive,
+                decide: resume
+            )
+        }
+        pendingApproval = nil
+        switch decision {
+        case .deny:
+            CommandTrust.noteDenied("git-op:\\(summary)", for: folderPath)
+            return false
+        default:
+            return true
+        }
+    }
+
     /// Tools already shown once this session (free-tier escalations ask
     /// exactly once, then ride show-everything rows). Not persisted.
     var claudeSeenTools: Set<String> = []
