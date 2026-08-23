@@ -254,6 +254,12 @@ extension AppModel {
         // one-liner the model tended to ignore.
         requestMessages.insert(contentsOf: systemMessages, at: 0)
         let composeInsertIndex = systemMessages.count
+        // Security scope for an attached project folder, held for exactly
+        // this turn: every workspace tool below may touch the folder, and
+        // opening/closing per call would be churn. The holder stops access
+        // when the generation closure exits (finish, fail, or cancel).
+        let workspaceScope = WorkspaceScope.open(conversation.projectWorkspace)
+        defer { workspaceScope.close() }
         var toolContext = ToolCatalog.ExecutionContext(
             conversationSummaries: conversations
                 .filter { $0.id != conversation.id }

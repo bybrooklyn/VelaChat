@@ -1149,6 +1149,81 @@ public struct AskUserQuestionPayload: Decodable, Equatable {
     }
 }
 
+/// A user-attached project folder: the security-scoped bookmark that keeps
+/// it attached across moves and relaunches, plus the last-resolved path —
+/// which is what the UI displays, what `commandTrustFolderPath` is keyed
+/// by, and the fallback when the bookmark no longer resolves.
+///
+/// `bookmark` is optional because histories attached before this type
+/// existed have only a path; those keep working unchanged (the app ships
+/// un-sandboxed, so a plain path needs no grant today). New attaches always
+/// carry a bookmark, which is what keeps them working if the folder moves
+/// or if sandboxing ever arrives.
+public struct ProjectWorkspace: Codable, Equatable, Sendable {
+    public let bookmark: Data?
+    public let path: String
+
+    public init(bookmark: Data?, path: String) {
+        self.bookmark = bookmark
+        self.path = path
+    }
+
+    /// Resolves to an existing directory URL, bookmark first. Does NOT
+    /// open security scope — see `WorkspaceScope` for the paired
+    /// start/stop around actual file access.
+    public static func resolve(_ project: ProjectWorkspace) -> URL? {
+        if let bookmark = project.bookmark {
+            var isStale = false
+            if let url = try? URL(
+                resolvingBookmarkData: bookmark,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ), FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+        if FileManager.default.fileExists(atPath: project.path) {
+            return URL(fileURLWithPath: project.path, isDirectory: true)
+        }
+        return nil
+    }
+}
+
+/// Opens security scope for a project folder and guarantees the matching
+/// stop — even on error paths — for as long as the holder lives. Open one
+/// per generation turn (not per tool call): scope churn per read would be
+/// pure overhead, and the turn is exactly the span during which tools may
+/// touch the folder.
+public final class WorkspaceScope {
+    private var accessedURL: URL?
+
+    /// Returns a holder with the scope already opened when the project has
+    /// a resolvable bookmark; plain-path projects need nothing and get a
+    /// no-op holder.
+    public static func open(_ project: ProjectWorkspace?) -> WorkspaceScope {
+        let scope = WorkspaceScope()
+        guard let bookmark = project?.bookmark else { return scope }
+        var isStale = false
+        guard let url = try? URL(
+            resolvingBookmarkData: bookmark,
+            options: [.withSecurityScope],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        ), url.startAccessingSecurityScopedResource() else { return scope }
+        scope.accessedURL = url
+        return scope
+    }
+
+    public func close() {
+        guard let accessedURL else { return }
+        accessedURL.stopAccessingSecurityScopedResource()
+        self.accessedURL = nil
+    }
+
+    deinit { close() }
+}
+
 @MainActor
 @Observable
 public final class Conversation: Identifiable {
@@ -1172,10 +1247,14 @@ public final class Conversation: Identifiable {
     /// appended as extra system context on every request for the rest of
     /// this conversation, the same shape custom instructions already use.
     public var activeSkillPaths: [String]
-    /// User-chosen local folder acting as this conversation's workspace
+    /// A user-chosen local folder acting as this conversation's workspace
     /// root (file tools + run_command operate inside it). `nil` = the
     /// synthetic per-conversation directory.
-    public var workspaceRootPath: String?
+    public var projectWorkspace: ProjectWorkspace?
+    /// Last-known path of the attached project folder — display, recents,
+    /// and `commandTrustFolderPath` identity. Resolution goes through
+    /// `projectWorkspace` (bookmark first), not this string.
+    public var workspaceRootPath: String? { projectWorkspace?.path }
     /// Session-scoped run_command trust: armed "allow all" plus exact
     /// commands the user marked always-allowed. Deliberately not
     /// persisted — trust re-arms per app run. (Prefix rules that DO
@@ -1206,7 +1285,7 @@ public final class Conversation: Identifiable {
     /// persisted.
     public var currentGenerationID: UUID?
 
-    public init(id: UUID = UUID(), title: String = "New conversation", messages: [ChatMessage] = [], providerID: UUID? = nil, model: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
+    public init(id: UUID = UUID(), title: String = "New conversation", messages: [ChatMessage] = [], providerID: UUID? = nil, model: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], projectWorkspace: ProjectWorkspace? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1218,17 +1297,23 @@ public final class Conversation: Identifiable {
         self.titleIsCustom = titleIsCustom
         self.isPinned = isPinned
         self.activeSkillPaths = activeSkillPaths
-        self.workspaceRootPath = workspaceRootPath
+        self.projectWorkspace = projectWorkspace
         self.isPlanning = isPlanning
         self.didOfferPlanning = didOfferPlanning
     }
 
     /// The directory every workspace tool (and run_command) resolves
-    /// against — the user's chosen folder when one is attached, else the
-    /// synthetic per-conversation dir.
+    /// against — the user's chosen folder when one is attached and still
+    /// resolvable, else the synthetic per-conversation dir.
+    ///
+    /// Resolution order for an attached folder: security-scoped bookmark
+    /// first (it survives the folder moving), then the recorded path (the
+    /// legacy shape — histories attached before bookmarks existed). A
+    /// folder that resolves by neither falls back to the sandbox, mirroring
+    /// the old behavior.
     public var workspaceRoot: URL {
-        if let workspaceRootPath, FileManager.default.fileExists(atPath: workspaceRootPath) {
-            return URL(fileURLWithPath: workspaceRootPath, isDirectory: true)
+        if let project = projectWorkspace, let url = ProjectWorkspace.resolve(project) {
+            return url
         }
         return SandboxManager.directory(for: id)
     }
@@ -1292,14 +1377,25 @@ public struct SavedConversation: Codable {
     public var titleIsCustom: Bool = false
     public var isPinned: Bool = false
     public var activeSkillPaths: [String] = []
-    /// User-chosen local folder acting as this conversation's workspace
-    /// root instead of the synthetic per-conversation directory.
-    public var workspaceRootPath: String?
+    /// A user-chosen local folder acting as this conversation's workspace
+    /// root instead of the synthetic per-conversation directory — with the
+    /// security-scoped bookmark that keeps it attached across moves.
+    public var projectWorkspace: ProjectWorkspace?
     /// Planning mode, and whether its one-time offer has been made.
     public var isPlanning: Bool = false
     public var didOfferPlanning: Bool = false
 
-    public init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], workspaceRootPath: String? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
+    private enum CodingKeys: String, CodingKey {
+        case id, title, messages, providerID, model, createdAt, updatedAt
+        case draftText, titleIsCustom, isPinned, activeSkillPaths
+        case projectWorkspace
+        /// The pre-bookmark shape: a plain path string. Read on decode,
+        /// never written.
+        case legacyWorkspaceRootPath = "workspaceRootPath"
+        case isPlanning, didOfferPlanning
+    }
+
+    public init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], projectWorkspace: ProjectWorkspace? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1311,7 +1407,7 @@ public struct SavedConversation: Codable {
         self.titleIsCustom = titleIsCustom
         self.isPinned = isPinned
         self.activeSkillPaths = activeSkillPaths
-        self.workspaceRootPath = workspaceRootPath
+        self.projectWorkspace = projectWorkspace
         self.isPlanning = isPlanning
         self.didOfferPlanning = didOfferPlanning
     }
@@ -1329,9 +1425,36 @@ public struct SavedConversation: Codable {
         titleIsCustom = try container.decodeIfPresent(Bool.self, forKey: .titleIsCustom) ?? false
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         activeSkillPaths = try container.decodeIfPresent([String].self, forKey: .activeSkillPaths) ?? []
-        workspaceRootPath = try container.decodeIfPresent(String.self, forKey: .workspaceRootPath)
+        if let decoded = try container.decodeIfPresent(ProjectWorkspace.self, forKey: .projectWorkspace) {
+            projectWorkspace = decoded
+        } else if let legacy = try container.decodeIfPresent(String.self, forKey: .legacyWorkspaceRootPath) {
+            // Histories attached before bookmarks existed: same attachment,
+            // no bookmark. The app is un-sandboxed, so the path still works.
+            projectWorkspace = ProjectWorkspace(bookmark: nil, path: legacy)
+        } else {
+            projectWorkspace = nil
+        }
         isPlanning = try container.decodeIfPresent(Bool.self, forKey: .isPlanning) ?? false
         didOfferPlanning = try container.decodeIfPresent(Bool.self, forKey: .didOfferPlanning) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(messages, forKey: .messages)
+        try container.encodeIfPresent(providerID, forKey: .providerID)
+        try container.encode(model, forKey: .model)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(draftText, forKey: .draftText)
+        try container.encode(titleIsCustom, forKey: .titleIsCustom)
+        try container.encode(isPinned, forKey: .isPinned)
+        try container.encode(activeSkillPaths, forKey: .activeSkillPaths)
+        // The legacy path key is decode-only — never written again.
+        try container.encodeIfPresent(projectWorkspace, forKey: .projectWorkspace)
+        try container.encode(isPlanning, forKey: .isPlanning)
+        try container.encode(didOfferPlanning, forKey: .didOfferPlanning)
     }
 }
 

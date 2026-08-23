@@ -1831,9 +1831,20 @@ final class AppModel {
     /// which directory the assistant is working in.
     func setWorkspaceRoot(_ url: URL) {
         let conversation = activeConversation ?? newConversation()
-        conversation.workspaceRootPath = url.path
+        // A security-scoped bookmark keeps the attachment alive across
+        // relaunches and across the folder moving. Creation can fail (a
+        // folder on a volume that doesn't support bookmarks); the path is
+        // recorded either way, and an un-sandboxed app resolves by path
+        // fine.
+        let bookmark = try? url.bookmarkData(
+            options: [.withSecurityScope],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        conversation.projectWorkspace = ProjectWorkspace(bookmark: bookmark, path: url.path)
         postNotice("Workspace set to \(url.path). File tools and commands run here.", to: conversation)
         saveHistory()
+        rememberRecentProject(path: url.path)
     }
 
     /// Writes a chat code block into the active conversation's workspace,
@@ -1862,9 +1873,32 @@ final class AppModel {
     }
 
     func clearWorkspaceRoot(for conversation: Conversation) {
-        conversation.workspaceRootPath = nil
+        conversation.projectWorkspace = nil
         saveHistory()
     }
+
+    // MARK: - Recent projects
+
+    /// Recently attached project folders, most recent first — capped, and
+    /// plain path strings (small, and the only thing a recents list needs;
+    /// the bookmark itself is re-created fresh on every reattach).
+    private static let recentProjectsLimit = 8
+
+    private var recentProjects: [String] {
+        get { UserDefaults.standard.stringArray(forKey: DefaultsKey.recentProjects) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: DefaultsKey.recentProjects) }
+    }
+
+    private func rememberRecentProject(path: String) {
+        var recents = recentProjects.filter { $0 != path }
+        recents.insert(path, at: 0)
+        recentProjects = Array(recents.prefix(Self.recentProjectsLimit))
+    }
+
+    func forgetRecentProject(path: String) {
+        recentProjects.removeAll { $0 == path }
+    }
+
 
     /// Whether `run_command` goes on the wire for this conversation.
     ///
@@ -2173,7 +2207,7 @@ final class AppModel {
 
     func writeHistoryNow(synchronously: Bool = false) {
         let snapshots = conversations.map {
-            SavedConversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, workspaceRootPath: $0.workspaceRootPath, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning)
+            SavedConversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, projectWorkspace: $0.projectWorkspace, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning)
         }
         let key = historyKey
         if synchronously {
@@ -2199,7 +2233,7 @@ final class AppModel {
             return "Saved conversations could not be read; a backup was kept."
         }
         conversations = snapshots.map {
-            Conversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, workspaceRootPath: $0.workspaceRootPath, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning)
+            Conversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, projectWorkspace: $0.projectWorkspace, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning)
         }
         reconcileInterruptedMessages()
         activeConversationID = conversations.first?.id
