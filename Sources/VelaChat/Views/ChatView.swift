@@ -331,6 +331,53 @@ struct ChatView: View {
         .frame(maxWidth: contentWidth, alignment: .leading)
     }
 
+    /// The attached project folder's chip: which folder this conversation
+    /// works in, and — when it's a repository — the current branch. The
+    /// one place the workspace context is visible while composing; detach
+    /// stays in Settings, where the other destructive controls live.
+    private struct WorkspaceChip: View {
+        @Environment(AppModel.self) private var appModel
+        let conversation: Conversation
+        @State private var branch: String?
+        @State private var resolvedName: String = ""
+
+        var body: some View {
+            HStack(spacing: 6) {
+                Image(systemName: "folder.fill")
+                    .font(.caption2)
+                Text(resolvedName)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let branch {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 8, weight: .semibold))
+                        Text(branch)
+                            .font(.caption2.weight(.medium))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Theme.controlBackground, in: Capsule())
+                    .help("Current branch in the attached folder")
+                    .accessibilityLabel("Branch \(branch ?? "")")
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Theme.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .task(id: conversation.projectWorkspace) { refresh() }
+        }
+
+        private func refresh() {
+            let url = conversation.workspaceRoot
+            resolvedName = url.lastPathComponent
+            branch = GitInfo.branch(of: url)
+        }
+    }
+
     /// A blocked `ask_user` call, pinned just above the composer.
     ///
     /// It lives in the composer's own stack rather than as an overlay over
@@ -423,6 +470,11 @@ struct ChatView: View {
                 .foregroundStyle(Theme.warning)
                 .frame(maxWidth: contentWidth, alignment: .leading)
                 .transition(.opacity)
+            }
+
+            if let conversation = appModel.activeConversation, conversation.projectWorkspace != nil {
+                WorkspaceChip(conversation: conversation)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             if let conversation = appModel.activeConversation, !conversation.activeSkillPaths.isEmpty {
