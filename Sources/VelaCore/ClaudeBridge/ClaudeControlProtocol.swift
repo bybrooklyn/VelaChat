@@ -363,6 +363,16 @@ public struct ClaudeRateLimitEvent: Decodable {
         public var rateLimitType: String?
         public var isUsingOverage: Bool?
 
+        // snake_case on the wire; without these the optional fields
+        // decoded from absent camelCase keys and were ALWAYS nil — found
+        // by the first test that actually fed a frame through.
+        private enum CodingKeys: String, CodingKey {
+            case status
+            case resetsAt = "resets_at"
+            case rateLimitType = "rate_limit_type"
+            case isUsingOverage = "is_using_overage"
+        }
+
         public var resetDate: Date? { resetsAt.map { Date(timeIntervalSince1970: $0) } }
 
         /// Minutes in the window named by `rateLimitType`, when it maps to
