@@ -51,7 +51,16 @@ public enum GitIgnore {
                 if pattern.isEmpty { continue }
             }
 
-            let anchored = pattern.hasPrefix("/") || pattern.contains("/")
+            // A leading `**/` explicitly means "at any depth, root
+            // included" — it overrides the usual contains-a-slash-anchoring.
+            var forcedUnanchored = false
+            if pattern.hasPrefix("**/") {
+                pattern.removeFirst(3)
+                forcedUnanchored = true
+                if pattern.isEmpty { continue }
+            }
+            let anchored = !forcedUnanchored
+                && (pattern.hasPrefix("/") || pattern.contains("/"))
             if pattern.hasPrefix("/") { pattern.removeFirst() }
             guard !pattern.isEmpty else { continue }
 
@@ -72,9 +81,11 @@ public enum GitIgnore {
         return parse(text)
     }
 
-    /// Git wildcard → regex. `*` and `?` never cross `/`; `**` does.
+    /// Git wildcard → regex body (NO `^`/`$` — the caller wraps it,
+    /// because an unanchored pattern needs a directory-prefix clause).
+    /// `*` and `?` never cross `/`; `**` does.
     static func translate(_ pattern: String) -> String {
-        var result = "^"
+        var result = ""
         var index = pattern.startIndex
         while index < pattern.endIndex {
             let character = pattern[index]
@@ -94,7 +105,7 @@ public enum GitIgnore {
                 index = pattern.index(after: index)
             }
         }
-        return result + "$"
+        return result
     }
 
     // MARK: - Matching
@@ -118,7 +129,9 @@ public enum GitIgnore {
         let components = path.split(separator: "/").map(String.init)
 
         func patternMatches(_ candidate: String) -> Bool {
-            let source = rule.anchored ? rule.regexSource : "(?:.*/)?\(rule.regexSource)"
+            let source = rule.anchored
+                ? "^(\(rule.regexSource))$"
+                : "^(?:.*/)?(\(rule.regexSource))$"
             let regex = NSRegularExpression.cached(source)
             let range = NSRange(candidate.startIndex..., in: candidate)
             return regex.firstMatch(in: candidate, options: [], range: range) != nil
