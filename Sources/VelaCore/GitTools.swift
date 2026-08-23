@@ -40,16 +40,27 @@ public enum GitTools {
                     }
                 }
             case "1", "2":
-                // Ordinary / renamed entry: "1 <XY> <path…>" (rename adds a
-                // NUL-separated new path we take the LAST segment for).
-                guard parts.count >= 3 else { break }
-                let xy = parts[1]
-                let pathPart = parts.dropFirst(2).joined(separator: " ")
-                    .components(separatedBy: "\u{0}").last ?? ""
+                // Ordinary / renamed entry. Porcelain v2 layout:
+                //   1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
+                //   2 <XY> <sub> … <X><score> <path>\t<origPath>
+                // The path lives in field 9 for `1`; renames carry the
+                // CURRENT path in the first tab-separated chunk.
+                let chunks = rawLine.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                let fields = chunks[0].split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+                guard fields.count >= 3 else { break }
+                let xy = fields[1]
                 let x = xy.first.map(String.init) ?? "."
                 let y = xy.last.map(String.init) ?? "."
-                if x != "." && x != "?" { status.staged.append(pathPart) }
-                if y != "." && y != "?" { status.unstaged.append(pathPart) }
+                let path: String
+                if parts.first == "1" {
+                    guard fields.count >= 9 else { break }
+                    path = fields[8...].joined(separator: " ")
+                } else {
+                    guard chunks.count >= 2 else { break }
+                    path = chunks[1]
+                }
+                if x != "." && x != "?" { status.staged.append(path) }
+                if y != "." && y != "?" { status.unstaged.append(path) }
             case "u":
                 // Unmerged: "u <X> <Y> <S1> <S2> <S3> <S4> <path>"
                 if let path = parts.last { status.unstaged.append(path) }

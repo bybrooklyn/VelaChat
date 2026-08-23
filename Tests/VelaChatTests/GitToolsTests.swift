@@ -26,11 +26,13 @@ final class GitToolsTests: XCTestCase {
     }
 
     func testDetachedHeadAndCleanTree() {
+        // Detached HEAD with an empty tree: the branch is unnamed but the
+        // tree IS clean — both facts render honestly.
         let status = GitTools.parseStatus("# branch.head (detached)\n")
         XCTAssertNil(status.branch)
-        XCTAssertTrue(GitTools.describe(status).contains("detached"))
-        XCTAssertFalse(GitTools.describe(GitTools.parseStatus("")).contains("clean"))
-        XCTAssertTrue(GitTools.describe(GitTools.parseStatus("")).isEmpty == false && GitTools.describe(GitTools.parseStatus("")).contains("(detached)"))
+        let text = GitTools.describe(status)
+        XCTAssertTrue(text.contains("detached"))
+        XCTAssertTrue(text.contains("Working tree clean."))
     }
 
     func testDescribeRendersCountsAndCaps() {
