@@ -151,3 +151,97 @@ enum GitToolExecutor {
         return nil
     }
 }
+
+extension GitToolExecutor {
+
+    /// §9.9 — publish workspace files as one multi-file gist. The safety
+    /// keystone is the pre-publish scan through the SAME `Redactor` the
+    /// send path uses (one redaction source of truth): any credential hit
+    /// blocks the publish and names the file and rule.
+    static func gist(
+        files: [String],
+        gistDescription: String,
+        isPublic: Bool,
+        context: ToolCatalog.ExecutionContext
+    ) async -> String {
+        // Read + scan every file BEFORE asking or touching gh.
+        var payloads: [(name: String, text: String)] = []
+        for path in files {
+            guard let url = SandboxManager.resolve(path, in: context.workspaceDirectory),
+                  FileManager.default.fileExists(atPath: url.path) else {
+                return "Error: \(path) doesn't exist in the workspace. Check with list_workspace_files."
+            }
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                return "Error: \(path) isn't UTF-8 text — gists take text only."
+            }
+            payloads.append((name: path, text: text))
+        }
+
+        let redactor = Redactor(rules: RedactionRule.builtIns())
+        var hits: [String] = []
+        for payload in payloads {
+            let result = redactor.redact(payload.text)
+            if result.didRedact {
+                let rules = result.spans.map(\.ruleName).sorted()
+                hits.append("\(payload.name): matched \(rules.joined(separator: ", "))")
+            }
+        }
+        if !hits.isEmpty {
+            return "BLOCKED — potential secrets found; nothing was published:\\n" +
+                hits.map { "- \($0)" }.joined(separator: "\\n") +
+                "\\nRedact the matches and ask again, or publish a different file."
+        }
+
+        // Sensitive tier, always — even secret gists are reachable by link.
+        guard await approve("publish \(files.count) file\(files.count == 1 ? "" : "s") as a \(isPublic ? "PUBLIC" : "secret") gist", sensitive: true, context: context) else {
+            return "The user declined to publish this gist."
+        }
+
+        guard let ghPath = ghBinary() else {
+            return "The gh CLI isn't installed, so gists can't be published from here. Install it (`brew install gh`) and run `gh auth login`."
+        }
+
+        // Write payloads to temp files so gh reads them under their real
+        // names (multi-file gists need named inputs).
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vela-gist-\(UUID().uuidString)", isDirectory: true)
+        do { try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false) } catch {
+            return "Error: could not stage files for the gist."
+        }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        var arguments = [ghPath, "gist", "create"]
+        if isPublic { arguments.append("--public") }
+        if !gistDescription.isEmpty { arguments += ["--desc", gistDescription] }
+        for payload in payloads {
+            let safeName = payload.name.split(separator: "/").last.map(String.init) ?? "file.txt"
+            let destination = temporary.appendingPathComponent(safeName)
+            do { try payload.text.write(to: destination, atomically: true, encoding: .utf8) } catch {
+                return "Error: could not stage \(safeName)."
+            }
+            arguments.append(destination.path)
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["env", "GH_PROMPT_DISABLED=1"] + arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "/usr/bin:/bin")
+        process.environment = environment
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = outPipe
+        do {
+            try process.run()
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if process.terminationStatus == 0 {
+                return "Gist published (secret-by-default\(isPublic ? ", PUBLIC as requested" : "")):\\n\(text)"
+            }
+            let authHint = text.lowercased().contains("gh auth") ? "\\nRun `gh auth login` once, then retry." : ""
+            return "Error: gh gist create failed.\\n\(text.suffix(600))\(authHint)"
+        } catch {
+            return "Error: could not run gh — \(error.localizedDescription)"
+        }
+    }
+}

@@ -183,6 +183,7 @@ extension AppModel {
                     if isAgentToolsEnabled {
                         tools.append(ToolCatalog.gitCommit)
                         tools.append(ToolCatalog.createPullRequest)
+                        tools.append(ToolCatalog.publishGist)
                     }
                 }
             }

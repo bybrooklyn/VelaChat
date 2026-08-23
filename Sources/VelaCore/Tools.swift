@@ -135,6 +135,13 @@ public enum ToolCatalog {
         guidance: "Only after the user has seen and approved the diff. If gh isn't installed the tool says so instead of failing opaquely."
     )
 
+    public static let publishGist = Definition(
+        name: "publish_gist",
+        description: "Publish one or more workspace files as a GitHub gist via the gh CLI. Secret by default (unlisted, not private — anyone with the link can read it). Every file is scanned for API keys and tokens first; a hit blocks publishing until you redact it. Always asks before publishing.",
+        parametersJSON: #"{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"},"description":"Paths relative to the workspace root."},"description":{"type":"string","description":"Short gist description."},"public":{"type":"boolean","description":"true = publicly listed. Default false (secret)."}},"required":["files"]}"#,
+        guidance: "For sharing a result the user asked to publish. Never include credentials; if the scan reports hits, tell the user which file and rule matched rather than trying to sneak past."
+    )
+
     /// A real, private, per-conversation folder on disk — not a general
     /// filesystem. See `SandboxManager` for the actual safety boundary
     /// (path validation, not process sandboxing) and why a shell-execution
@@ -518,6 +525,18 @@ public enum ToolCatalog {
             }
             let base = arguments?["base"] as? String
             return await GitToolExecutor.pullRequest(title: title, body: body, base: base, context: context)
+        case publishGist.name:
+            guard let files = arguments?["files"] as? [String], !files.isEmpty else {
+                return "Error: \"files\" must list at least one workspace path."
+            }
+            let isPublic = arguments?["public"] as? Bool ?? false
+            let gistDescription = arguments?["description"] as? String ?? ""
+            return await GitToolExecutor.gist(
+                files: files,
+                gistDescription: gistDescription,
+                isPublic: isPublic,
+                context: context
+            )
         case readFile.name:
             guard let path = arguments?["path"] as? String else { return "Error: \"path\" is required." }
             return readFileResult(path: path, context: context)
