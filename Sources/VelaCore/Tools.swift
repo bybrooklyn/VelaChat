@@ -724,10 +724,24 @@ public enum ToolCatalog {
     }
 
     private static func listWorkspaceFilesResult(context: ExecutionContext) -> String {
-        guard let items = try? FileManager.default.contentsOfDirectory(atPath: context.workspaceDirectory.path), !items.isEmpty else {
+        let root = context.workspaceDirectory
+        guard let items = try? FileManager.default.contentsOfDirectory(atPath: root.path), !items.isEmpty else {
             return "The workspace folder is empty."
         }
-        return items.sorted().joined(separator: "\n")
+        // .gitignore-aware: a listing is for orientation, and the model
+        // doesn't need build artifacts or vendored dependencies in it.
+        // (An explicit read_file of an ignored path still works — hiding a
+        // file from the overview must not make it unopenable.)
+        let ignoreRules = GitIgnore.load(from: root)
+        let visible = items.sorted().filter { !GitIgnore.ignores(ignoreRules, relativePath: $0) }
+        if visible.isEmpty {
+            return items.count > 0
+                ? "All \(items.count) entries are git-ignored; nothing to list. Use read_file with an exact name if you need one anyway."
+                : "The workspace folder is empty."
+        }
+        let hidden = items.count - visible.count
+        let suffix = hidden > 0 ? "\n(\(hidden) git-ignored entries not shown)" : ""
+        return visible.joined(separator: "\n") + suffix
     }
 
     private static func editFileResult(path: String, oldString: String, newString: String, replaceAll: Bool, context: ExecutionContext) -> String {
@@ -757,6 +771,7 @@ public enum ToolCatalog {
         let root = context.workspaceDirectory
         let globRegex = glob.map { Self.globToRegex($0) }
         let contentRegex = query.flatMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+        let ignoreRules = GitIgnore.load(from: root)
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else {
             return "Error: could not read the workspace folder."
         }
@@ -765,6 +780,13 @@ public enum ToolCatalog {
         for case let fileURL as URL in enumerator {
             guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
             let relative = fileURL.path.replacingOccurrences(of: root.path + "/", with: "")
+            if GitIgnore.ignores(ignoreRules, relativePath: relative) {
+                // Don't just skip the file — skip descending into ignored
+                // directories entirely, or a vendored tree costs the scan
+                // budget even though nothing inside can match.
+                enumerator.skipDescendants()
+                continue
+            }
             if let globRegex, relative.range(of: globRegex, options: .regularExpression) == nil,
                fileURL.lastPathComponent.range(of: globRegex, options: .regularExpression) == nil { continue }
             if let contentRegex {
