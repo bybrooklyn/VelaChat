@@ -1,5 +1,29 @@
 # VelaChat — working notes
 
+## 2026-08-22 — Phase 5: folder attach (phase-5-folder-attach)
+
+Per §6 with two decisions from Brook: checkpoints split to Phase 5b; write
+gate applies to ATTACHED folders only (sandbox keeps silent writes).
+Commit-per-concern: (1) `ProjectWorkspace {bookmark, path}` + `WorkspaceScope`
+— security-scoped bookmark created on attach, resolution chain
+bookmark→path→sandbox, legacy `workspaceRootPath` histories decode into the
+new shape (key is decode-only now); scope held per generation turn via
+defer. (2) Dropped folders attach as the workspace (replacing the old
+git-repo-summary-only drop); Recent folders page in the + menu, capped at
+8 paths, reattach creates a fresh bookmark. (3) `GitIgnore` subset parser
+(comments/negation/dir-only/anchored/*/?) applied to list_workspace_files +
+file search (search skips descending into ignored dirs); explicit read_file
+of ignored files still works. (4) Write gate: `requiresWriteApproval` +
+`approveWrite` on ExecutionContext; attached folders confirm every write
+via a file-write variant of CommandApproval ("Allow" / "Allow all edits in
+this chat"), session-scoped set on AppModel. (5) Workspace chip above the
+composer: attached folder name + current branch — branch read straight
+from `.git/HEAD` (`GitInfo`), no subprocess, nil when detached/worktree/
+not-a-repo so the UI stays quiet. Tests: ignore tables, resolution chain,
+bookmark round-trip, legacy-history migration, new-key-encodes-only.
+Needs human verification: dropping a folder onto the transcript, recents
+page, chip+branch against a real repo, first-write card.
+
 ## 2026-08-22 — Phase 4: providers + cost (phase-4-providers)
 
 §4.3 cookie import, all four diagnosed bugs: `readSQLite` now copies
