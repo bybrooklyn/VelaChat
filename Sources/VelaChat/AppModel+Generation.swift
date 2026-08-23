@@ -284,6 +284,18 @@ extension AppModel {
                 return await self.approveWorkspaceWrite(relativePath: relativePath, folderPath: folderPath, conversationID: conversation.id)
             }
         }
+        if profile.kind == .claudeCode {
+            let conversationID = conversation.id
+            toolContext.claudePermission = { [weak self] toolName, summary, input in
+                guard let self else { return false }
+                return await self.approveClaudeTool(
+                    toolName: toolName,
+                    summary: summary,
+                    input: input,
+                    conversationID: conversationID
+                )
+            }
+        }
         toolContext.attachmentTexts = attachmentTexts
         toolContext.memory = ToolCatalog.MemoryAccess(
             snapshot: facts.map { ToolCatalog.MemorySnapshot(id: $0.id, content: $0.content, topic: $0.topic) },

@@ -354,6 +354,17 @@ struct ProviderEditorView: View {
             }
         case .chatGPT:
             ChatGPTLoginSection()
+        case .claudeCode:
+            SettingsPanel(title: "Claude Code login", symbol: "info.circle") {
+                Text(ClaudeBridge.installedPath == nil
+                     ? "Claude Code isn't installed. Install it (npm install -g @anthropic-ai/claude-code), run `claude` once to sign in, then refresh."
+                     : "Found Claude Code at \(ClaudeBridge.installedPath ?? "claude"). It uses your own CLI login — no API key. Tool use is permission-gated in the chat.")
+                    .foregroundStyle(Theme.secondaryText)
+                HStack {
+                    Button("Refresh") { Task { await appModel.providers.refreshModels(id: profile.id) } }
+                        .buttonStyle(SettingsPrimaryButtonStyle())
+                }
+            }
         case .codex:
             SettingsPanel(title: "Codex login", symbol: "info.circle") {
                 Text(appModel.providers.codexMessage ?? "Use the official Codex CLI login, or enter an API key above.")

@@ -51,7 +51,7 @@ struct ProviderLogo: View {
                 .font(.system(size: size * 0.5, weight: .medium))
                 .foregroundStyle(glyphColor)
         case .openAI, .codex, .chatGPT: OpenAIKnot().fill(glyphColor)
-        case .anthropic: AnthropicBurst().fill(glyphColor)
+        case .anthropic, .claudeCode: AnthropicBurst().fill(glyphColor)
         case .google: GeminiSpark().fill(glyphColor)
         case .deepSeek: DeepSeekWhale().fill(glyphColor)
         case .openRouter: OpenRouterMark().fill(glyphColor)

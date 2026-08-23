@@ -307,6 +307,82 @@ final class AppModel {
     /// persisted: a relaunch re-asks.
     var workspaceWriteApprovals: Set<String> = []
 
+    /// The Claude bridge's permission gate (§7): one card per escalation,
+    /// tiered by the shared §3 classifier — a Bash escalation classifies as
+    /// its own command string; file edits are confirmable; pure reads are
+    /// free and never reach here twice-thinking: they DO reach here if
+    /// claude escalates them anyway, and the classifier says allow. Session
+    /// auto-allow ("always allow this tool this chat") applies only below
+    /// the sensitive tier.
+    @MainActor
+    func approveClaudeTool(toolName: String, summary: String, input: JSONValue, conversationID: UUID) async -> Bool {
+        let action: ApprovalClassifier.Action
+        switch toolName {
+        case "Bash":
+            var command = summary
+            if case .object(let fields) = input, case .string(let value)? = fields["command"] {
+                command = value
+            }
+            action = .shellCommand(command)
+        case "Write", "Edit", "NotebookEdit":
+            action = .browse(.type(label: summary, isCredentialField: false))
+        default:
+            // Read/Glob/Grep/WebFetch/WebSearch and unknown tools: reads or
+            // low-consequence inspections of the workspace claude runs in.
+            action = .browse(.read)
+        }
+        let tier = ApprovalClassifier.classify(action)
+        let trustMayApply = ApprovalClassifier.sessionTrustMayAllow(tier)
+
+        // Session trust, below the sensitive tier only.
+        if trustMayApply, claudeAllowedTools.contains(toolName) { return true }
+
+        // Free-tier escalations (claude asking permission for a plain read)
+        // prompt exactly once per tool per session, then ride the
+        // show-everything activity rows like every other read.
+        if case .free = tier, !claudeSeenTools.insert(toolName).inserted {
+            return true
+        }
+
+        let reason: String
+        if case .sensitive(let why) = tier {
+            reason = "Sensitive: \(why)."
+        } else if toolName == "Bash" {
+            reason = "Claude Code asks to run a shell command."
+        } else {
+            reason = "Claude Code asks to use \(toolName)."
+        }
+
+        let decision: CommandApproval.Decision = await withOneShotResume { resume in
+            pendingApproval = CommandApproval(
+                conversationID: conversationID,
+                command: summary.isEmpty ? toolName : "\(toolName): \(summary)",
+                directory: conversations.first(where: { $0.id == conversationID })?.workspaceRoot ?? URL(fileURLWithPath: "/"),
+                reason: reason,
+                isSensitive: !trustMayApply,
+                decide: resume
+            )
+        }
+        pendingApproval = nil
+        switch decision {
+        case .deny:
+            return false
+        case .approveAll:
+            if trustMayApply { claudeAllowedTools.insert(toolName) }
+            return true
+        default:
+            return true
+        }
+    }
+
+    /// Tools already shown once this session (free-tier escalations ask
+    /// exactly once, then ride show-everything rows). Not persisted.
+    var claudeSeenTools: Set<String> = []
+
+    /// Session-scoped per-tool allow for the bridge below the sensitive
+    /// tier. Not persisted.
+    var claudeAllowedTools: Set<String> = []
+
     /// A question the model asked through the real `ask_user` tool, holding
     /// the generation open until it's answered.
     ///

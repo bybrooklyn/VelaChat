@@ -118,6 +118,7 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
     case xai = "xAI"
     case perplexity = "Perplexity"
     case codex = "Codex"
+    case claudeCode = "Claude Code"
     case chatGPT = "ChatGPT"
     case ollama = "Ollama"
     case lmStudio = "LM Studio"
@@ -140,6 +141,7 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
         case .xai: "Grok models from xAI"
         case .perplexity: "Answers with built-in live web search"
         case .codex: "Use your Codex CLI login"
+        case .claudeCode: "Your Claude Code login — its tools, gated here"
         case .chatGPT: "Your ChatGPT account — sign in, no API key"
         case .ollama: "Local models on this Mac"
         case .lmStudio: "Local models via LM Studio"
@@ -151,7 +153,7 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
     /// Every hosted provider here speaks the same `/chat/completions` shape
     /// that OpenAI defined — surfaced in the UI so the relationship between
     /// "OpenAI" and "OpenAI Compatible" reads as one family, not two ideas.
-    public var speaksOpenAIProtocol: Bool { self != .codex && self != .appleIntelligence && self != .chatGPT }
+    public var speaksOpenAIProtocol: Bool { self != .codex && self != .appleIntelligence && self != .chatGPT && self != .claudeCode }
 
     public var isLocal: Bool { self == .ollama || self == .lmStudio || self == .appleIntelligence }
 
@@ -178,7 +180,7 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
     public enum UsageStyle { case subscription, metered, local }
     public var usageStyle: UsageStyle {
         switch self {
-        case .codex, .chatGPT: .subscription
+        case .codex, .chatGPT, .claudeCode: .subscription
         case .ollama, .lmStudio, .appleIntelligence: .local
         default: .metered
         }
@@ -190,6 +192,7 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
     public var logoDomain: String? {
         switch self {
         case .openAI, .codex: "openai.com"
+        case .claudeCode: "anthropic.com"
         case .chatGPT: "chatgpt.com"
         case .anthropic: "anthropic.com"
         case .google: "gemini.google.com"
@@ -219,7 +222,7 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
     public var requiresKey: Bool {
         switch self {
         // ChatGPT signs in with a browser session, never an API key.
-        case .ollama, .lmStudio, .blockrun, .appleIntelligence, .chatGPT: false
+        case .ollama, .lmStudio, .blockrun, .appleIntelligence, .chatGPT, .claudeCode: false
         default: true
         }
     }
@@ -239,7 +242,7 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
         case .ollama: URL(string: "https://ollama.com")
         case .lmStudio: URL(string: "https://lmstudio.ai")
         case .blockrun: URL(string: "https://blockrun.ai")
-        case .compatible, .appleIntelligence, .chatGPT: nil
+        case .compatible, .appleIntelligence, .chatGPT, .claudeCode: nil
         }
     }
 
@@ -258,6 +261,7 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
         case .xai: "grok-4"
         case .perplexity: "sonar-pro"
         case .codex: "gpt-5.6-sol"
+        case .claudeCode: "claude-sonnet-5"
         case .chatGPT: "auto"
         case .ollama: "qwen3:8b"
         case .lmStudio: "local-model"
@@ -469,6 +473,9 @@ public struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
             hasProviderSignal = lowerID.contains("deepseek-v4") || lowerID.contains("reasoner")
         case .codex, .openAI:
             hasProviderSignal = lowerID.contains("gpt-5") || lowerID.contains("o1") || lowerID.contains("o3") || lowerID.contains("o4")
+        case .claudeCode:
+            // Curated bridge models are Claude models by construction.
+            hasProviderSignal = true
         case .chatGPT:
             // ChatGPT models always carry account-discovered efforts in
             // supportedEfforts; there is no ID-based inference to do.
@@ -509,6 +516,8 @@ public struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
             return [.auto, .off, .low, .medium, .high]
         case .groq, .mistral, .perplexity, .chatGPT:
             return [.auto]
+        case .claudeCode:
+            return [.auto, .off, .low, .medium, .high]
         }
     }
 
@@ -545,6 +554,12 @@ public enum ModelCatalog {
                 RemoteModel(id: "gpt-5.6-luna", name: "GPT-5.6 Luna", description: "Fast, affordable model for focused tasks.", supportsReasoning: true, supportsTools: true, supportedEfforts: ["low", "medium", "high", "xhigh", "max"]),
                 RemoteModel(id: "gpt-5.3-codex-spark", name: "GPT-5.3 Codex Spark", description: "Fast coding iteration model.", supportsReasoning: true, supportsTools: true, supportedEfforts: ["low", "medium", "high"]),
                 RemoteModel(id: "gpt-5.5", name: "GPT-5.5", description: "Previous-generation frontier model.", supportsReasoning: true, supportsTools: true, supportedEfforts: ["low", "medium", "high", "xhigh", "max"]),
+            ]
+        case .claudeCode:
+            return [
+                RemoteModel(id: "claude-opus-5", name: "Claude Opus 5", description: "Most capable Claude — long, complex agentic work.", contextLength: 240_000, supportsReasoning: true, supportsTools: true),
+                RemoteModel(id: "claude-sonnet-5", name: "Claude Sonnet 5", description: "Balanced default for the bridge.", contextLength: 240_000, supportsReasoning: true, supportsTools: true),
+                RemoteModel(id: "claude-haiku-5", name: "Claude Haiku 5", description: "Fastest Claude, for quick turns.", contextLength: 200_000, supportsReasoning: true, supportsTools: true),
             ]
         case .deepSeek:
             return [
@@ -659,7 +674,7 @@ public enum ModelCatalog {
             else if lower.contains("deepseek-v4") { score += 95 }
             else if lower.contains("claude") || lower.contains("gemini") { score += 80 }
             else if lower.contains("gpt-5") { score += 70 }
-        case .anthropic:
+        case .anthropic, .claudeCode:
             if lower.contains("opus") { score += 100 }
             else if lower.contains("sonnet") { score += 95 }
             else if lower.contains("haiku") { score += 70 }
@@ -1469,6 +1484,12 @@ public struct QuotaSnapshot: Sendable, Equatable, Codable {
         public var windowMinutes: Int?
         public var resetAt: Date?
 
+        public init(usedPercent: Double, windowMinutes: Int?, resetAt: Date?) {
+            self.usedPercent = usedPercent
+            self.windowMinutes = windowMinutes
+            self.resetAt = resetAt
+        }
+
         public var label: String {
             switch windowMinutes {
             case .some(let minutes) where minutes >= 10_000: return "Weekly limit"
@@ -1490,6 +1511,24 @@ public struct QuotaSnapshot: Sendable, Equatable, Codable {
     public var secondaryWindow: Window?
     public var planName: String?
     public var capturedAt = Date()
+
+    /// Direct construction — the bridge's rate-limit frame builds one from
+    /// its own fields rather than headers.
+    public init(
+        planName: String? = nil,
+        primaryWindow: Window? = nil,
+        secondaryWindow: Window? = nil,
+        requestsRemaining: Int? = nil,
+        tokensRemaining: Int? = nil,
+        resetAt: Date? = nil
+    ) {
+        self.planName = planName
+        self.primaryWindow = primaryWindow
+        self.secondaryWindow = secondaryWindow
+        self.requestsRemaining = requestsRemaining
+        self.tokensRemaining = tokensRemaining
+        self.resetAt = resetAt
+    }
 
     public init?(headers rawHeaders: [AnyHashable: Any]) {
         var headers: [String: String] = [:]

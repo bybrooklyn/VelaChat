@@ -12,7 +12,7 @@ extension ProviderKind {
         switch self {
         case .appleIntelligence: Color(hex: 0xE8E4F0)
         case .openAI, .codex, .chatGPT: Color(hex: 0x10A37F)
-        case .anthropic: Color(hex: 0xD97757)
+        case .anthropic, .claudeCode: Color(hex: 0xD97757)
         case .google: Color(hex: 0x4285F4)
         case .deepSeek: Color(hex: 0x4D6BFE)
         case .openRouter: Color(hex: 0x6467F2)

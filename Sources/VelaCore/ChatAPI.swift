@@ -76,6 +76,12 @@ public final class CompatibleChatClient: @unchecked Sendable {
         if profile.kind == .codex && credential.isCodexOAuth {
             return ModelCatalog.curated(for: .codex)
         }
+        if profile.kind == .claudeCode {
+            guard ClaudeBridge.installedPath != nil else {
+                throw APIError.message("Claude Code isn't installed. Install it and run `claude` once to sign in.")
+            }
+            return ModelCatalog.curated(for: .claudeCode)
+        }
         try Self.requireCredential(profile: profile, credential: credential)
 
         if profile.kind == .ollama {
@@ -290,6 +296,11 @@ public final class CompatibleChatClient: @unchecked Sendable {
 
         if profile.kind == .codex && credential.isCodexOAuth {
             try await streamCodex(model: model, credential: credential, thinking: thinking, messages: messages, tools: tools, toolContext: toolContext, onEvent: onEvent)
+            return
+        }
+
+        if profile.kind == .claudeCode {
+            try await streamClaudeCode(model: model, messages: messages, toolContext: toolContext, onEvent: onEvent)
             return
         }
 
@@ -626,7 +637,7 @@ public final class CompatibleChatClient: @unchecked Sendable {
             return RequestSettings(reasoningEffort: nil, reasoning: nil, thinking: nil, think: nil)
         }
         switch kind {
-        case .appleIntelligence, .chatGPT:
+        case .appleIntelligence, .chatGPT, .claudeCode:
             // ChatGPT Web takes its effort in the conversation body, not
             // OpenAI-compatible request fields.
             return RequestSettings(reasoningEffort: nil, reasoning: nil, thinking: nil, think: nil)
