@@ -171,6 +171,17 @@ public enum ToolCatalog {
         parametersJSON: #"{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root"},"old_string":{"type":"string","description":"The exact text to find, copied verbatim out of the file including indentation and line breaks. Include enough surrounding lines to make it unique."},"new_string":{"type":"string","description":"The exact text to put in its place. An empty string deletes the match."},"replace_all":{"type":"boolean","description":"Replace every occurrence instead of requiring a unique match (default false)"}},"required":["path","old_string","new_string"]}"#,
         guidance: "Prefer this over write_file for any change to a file that already exists. If the result says old_string wasn't found, re-read the file rather than guessing again — what you remembered isn't what's on disk. If it says the match wasn't unique, add surrounding lines until it is."
     )
+
+    /// §9.1 — real Office-format document production. The emitters live in
+    /// VelaCore (`XLSXDocument`/`DOCXDocument`/`PPTXDocument`/
+    /// `SimplePDFWriter`); this definition and its content schema are
+    /// wired through `DocumentBuilder`.
+    public static let createDocument = Definition(
+        name: "create_document",
+        description: "Create a real document file in this conversation's workspace: an .xlsx spreadsheet, .docx Word document, .pptx slide deck, .pdf, or .md text. The \"content\" object's shape depends on the format (details in the schema). Returns the saved filename; overwrites only if that filename already exists.",
+        parametersJSON: #"{"type":"object","properties":{"format":{"type":"string","enum":["xlsx","docx","pptx","pdf","md"],"description":"xlsx = spreadsheet of sheets/rows/cells; docx or pdf = flowing document blocks; pptx = slides; md = plain text"},"filename":{"type":"string","description":"File name relative to the workspace root, e.g. \"q3-report.xlsx\". The right extension is appended if missing."},"content":{"type":"object","description":"xlsx: {\"sheets\":[{\"name\":\"Q3\",\"rows\":[[\"Region\",\"Revenue\"],[\"North\",1250]],\"widths\":[120,90]}]} or single-sheet shorthand {\"rows\":[...]}. Cells are strings, numbers, null, or {\"text\"/\"number\",\"bold\":true,\"format\":\"$#,##0\"}. docx/pdf: {\"blocks\":[{\"type\":\"heading\",\"level\":1,\"text\":\"Title\"},{\"type\":\"paragraph\",\"text\":\"...\"},{\"type\":\"bullet\",\"text\":\"...\"},{\"type\":\"numbered\",\"text\":\"...\"},{\"type\":\"table\",\"rows\":[[\"A\",\"B\"]],\"header\":true}]} — pdf cannot render tables. pptx: {\"slides\":[{\"layout\":\"title\",\"title\":\"...\",\"subtitle\":\"...\"},{\"layout\":\"bullets\",\"title\":\"...\",\"bullets\":[\"...\"]}]}. md: {\"text\":\"...\"}."}},"required":["format","content"]}"#,
+        guidance: "Use when the deliverable is a file the user will open elsewhere — a spreadsheet to sort, a deck to present, a formatted report — rather than prose for this chat; a markdown table pasted into your reply is not a spreadsheet. Prefer xlsx for anything tabular, docx for structured reports, and keep each cell atomic (one value, not a sentence of several)."
+    )
     public static let searchFiles = Definition(
         name: "search_files",
         description: "Find files in this conversation's workspace by filename pattern, by content, or both. glob filters filenames (\"*\" and \"?\" wildcards, matched against the workspace-relative path and against the bare filename); query is a case-insensitive regular expression matched line by line against file contents. With query the result is \"path:line: text\" per match, with glob alone it is a list of paths. Capped at 100 results, which it says when it hits.",
@@ -380,8 +391,7 @@ public enum ToolCatalog {
             ?? (arguments["url"] as? String)
             ?? (arguments["expression"] as? String)
             ?? (arguments["filename"] as? String)
-            ?? ""
-    }
+            ?? ""    }
 
     /// Outer wrapper: repairs malformed argument JSON where possible and
     /// bounds every tool at 120s — one hung tool must not wedge the whole
@@ -476,6 +486,10 @@ public enum ToolCatalog {
                 return "Error: \"path\", \"old_string\", and \"new_string\" are required."
             }
             return await editFileResult(path: path, oldString: oldString, newString: newString, replaceAll: arguments?["replace_all"] as? Bool ?? false, context: context)
+        case createDocument.name:
+            guard let format = arguments?["format"] as? String else { return "Error: \"format\" is required (xlsx, docx, pptx, pdf, or md)." }
+            guard let content = arguments?["content"] else { return "Error: \"content\" is required." }
+            return await createDocumentResult(format: format, filename: arguments?["filename"] as? String ?? "", content: content, context: context)
         case searchFiles.name:
             return searchFilesResult(glob: arguments?["glob"] as? String, query: arguments?["query"] as? String, context: context)
         case runCommand.name:
@@ -823,6 +837,42 @@ public enum ToolCatalog {
             return "Wrote \(content.utf8.count) bytes to \(path)."
         } catch {
             return "Error writing \(path): \(error.localizedDescription)"
+        }
+    }
+
+    /// §9.1 tool path: build the document bytes, then save through the
+    /// same sandbox + approval gate as any other file write. The export
+    /// button path (NSSavePanel) lives app-side in `ConversationExporter`;
+    /// an autonomous run has no user at a panel, so this writes into the
+    /// workspace and reports the path instead.
+    private static func createDocumentResult(format: String, filename: String, content: Any, context: ExecutionContext) async -> String {
+        guard DocumentFormat(rawValue: format.lowercased().trimmingCharacters(in: .whitespaces)) != nil else {
+            let known = DocumentFormat.allCases.map(\.rawValue).joined(separator: ", ")
+            return "Error: unknown format \"\(format)\" — supported formats: \(known)."
+        }
+        do {
+            let (data, resolvedFormat) = try DocumentBuilder.build(format: format, content: content)
+            var name = (filename as NSString).lastPathComponent
+                .components(separatedBy: CharacterSet(charactersIn: "/\\:")).joined(separator: "-")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if name.isEmpty { name = "document.\(resolvedFormat.fileExtension)" }
+            if !(name as NSString).pathExtension.lowercased().hasPrefix(resolvedFormat.fileExtension) {
+                name += "." + resolvedFormat.fileExtension
+            }
+            guard let url = SandboxManager.resolve(name, in: context.workspaceDirectory) else {
+                return "Error: \"\(filename)\" is outside the workspace folder — use a plain file name."
+            }
+            guard await writeApproved(path: name, context: context) else {
+                return "The user declined creating \(name). Don't retry unchanged — ask what they'd prefer instead."
+            }
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+            let formatted = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+            return "Created \(name) (\(formatted)) in the workspace folder."
+        } catch let error as DocumentEmitterError {
+            return "Error: \(error.message)"
+        } catch {
+            return "Error creating the document: \(error.localizedDescription)"
         }
     }
 

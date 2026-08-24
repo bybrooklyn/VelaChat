@@ -45,6 +45,115 @@ enum ConversationExporter {
         writePDF(conversation, to: url)
     }
 
+    // MARK: - Office formats (§9.1)
+
+    /// The emitters are VelaCore's; this side only maps a conversation
+    /// onto their models and drives the save panel. Same silent-failure
+    /// posture as `exportMarkdown` above: a cancelled or failed save is
+    /// not worth an alert.
+    static func exportDocx(_ conversation: Conversation) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName(conversation, ext: "docx")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? transcriptDOCX(conversation).makeData().write(to: url, options: .atomic)
+    }
+
+    static func exportXlsx(_ conversation: Conversation) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName(conversation, ext: "xlsx")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? transcriptXLSX(conversation)?.makeData().write(to: url, options: .atomic)
+    }
+
+    static func exportPptx(_ conversation: Conversation) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName(conversation, ext: "pptx")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? transcriptPPTX(conversation)?.makeData().write(to: url, options: .atomic)
+    }
+
+    private static func metaLine(for conversation: Conversation) -> String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .short
+        return "Exported from VelaChat · \(dateFormatter.string(from: Date())) · model: \(conversation.model.isEmpty ? "—" : conversation.model)"
+    }
+
+    private static func transcriptDOCX(_ conversation: Conversation) -> DOCXDocument {
+        var blocks: [DOCXDocument.Block] = [
+            .heading(level: 1, text: conversation.title),
+            .paragraph([DOCXDocument.Run(metaLine(for: conversation), italic: true)]),
+        ]
+        for message in conversation.realMessages {
+            let role = message.role == "user"
+                ? "You"
+                : "Assistant\(message.modelID.map { " (\($0))" } ?? "")"
+            blocks.append(.heading(level: 2, text: role))
+            for paragraph in message.content.components(separatedBy: "\n\n")
+            where !paragraph.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blocks.append(.paragraph(paragraph))
+            }
+            if !message.attachments.isEmpty {
+                blocks.append(.paragraph([
+                    DOCXDocument.Run("Attachments: \(message.attachments.map(\.filename).joined(separator: ", "))", italic: true),
+                ]))
+            }
+        }
+        return DOCXDocument(blocks: blocks)
+    }
+
+    private static func transcriptXLSX(_ conversation: Conversation) -> XLSXDocument? {
+        let messages = conversation.realMessages
+        guard !messages.isEmpty else { return nil }
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .short
+        var rows: [[XLSXDocument.Cell]] = [[
+            XLSXDocument.Cell(.text("Role"), bold: true),
+            XLSXDocument.Cell(.text("Model"), bold: true),
+            XLSXDocument.Cell(.text("Characters"), bold: true),
+            XLSXDocument.Cell(.text("Content"), bold: true),
+        ]]
+        for message in messages {
+            rows.append([
+                .text(message.role),
+                .text(message.modelID ?? ""),
+                .number(Double(message.content.count)),
+                .text(message.content),
+            ])
+        }
+        return XLSXDocument(sheets: [.init(
+            name: "Messages",
+            rows: rows,
+            columnWidths: [12, 22, 12, 90]
+        )])
+    }
+
+    private static func transcriptPPTX(_ conversation: Conversation) -> PPTXDocument? {
+        let messages = conversation.realMessages
+        guard !messages.isEmpty else { return nil }
+        var slides: [PPTXDocument.Slide] = [
+            PPTXDocument.Slide(layout: .title, title: conversation.title, subtitle: metaLine(for: conversation)),
+        ]
+        for message in messages.prefix(Limits.documentMaxSlides - 1) {
+            let role = message.role == "user"
+                ? "You"
+                : "Assistant\(message.modelID.map { " (\($0))" } ?? "")"
+            let points = message.content
+                .components(separatedBy: "\n\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .prefix(8)
+                .map { $0.count > 220 ? String($0.prefix(220)) + "…" : $0 }
+            slides.append(PPTXDocument.Slide(
+                layout: .bullets,
+                title: role,
+                bullets: points.isEmpty ? ["(no text)"] : Array(points)
+            ))
+        }
+        return PPTXDocument(slides: slides)
+    }
+
     private static func suggestedName(_ conversation: Conversation, ext: String) -> String {
         let base = conversation.title
             .components(separatedBy: CharacterSet(charactersIn: "/\\:"))
