@@ -2,12 +2,13 @@ import SwiftUI
 import VelaCore
 import WebKit
 
-/// The ChatGPT provider's editor section: session status, a real
-/// login window, and sign-out. The login is an embedded WebKit view on
-/// chatgpt.com — a genuine browser context, so Cloudflare and the
-/// normal login flow just work; the session cookies are then read from
-/// the web view's own cookie store and validated before anything is
-/// persisted. No JavaScript injection, no password handling.
+/// The ChatGPT provider's editor section: session status, sign-in, and
+/// sign-out. Cookie import from an already-signed-in browser is the
+/// PRIMARY path — Google refuses OAuth inside any embedded web view ("this
+/// browser or app may not be secure"), so a large share of accounts can
+/// never complete the embedded flow at all. The embedded WebKit window
+/// remains as a secondary option for password/email logins, and pasting a
+/// session token is the manual fallback.
 struct ChatGPTLoginSection: View {
     @Environment(AppModel.self) private var appModel
     @State private var isLoginShown = false
@@ -28,11 +29,33 @@ struct ChatGPTLoginSection: View {
                 Text("Sign in with your ChatGPT account — models, reasoning levels, and plan usage come straight from it. No API key involved.")
                     .foregroundStyle(Theme.secondaryText)
             }
+
+            // The primary path: read the session out of a browser the user
+            // is already logged into. Works for every account shape,
+            // including the Google-linked ones the embedded window cannot
+            // serve.
+            if !browsers.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(appModel.providers.chatGPTSessionPresent ? "Import again from a browser" : "Import from a browser you're signed into")
+                        .font(.subheadline.weight(.medium))
+                    HStack(spacing: 8) {
+                        ForEach(browsers) { browser in
+                            Button(browser.name) { importSession(from: browser) }
+                                .buttonStyle(SettingsPrimaryButtonStyle())
+                        }
+                    }
+                    Text("Log in to chatgpt.com there first if needed. Google blocks sign-in inside embedded windows, so this is the path that works for every account.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+            }
+
             HStack(spacing: 10) {
                 Button(appModel.providers.chatGPTSessionPresent ? "Sign In Again…" : "Sign In to ChatGPT…") {
                     isLoginShown = true
                 }
-                .buttonStyle(SettingsPrimaryButtonStyle())
+                .buttonStyle(VelaIconButtonStyle())
+                .foregroundStyle(browsers.isEmpty ? Theme.accent : Theme.secondaryText)
                 if appModel.providers.chatGPTSessionPresent {
                     Button("Sign Out") {
                         Task {
@@ -48,20 +71,6 @@ struct ChatGPTLoginSection: View {
                 }
             }
 
-            // Google refuses to authenticate inside any embedded web view,
-            // so a Google-linked account can never sign in through the
-            // window above. Importing the session from a browser you're
-            // already logged into is the way in.
-            if !browsers.isEmpty {
-                LabeledContent("Import from a browser") {
-                    HStack(spacing: 8) {
-                        ForEach(browsers) { browser in
-                            Button(browser.name) { importSession(from: browser) }
-                                .buttonStyle(SettingsAddButtonStyle())
-                        }
-                    }
-                }
-            }
             Button("Paste a session token instead…") { isPasteShown = true }
                 .buttonStyle(VelaIconButtonStyle())
                 .foregroundStyle(Theme.accent)
@@ -71,9 +80,11 @@ struct ChatGPTLoginSection: View {
                     .foregroundStyle(importMessage.hasPrefix("Signed in") ? Theme.success : Theme.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Signing in with Google only works in a real browser — Google blocks embedded windows. Log in to chatgpt.com there, then use Import above.")
-                .font(.caption)
-                .foregroundStyle(Theme.tertiaryText)
+            if browsers.isEmpty {
+                Text("No supported browsers were found for import — use the sign-in window above, or paste a token below.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
         }
         .sheet(isPresented: $isPasteShown) {
             ChatGPTTokenPasteSheet(token: $pastedToken) { value in

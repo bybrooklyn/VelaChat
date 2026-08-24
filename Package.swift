@@ -25,7 +25,13 @@ let package = Package(
         // VelaChat; see AGENTS.md / velachat-plan-v2.md §1.1 for the extraction plan.
         .target(
             name: "VelaCore",
-            path: "Sources/VelaCore"
+            path: "Sources/VelaCore",
+            resources: [
+                // The vendored models.dev snapshot (pruned to providers
+                // VelaChat ships presets for) — the offline fallback for
+                // model metadata until the first live registry fetch.
+                .copy("Resources/models-dev-snapshot.json")
+            ]
         ),
         .executableTarget(
             name: "VelaChat",

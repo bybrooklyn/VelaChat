@@ -528,6 +528,10 @@ extension AppModel {
                         // success — a provider that never recovers used to
                         // leave no trace of the retries at all).
                         var retryNoteID: UUID?
+                        // Fires at most once per reply: if the provider
+                        // 429s again after the window was supposed to have
+                        // reset, the ordinary retry/error ladder takes over.
+                        var queuedForWindowReset = false
                         while true {
                             do {
                                 if let self, !self.isOnline {
@@ -586,31 +590,53 @@ extension AppModel {
                                 break
                             } catch is CancellationError {
                                 throw CancellationError()
-                            } catch where !deliveredEvents && attempt < Limits.maxTransientRetries && Self.isTransientFailure(error) {
-                                attempt += 1
-                                // Visible the instant the retry is
-                                // scheduled, not after it eventually works
-                                // — a blank bubble for the whole backoff is
-                                // exactly the "is this even doing anything"
-                                // complaint this exists to fix.
-                                if let self, retryNoteID == nil {
-                                    retryNoteID = self.postRetryNote("Retrying after a connection failure", to: conversation, assistantID: assistantID)
+                            } catch where !deliveredEvents {
+                                // Ladder, most specific first:
+                                // 1. The subscription plan window ran out —
+                                //    queue until the provider's own reset
+                                //    moment (once), visibly.
+                                // 2. Ordinary transient failure within the
+                                //    retry budget — short backoff.
+                                // 3. Anything else — surface for real.
+                                if !queuedForWindowReset,
+                                   let wait = Self.quotaWindowResetWait(for: error, quota: self?.quotaByProvider[profile.id]) {
+                                    queuedForWindowReset = true
+                                    let noteID = self?.postRetryNote(
+                                        "Plan window exhausted — queued until it resets",
+                                        to: conversation,
+                                        assistantID: assistantID
+                                    )
+                                    try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                                    try Task.checkCancellation()
+                                    if let self, let noteID {
+                                        self.resolveRetryNote(noteID, isError: false, to: conversation, assistantID: assistantID)
+                                    }
+                                } else if attempt < Limits.maxTransientRetries, Self.isTransientFailure(error) {
+                                    attempt += 1
+                                    // Visible the instant the retry is
+                                    // scheduled, not after it eventually works
+                                    // — a blank bubble for the whole backoff is
+                                    // exactly the "is this even doing anything"
+                                    // complaint this exists to fix.
+                                    if let self, retryNoteID == nil {
+                                        retryNoteID = self.postRetryNote("Retrying after a connection failure", to: conversation, assistantID: assistantID)
+                                    }
+                                    let baseDelay = attempt == 1 ? Limits.transientRetryFirstDelay : Limits.transientRetryFollowupDelay
+                                    let delay = baseDelay + Double.random(in: 0...Limits.transientRetryJitter)
+                                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                                } else {
+                                    // Retries exhausted (or the failure was never
+                                    // retryable). This MUST reach the user as a
+                                    // real error — a silently empty reply after
+                                    // two invisible retries is the worst
+                                    // possible outcome.
+                                    if let self, let retryNoteID {
+                                        self.resolveRetryNote(retryNoteID, isError: true, to: conversation, assistantID: assistantID)
+                                    }
+                                    throw attempt > 0
+                                        ? APIError.message("\(error.localizedDescription) (after \(attempt) automatic \(attempt == 1 ? "retry" : "retries"))")
+                                        : error
                                 }
-                                let baseDelay = attempt == 1 ? Limits.transientRetryFirstDelay : Limits.transientRetryFollowupDelay
-                                let delay = baseDelay + Double.random(in: 0...Limits.transientRetryJitter)
-                                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                            } catch {
-                                // Retries exhausted (or the failure was never
-                                // retryable). This MUST reach the user as a
-                                // real error — a silently empty reply after
-                                // two invisible retries is the worst
-                                // possible outcome.
-                                if let self, let retryNoteID {
-                                    self.resolveRetryNote(retryNoteID, isError: true, to: conversation, assistantID: assistantID)
-                                }
-                                throw attempt > 0
-                                    ? APIError.message("\(error.localizedDescription) (after \(attempt) automatic \(attempt == 1 ? "retry" : "retries"))")
-                                    : error
                             }
                         }
                         // Auto-continue: only on a provider-reported length

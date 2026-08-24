@@ -111,4 +111,9 @@ public enum Limits {
     /// Random spread added to each retry delay so many concurrent tabs
     /// hitting the same flaky provider don't all retry in lockstep.
     public static let transientRetryJitter: TimeInterval = 0.5
+    /// A subscription plan window exhausted mid-reply queues the turn until
+    /// the provider's own reset moment — but never longer than this. Past
+    /// it, silently sleeping would be worse than reporting the failure and
+    /// letting the user decide.
+    public static let quotaWindowResumeMaxDelay: TimeInterval = 6 * 3_600
 }
