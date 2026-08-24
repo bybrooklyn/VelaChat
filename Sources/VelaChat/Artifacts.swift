@@ -64,7 +64,12 @@ struct Artifact: Identifiable, Equatable {
     /// message text.
     enum Source: Equatable {
         case chat
-        case workspaceFile(conversationID: UUID, relativePath: String)
+        /// The resolved URL travels with the artifact rather than being
+        /// rebuilt from a conversation id on save: a conversation with an
+        /// attached project folder does not live under the sandbox
+        /// directory, and rebuilding the path from the id alone wrote to
+        /// (or failed to find) the wrong place.
+        case workspaceFile(url: URL, relativePath: String)
     }
 
     let id = UUID()
@@ -143,31 +148,45 @@ final class ArtifactPresenter {
         activeArtifact = Artifact(kind: kind, title: title, content: content)
     }
 
-    /// Opens a file the model wrote into the conversation's private
-    /// workspace — the inspector renders it by extension and can save
-    /// edits back to the same path.
-    func openWorkspaceFile(conversationID: UUID, relativePath: String) {
-        let directory = SandboxManager.directory(for: conversationID)
-        guard let url = SandboxManager.resolve(relativePath, in: directory),
-              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
-        let ext = (relativePath as NSString).pathExtension
-        activeArtifact = Artifact(
-            kind: .from(fileExtension: ext),
-            title: (relativePath as NSString).lastPathComponent,
-            content: text,
-            source: .workspaceFile(conversationID: conversationID, relativePath: relativePath)
-        )
+    /// Opens a file the model produced.
+    ///
+    /// Two outcomes, because a workspace now holds two kinds of file: text
+    /// renders in the inspector (and can be edited and saved back), while
+    /// a real .xlsx/.docx/.pptx/.pdf goes to whichever app owns that
+    /// format. The previous version read UTF-8 or gave up silently, so
+    /// clicking a generated spreadsheet did nothing at all — no panel, no
+    /// error, no hint that anything had been asked of it.
+    ///
+    /// `root` is the conversation's `workspaceRoot`, which already resolves
+    /// an attached project folder; it is not rebuilt from the id here.
+    @discardableResult
+    func openWorkspaceFile(named relativePath: String, in root: URL) -> Bool {
+        guard let url = SandboxManager.resolve(relativePath, in: root),
+              FileManager.default.fileExists(atPath: url.path) else { return false }
+        if let text = try? String(contentsOf: url, encoding: .utf8) {
+            activeArtifact = Artifact(
+                kind: .from(fileExtension: (relativePath as NSString).pathExtension),
+                title: (relativePath as NSString).lastPathComponent,
+                content: text,
+                source: .workspaceFile(url: url, relativePath: relativePath)
+            )
+            return true
+        }
+        return NSWorkspace.shared.open(url)
+    }
+
+    /// Shows the file in Finder — the escape hatch for anything the panel
+    /// can't render and no app claims.
+    func revealInFinder(named relativePath: String, in root: URL) {
+        guard let url = SandboxManager.resolve(relativePath, in: root) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     /// Saves edited content back to a workspace file. Returns an error
     /// message, or nil on success. Chat-sourced artifacts have no file.
     func save(_ artifact: Artifact, content: String) -> String? {
-        guard case .workspaceFile(let conversationID, let relativePath) = artifact.source else {
+        guard case .workspaceFile(let url, _) = artifact.source else {
             return "This artifact isn't a workspace file."
-        }
-        let directory = SandboxManager.directory(for: conversationID)
-        guard let url = SandboxManager.resolve(relativePath, in: directory) else {
-            return "The file's path is no longer valid."
         }
         do {
             try content.write(to: url, atomically: true, encoding: .utf8)
