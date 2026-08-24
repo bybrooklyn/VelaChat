@@ -524,6 +524,7 @@ struct AttachmentChip: View {
         case .code: "chevron.left.forwardslash.chevron.right"
         case .text: "doc.text"
         case .git: "arrow.triangle.branch"
+        case .data: "tablecells"
         }
     }
 }
