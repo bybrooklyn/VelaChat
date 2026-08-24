@@ -39,6 +39,7 @@ public enum PlanMode {
         [
             ToolCatalog.writeFile.name,
             ToolCatalog.editFile.name,
+            ToolCatalog.createDocument.name,
             ToolCatalog.saveMemory.name,
             ToolCatalog.editMemory.name,
         ]

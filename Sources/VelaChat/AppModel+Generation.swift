@@ -174,6 +174,10 @@ extension AppModel {
                 tools.append(contentsOf: [ToolCatalog.writeFile, ToolCatalog.readFile, ToolCatalog.listWorkspaceFiles])
                 if isAgentToolsEnabled {
                     tools.append(contentsOf: [ToolCatalog.editFile, ToolCatalog.searchFiles])
+                    // Document production rides with the other writing
+                    // tools (§9.1); edit_file/search_files tier is where
+                    // the "agent can produce artifacts" line already sat.
+                    tools.append(ToolCatalog.createDocument)
                 }
                 // Compaction-surviving notes ride the workspace too, but are
                 // agent-only and never listed as a workspace file.
