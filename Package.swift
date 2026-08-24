@@ -15,6 +15,11 @@ let package = Package(
         // Line Tools-only toolchain. Swap back to the upstream git URL if
         // building with full Xcode.
         .package(path: "Vendor/HighlightSwift"),
+        // Vendored at tag 0.9.20 (see Vendor/*/Package.swift for provenance):
+        // the OOXML document emitters (plan §9.1) need a zip container
+        // writer, and Apple's Compression framework deflates but does not
+        // build the zip central directory.
+        .package(path: "Vendor/ZIPFoundation"),
         .package(path: "Vendor/KeyboardShortcuts"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
@@ -25,6 +30,7 @@ let package = Package(
         // VelaChat; see AGENTS.md / velachat-plan-v2.md §1.1 for the extraction plan.
         .target(
             name: "VelaCore",
+            dependencies: ["ZIPFoundation"],
             path: "Sources/VelaCore",
             resources: [
                 // The vendored models.dev snapshot (pruned to providers
@@ -46,7 +52,13 @@ let package = Package(
         ),
         .testTarget(
             name: "VelaChatTests",
-            dependencies: ["VelaChat", "VelaCore"],
+            dependencies: [
+                "VelaChat",
+                "VelaCore",
+                // The §9.1 emitter tests unzip generated documents to
+                // assert their parts.
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+            ],
             path: "Tests/VelaChatTests",
             // Read via `#filePath` at runtime, not bundled as resources —
             // excluded so SwiftPM stops warning about unhandled files.
