@@ -1,5 +1,25 @@
 # VelaChat — working notes
 
+## 2026-08-24 — the reasoning row drew an empty box
+
+Reported as "the app feels weird", narrowed to visual. The reasoning
+row — which appears on nearly every reply — was drawing a blank grey
+square instead of a glyph: `"thought.bubble"` is **not an SF Symbol on
+any macOS**. It came in with the Phase 2 substrate commit that gave
+reasoning its own glyph instead of the memory brain (right intent, name
+never checked), and reached the user when that phase chain merged.
+
+A wrong symbol name is invisible to the compiler and silent at runtime —
+SwiftUI draws an empty box and carries on. So the fix ships with a test
+that scans `Sources/` for `systemName:` / `systemImage:` / `symbol:`
+literals and resolves each through `NSImage(systemSymbolName:)`, plus one
+that walks every `ActivityKind.symbol` (the switch the scan can't see).
+Both would have caught this the moment it was written. Sweeping the whole
+tree found exactly one bad name, so nothing else is affected.
+
+Replacement is `ellipsis.bubble` — a thought bubble that exists, and
+still not the brain.
+
 ## 2026-08-24 — merge-up, then §9.2 data analysis (phase-7-data-analysis)
 
 Merged the whole stacked chain into main first: PRs #8–#15

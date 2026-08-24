@@ -2,7 +2,7 @@ import Foundation
 
 /// What kind of work an activity line describes — drives the SF Symbol and
 /// the present/past-tense phrasing in the transcript.
-public enum ActivityKind: String, Codable, Sendable {
+public enum ActivityKind: String, Codable, Sendable, CaseIterable {
     case webSearch, conversationSearch, fetchURL, fileRead, fileWrite, fileList
     case datetime, calculation, attachment, note
     case schedule, clipboard, mcp
