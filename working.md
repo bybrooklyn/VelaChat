@@ -1,5 +1,50 @@
 # VelaChat — working notes
 
+## 2026-08-24 — one activity line per reply, and artifacts you can click
+
+Feedback: the tool rows "just suck", and produced files "aren't clickable
+unless you expand the tool screen and select the file". Both fair.
+
+**Rows.** A reply grew one row per call, and the same fact could appear
+four times over — row label, expanded label, the tool result restating it
+("Wrote 956 bytes to notes.md" under "Wrote notes.md"), then the model's
+own prose. Every row carried a duration including `· <0.1s`, and the
+chevron was `opacity(0)` until hover, so nothing looked interactive. Now:
+**every call in a reply folds into ONE line** (`ActivitySummary.label`,
+VelaCore, reusing the per-kind `aggregateUnit` that already existed),
+anchored where the first call happened, expanding to the detail. Durations
+are gone from rows; the line carries a total only when the span is ≥ 1s.
+Expanded rows drop a result that merely restates the label
+(`resultAddsInformation`). Chevron is always visible.
+
+Chosen deliberately over the previous "tools where they happened" rule —
+that ordering fidelity is the cost, one quiet line is the benefit. The
+streaming property the old rule protected survives more strongly: with a
+single permanent line, nothing collapses when the reply lands, so the
+transcript can't jump by a stack of rows at completion.
+
+**Artifacts.** Files a reply produced are now chips under it
+(`Views/ArtifactChips.swift`), above the token row. Three real defects sat
+behind the old "expand the row" path: `create_document` had **no
+ActivityKind mapping** at all (fell through to `.note`, so no Open button
+existed for xlsx/docx/pptx — now `.document`); `openWorkspaceFile` read
+UTF-8 only and **silently returned** for anything binary, so clicking a
+generated spreadsheet did nothing; and it resolved against
+`SandboxManager.directory(for:)`, which is the wrong place entirely when
+the conversation has an **attached project folder**. Now: resolve against
+`conversation.workspaceRoot`, text renders in the panel, everything else
+opens in the app that owns the format, and the artifact's `Source` carries
+the resolved URL so saving edits writes back to the real file.
+
+`create_document` appends a missing extension, so a record's argument can
+be `report` while the file is `report.xlsx` — chip resolution falls back to
+matching the basename rather than showing a chip that opens nothing.
+
+Verified: swiftc harness over the VelaCore half (20 assertions), XCTest for
+both halves, and a rebuilt bundle screenshotted — one `Wrote 1 file ›` line
+with a visible chevron and no duration, plus an `about-this-assistant.md ·
+Markdown` chip. Clicking still needs a human: GUI automation can't run here.
+
 ## 2026-08-24 — the reasoning row drew an empty box
 
 Reported as "the app feels weird", narrowed to visual. The reasoning

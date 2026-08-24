@@ -343,6 +343,18 @@ struct MessageRow: View {
                             }
                     }
 
+                    // What the reply made, as chips you can actually click.
+                    // Only once the reply has landed: a chip appearing for a
+                    // file that is still being written invites a click on a
+                    // half-written document.
+                    if alternateIndex == 0, !message.isStreaming {
+                        let root = appModel.activeConversation?.workspaceRoot
+                        let produced = ProducedFile.chips(from: displayedMessage.activityRecords, root: root)
+                        if !produced.isEmpty {
+                            ArtifactChipRow(files: produced, root: root)
+                        }
+                    }
+
                     if !message.isStreaming {
                         HStack(spacing: 10) {
                             if let summary = appModel.usageByMessage[displayedMessage.id] ?? displayedMessage.usage,
@@ -674,23 +686,25 @@ struct AssistantTimeline: View {
                 guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 items.append(.reasoning(id: id, content: content))
             case .activity(let record):
-                // Consecutive completed, successful calls aggregate into one
-                // line; a running or failed call always stands alone.
+                // EVERY call in the reply folds into ONE line, anchored
+                // where the first one happened — not a row per call, and
+                // not a row per consecutive run.
                 //
-                // This aggregation is load-bearing, not cosmetic: a reply
-                // that fetched thirty pages used to push thirty separate
-                // "Read <url> — failed" rows through the transcript and then
-                // collapse them all in one frame at the end — noise plus a
-                // visible thirty-row jump on completion. The same rule runs
-                // mid-stream and after, so collapsing happens continuously,
-                // one call at a time: at most the single in-flight row is
-                // ever extra, and the last one folding in when the reply
-                // lands moves one row, not the whole stack. Any change here
-                // has to keep that.
-                if case .activities(let group) = items.last,
-                   !record.isRunning, !record.isError,
-                   group.allSatisfy({ !$0.isRunning && !$0.isError }) {
-                    items[items.count - 1] = .activities(group + [record])
+                // The predecessor aggregated only *consecutive* successful
+                // calls, which kept the transcript honest about ordering
+                // but meant a working reply grew a stack of rows, each
+                // repeating what the prose was about to say anyway. One
+                // line says the same thing and the detail is one click
+                // away.
+                //
+                // The streaming property the old rule existed to protect
+                // still holds, more strongly: because there is only ever
+                // one line, nothing collapses when the reply lands, so the
+                // transcript cannot jump by a stack of rows at completion.
+                // A call arriving mid-stream extends the line in place.
+                if let index = items.firstIndex(where: { if case .activities = $0 { return true } else { return false } }),
+                   case .activities(let group) = items[index] {
+                    items[index] = .activities(group + [record])
                 } else {
                     items.append(.activities([record]))
                 }
@@ -777,13 +791,15 @@ struct AssistantTimeline: View {
     }
 }
 
-/// One dim, icon-led line — "Searching the web for 'X'" while running
-/// (shimmering, never a spinner), a past-tense summary once done, counts
-/// emphasized when several calls collapse into one line. Click to unfold
-/// the real arguments and results in place.
+/// One dim, icon-led line for a reply's ENTIRE tool run — "Searching the
+/// web for 'X'" while something is in flight (shimmering, never a spinner),
+/// a past-tense summary with counts once everything has landed. Click to
+/// unfold the real arguments and results in place.
+///
+/// Files the run produced are not in here: they are chips under the reply
+/// (`ArtifactChipRow`), because a control that only exists inside an
+/// expanded row is a control nobody finds.
 struct ActivityLine: View {
-    @Environment(ArtifactPresenter.self) private var artifactPresenter
-    @Environment(AppModel.self) private var appModel
     let records: [ActivityRecord]
     @State private var isExpanded: Bool
     @State private var didInteract = false
@@ -800,39 +816,21 @@ struct ActivityLine: View {
 
     private var isRunning: Bool { records.contains { $0.isRunning } }
 
+    /// The one line a reply's whole tool run gets.
+    ///
+    /// While something is still in flight it names what is happening right
+    /// now — a reader watching a reply work wants "Searching the web",
+    /// not a tally. Once everything has landed it becomes the summary,
+    /// with the total time appended only when it was long enough to be
+    /// worth knowing (`ActivitySummary.durationLabel` drops anything under
+    /// a second, which is where "· <0.1s" on every row used to come from).
     private var label: String {
-        guard records.count > 1 else {
-            guard let record = records.first else { return "" }
-            if record.isRunning { return record.kind.runningLabel(argument: record.argument) }
-            // A single finished call can say how long it took, because both
-            // ends of it were actually observed. A group can't — the calls
-            // may not have been contiguous in time — so it says nothing
-            // rather than implying a total nobody measured.
-            let duration = record.durationLabel.map { " · \($0)" } ?? ""
-            if record.isError { return record.kind.finishedLabel(argument: record.argument) + " — failed" + duration }
-            return record.kind.finishedLabel(argument: record.argument) + duration
+        if let running = records.last(where: \.isRunning) {
+            return running.kind.runningLabel(argument: running.argument)
         }
-        // Aggregate: counts per kind, in order of first appearance —
-        // "Ran 3 web searches, read 2 pages".
-        var orderedKinds: [ActivityKind] = []
-        var counts: [ActivityKind: Int] = [:]
-        for record in records {
-            if counts[record.kind] == nil { orderedKinds.append(record.kind) }
-            counts[record.kind, default: 0] += 1
-        }
-        var parts: [String] = []
-        for (index, kind) in orderedKinds.enumerated() {
-            var unit = kind.aggregateUnit(count: counts[kind] ?? 0)
-            if index == 0, kind == .webSearch || kind == .conversationSearch || kind == .calculation || kind == .memory {
-                unit = "Ran " + unit
-            }
-            parts.append(unit)
-        }
-        var sentence = parts.joined(separator: ", ")
-        if let first = sentence.first {
-            sentence = first.uppercased() + sentence.dropFirst()
-        }
-        return sentence
+        let summary = ActivitySummary.label(for: records)
+        guard let duration = ActivitySummary.durationLabel(for: records) else { return summary }
+        return summary + " · " + duration
     }
 
     /// Digit runs render slightly brighter and semibold — the Claude Code
@@ -895,9 +893,13 @@ struct ActivityLine: View {
                         .foregroundStyle(Theme.tertiaryText)
                 }
                 if !isRunning {
+                    // Always visible, brighter on hover. It used to fade in
+                    // from nothing, so the row looked inert and the detail
+                    // behind it went undiscovered — which is how "the tool
+                    // screen" became something you had to know to expand.
                     Image(systemName: "chevron.right")
                         .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(Theme.tertiaryText.opacity(isHovering ? 0.9 : 0))
+                        .foregroundStyle(Theme.tertiaryText.opacity(isHovering ? 0.9 : 0.45))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
                 // Without this the HStack sized to icon + label + chevron,
@@ -930,36 +932,23 @@ struct ActivityLine: View {
                     ForEach(records) { record in
                         VStack(alignment: .leading, spacing: 3) {
                             if !record.argument.isEmpty {
-                                HStack(spacing: 8) {
-                                    Text(record.kind.finishedLabel(argument: record.argument))
-                                        .font(.caption.weight(.medium))
-                                        .foregroundStyle(Theme.secondaryText)
-                                    // Files the model wrote or read open in
-                                    // the inspector, rendered for real.
-                                    if record.kind == .fileWrite || record.kind == .fileRead,
-                                       !record.isError,
-                                       let conversationID = appModel.activeConversationID {
-                                        Button {
-                                            artifactPresenter.openWorkspaceFile(conversationID: conversationID, relativePath: record.argument)
-                                        } label: {
-                                            Label("Open", systemImage: "sidebar.right")
-                                                .font(.caption2)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .foregroundStyle(Theme.accent)
-                                    }
-                                    // Only when both ends were observed.
-                                    // A record from a transcript saved
-                                    // before timestamps existed prints no
-                                    // duration rather than "0.0s".
-                                    if let duration = record.durationLabel {
-                                        Text("· \(duration)")
-                                            .font(.caption.monospacedDigit())
-                                            .foregroundStyle(Theme.tertiaryText)
-                                    }
-                                }
+                                // No duration and no Open button here any
+                                // more: sub-second times said nothing, and
+                                // files now have their own chips under the
+                                // reply instead of a control you had to
+                                // expand a row to find.
+                                Text(record.kind.finishedLabel(argument: record.argument))
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(Theme.secondaryText)
                             }
-                            if !record.result.isEmpty {
+                            // The result is skipped when it only restates
+                            // the label — "Wrote 956 bytes to notes.md"
+                            // under a line already reading "Wrote notes.md"
+                            // is the same sentence twice.
+                            if ActivitySummary.resultAddsInformation(
+                                record.result,
+                                beyond: record.argument.isEmpty ? "" : record.kind.finishedLabel(argument: record.argument)
+                            ) {
                                 Text(record.result)
                                     .font(.caption)
                                     .foregroundStyle(record.isError ? Theme.danger.opacity(0.85) : Theme.tertiaryText)
