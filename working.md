@@ -46,6 +46,14 @@ OOXML layer — writer-first paid off), §9.3 browsing, §9.5 batch, §9.6
 transcription, §9.8 watch folders; then Phase 5b checkpoints, Phase 8
 computer use, Phase 9 menu-bar polish.
 
+CI caught one real bug the harness missed (third time the pattern
+holds): a sheet whose cells ALL decode empty drove
+`for rowIndex in 0...lastMeaningfulRow` with -1 — a closed range
+crashes on formation BEFORE a `where` clause can guard it. Guard the
+range, not the loop. An all-empty sheet is valid xlsx and now emits an
+empty sheetData. Second CI round-trip was a test-side miscount (six
+separators join into six dashes, not seven) — the emitter was right.
+
 Needs human verification: open generated xlsx/docx/pptx in
 Numbers/Pages/Keynote (and Excel if at hand) — QuickLook parsing is
 strong evidence, not proof; also the three new Export menu items and a
