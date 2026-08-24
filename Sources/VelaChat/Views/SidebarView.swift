@@ -514,6 +514,10 @@ struct SidebarView: View {
             Menu {
                 Button("Markdown…") { ConversationExporter.exportMarkdown(conversation) }
                 Button("PDF…") { ConversationExporter.exportPDF(conversation) }
+                Divider()
+                Button("Word Document…") { ConversationExporter.exportDocx(conversation) }
+                Button("Excel Spreadsheet…") { ConversationExporter.exportXlsx(conversation) }
+                Button("PowerPoint Deck…") { ConversationExporter.exportPptx(conversation) }
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
