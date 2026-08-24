@@ -11,12 +11,19 @@ import VelaCore
 actor DataAnalysisSessions {
 
     /// What one attached file contributes: its identity (so a file is
-    /// loaded once, not once per turn), its name, and its bytes.
+    /// loaded once, not once per turn) and its name. The bytes are NOT
+    /// carried here — a 20 MB spreadsheet would then be read off disk and
+    /// held in memory on every send, long after it was loaded. They are
+    /// fetched through `bytes` below, only for the files this session
+    /// hasn't seen yet.
     struct Source: Sendable {
         var attachmentID: UUID
         var filename: String
-        var data: Data
     }
+
+    /// Reads one attachment's bytes on demand. Injected by the app, since
+    /// only it knows where an attachment's data actually lives.
+    typealias ByteProvider = @Sendable (UUID) async -> Data?
 
     private struct Session {
         var database: AnalysisDatabase
@@ -36,9 +43,9 @@ actor DataAnalysisSessions {
     /// Loads whatever is new and returns the schema block for the prompt.
     /// Idempotent: called on every send, and re-attaching the same file
     /// costs a set lookup.
-    func schemaText(for conversationID: UUID, sources: [Source]) async -> String {
+    func schemaText(for conversationID: UUID, sources: [Source], bytes: ByteProvider) async -> String {
         guard !sources.isEmpty else { return "" }
-        await load(sources, into: conversationID)
+        await load(sources, into: conversationID, bytes: bytes)
         guard let session = sessions[conversationID] else { return "" }
         var text = session.schemaText
         if !session.problems.isEmpty {
@@ -53,10 +60,11 @@ actor DataAnalysisSessions {
     func query(
         conversationID: UUID,
         sources: [Source],
+        bytes: ByteProvider,
         sql: String,
         chartJSON: String?
     ) async -> DataQueryOutcome {
-        await load(sources, into: conversationID)
+        await load(sources, into: conversationID, bytes: bytes)
         guard let session = sessions[conversationID] else {
             return DataQueryOutcome(sql: sql, error: "no data is attached to this conversation.")
         }
@@ -94,7 +102,7 @@ actor DataAnalysisSessions {
 
     // MARK: - Loading
 
-    private func load(_ sources: [Source], into conversationID: UUID) async {
+    private func load(_ sources: [Source], into conversationID: UUID, bytes: ByteProvider) async {
         var session: Session
         if let existing = sessions[conversationID] {
             session = existing
@@ -110,13 +118,17 @@ actor DataAnalysisSessions {
 
         for source in pending {
             session.loaded.insert(source.attachmentID)
+            guard let data = await bytes(source.attachmentID), !data.isEmpty else {
+                session.problems.append("\(source.filename) could not be read.")
+                continue
+            }
             do {
                 if DataSourceLoader.Format.detect(filename: source.filename) == .sqlite {
                     // ATTACH needs a path, and an attachment is bytes. The
                     // copy is temporary, read-only to SQLite, and removed
                     // with the session — the user's own file is never
                     // opened, let alone written.
-                    let url = try writeTemporaryCopy(of: source)
+                    let url = try writeTemporaryCopy(of: source, data: data)
                     session.temporaryFiles.append(url)
                     let alias = SQLIdentifier.sanitize(
                         (source.filename as NSString).deletingPathExtension,
@@ -124,7 +136,7 @@ actor DataAnalysisSessions {
                     )
                     try await session.database.attachSQLiteFile(at: url.path, alias: alias)
                 } else {
-                    let tables = try DataSourceLoader.load(filename: source.filename, data: source.data)
+                    let tables = try DataSourceLoader.load(filename: source.filename, data: data)
                     try await session.database.load(tables)
                 }
             } catch {
@@ -138,11 +150,11 @@ actor DataAnalysisSessions {
         sessions[conversationID] = session
     }
 
-    private func writeTemporaryCopy(of source: Source) throws -> URL {
+    private func writeTemporaryCopy(of source: Source, data: Data) throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("velachat-analysis", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(source.attachmentID.uuidString).sqlite")
-        try source.data.write(to: url)
+        try data.write(to: url)
         return url
     }
 }

@@ -152,12 +152,28 @@ extension AppModel {
         let modelSupportsTools = (modelInfo ?? RemoteModel(id: model)).supportsTools
             && profile.kind != .appleIntelligence  // on-device path has no tool loop
         // §9.2 — every data file attached to this conversation, oldest
-        // first. Gathered here (on the main actor, where the messages are)
-        // and handed to the analysis actor as plain bytes.
+        // first. Names only: the bytes come through the provider below, and
+        // only for files the session hasn't loaded yet. Carrying them here
+        // would mean re-reading a 20 MB spreadsheet off disk on every send
+        // and holding it for the whole generation.
         let dataSources: [DataAnalysisSessions.Source] = conversation.realMessages
             .flatMap(\.attachments)
             .filter { $0.kind == .data && $0.isIncluded }
-            .map { DataAnalysisSessions.Source(attachmentID: $0.id, filename: $0.filename, data: $0.data) }
+            .map { DataAnalysisSessions.Source(attachmentID: $0.id, filename: $0.filename) }
+        // An immutable binding to capture: `conversation` is a var here, and
+        // a weak capture of a var is an error under Swift 6 concurrency.
+        let sourceConversation = conversation
+        let dataBytes: DataAnalysisSessions.ByteProvider = { [weak sourceConversation] attachmentID in
+            // The inner capture list is load-bearing: a weak binding is
+            // mutable, and capturing it again inside a concurrent closure
+            // is an error under Swift 6.
+            await MainActor.run { [sourceConversation] in
+                sourceConversation?.messages
+                    .flatMap(\.attachments)
+                    .first { $0.id == attachmentID }?
+                    .data
+            }
+        }
         var tools: [ToolCatalog.Definition] = []
         if modelSupportsTools {
             if isConversationSearchEnabled {
@@ -418,6 +434,7 @@ extension AppModel {
                 let outcome = await self.analysisSessions.query(
                     conversationID: conversationID,
                     sources: dataSources,
+                    bytes: dataBytes,
                     sql: sql,
                     chartJSON: chartJSON
                 )
@@ -520,7 +537,8 @@ extension AppModel {
                     self.statusMessage = "Loading attached data…"
                     promptContext.dataSchema = await self.analysisSessions.schemaText(
                         for: conversation.id,
-                        sources: dataSources
+                        sources: dataSources,
+                        bytes: dataBytes
                     )
                     self.statusMessage = nil
                 }
