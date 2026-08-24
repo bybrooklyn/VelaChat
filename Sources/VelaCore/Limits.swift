@@ -120,4 +120,13 @@ public enum Limits {
     /// hangs `claude` indefinitely (verified: >75s with no self-cancel), so
     /// the HOST imposes the deadline and auto-denies with a message.
     public static let claudePermissionTimeout: TimeInterval = 120
+
+    // MARK: - Generated documents (§9.1)
+
+    /// `create_document`: cells across all sheets of one workbook, and
+    /// slides in one deck. Both are "far past anything a legitimate ask
+    /// produces" ceilings that stop a runaway model from emitting an
+    /// enormous file into the workspace, not targets.
+    public static let documentMaxCells = 100_000
+    public static let documentMaxSlides = 60
 }
