@@ -110,9 +110,9 @@ final class DocumentEmittersTests: XCTestCase {
         ])
         let parts = try entries(of: try workbook.makeData())
         let workbookXML = try part(parts, "xl/workbook.xml")
-        // Every forbidden character becomes a dash; runs of them collapse
-        // into one dash each (components/separatedBy + joined).
-        XCTAssertTrue(workbookXML.contains("name=\"bad-name--x----\""), workbookXML)
+        // "bad/name:[x]*?" splits on the six forbidden characters into
+        // ["bad","name","","x","","",""] — six separators, so six dashes.
+        XCTAssertTrue(workbookXML.contains("name=\"bad-name--x---\""), workbookXML)
         XCTAssertTrue(workbookXML.contains(String(repeating: "L", count: 31)), workbookXML)
         XCTAssertFalse(workbookXML.contains(String(repeating: "L", count: 32)), workbookXML)
         let shared = try part(parts, "xl/sharedStrings.xml")
