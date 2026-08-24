@@ -51,6 +51,33 @@ public struct OOXMLPackage {
         }
         return data
     }
+
+    // MARK: - Reading
+
+    /// The read half of the same container (plan §9.2 needs it to load an
+    /// .xlsx into SQLite): document bytes in, parts out, keyed by the same
+    /// path strings `add` takes. Reading the whole part into memory is the
+    /// right trade here — an OOXML part is XML that has to be parsed as a
+    /// document anyway, and the size ceiling is the attachment's, not this
+    /// layer's.
+    ///
+    /// Entry order is not preserved: a reader looks parts up by name (a
+    /// worksheet through the workbook's relationship graph), never by
+    /// position, which is precisely why writers are free to order them.
+    public static func parts(of data: Data) throws -> [String: Data] {
+        let archive = try Archive(data: data, accessMode: .read)
+        var parts: [String: Data] = [:]
+        for entry in archive where entry.type == .file {
+            var bytes = Data()
+            bytes.reserveCapacity(Int(entry.uncompressedSize))
+            // skipCRC32: a corrupt part fails at the XML parse with a far
+            // more useful message than a checksum mismatch, and the
+            // checksum pass costs a second walk over every byte.
+            _ = try archive.extract(entry, skipCRC32: true) { bytes.append($0) }
+            parts[entry.path] = bytes
+        }
+        return parts
+    }
 }
 
 /// Text sanitization shared by every emitter. A single control character
