@@ -181,6 +181,12 @@ struct MessageRow: View {
                         )
                     }
 
+                    if alternateIndex == 0, let results = appModel.dataResultsByMessage[message.id], !results.isEmpty {
+                        ForEach(results) { outcome in
+                            DataResultCard(outcome: outcome)
+                        }
+                    }
+
                     if alternateIndex == 0, let recalled = appModel.recallByMessage[message.id], !recalled.isEmpty {
                         RecallLine(recalls: recalled)
                     }
