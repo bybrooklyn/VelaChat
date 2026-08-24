@@ -9,6 +9,11 @@ public enum ActivityKind: String, Codable, Sendable, CaseIterable {
     case memory, memorySave, memorySearch, memoryEdit
     case fileEdit, fileSearch, command, plan, subagent
     case systemStatus, imageAnalysis, dataQuery
+    /// §9.1 `create_document` — a real .xlsx/.docx/.pptx/.pdf, not a text
+    /// file. Distinct from `fileWrite` because the transcript treats the
+    /// two differently: a document is opened by the app that owns its
+    /// format, where a text file renders in the inspector.
+    case document
 
     public static func from(toolName: String) -> ActivityKind {
         switch toolName {
@@ -21,6 +26,7 @@ public enum ActivityKind: String, Codable, Sendable, CaseIterable {
         case ToolCatalog.editFile.name: .fileEdit
         case ToolCatalog.searchFiles.name: .fileSearch
         case ToolCatalog.queryData.name: .dataQuery
+        case ToolCatalog.createDocument.name: .document
         case ToolCatalog.runCommand.name: .command
         case ToolCatalog.updatePlan.name: .plan
         case Subagents.definition.name: .subagent
@@ -67,6 +73,8 @@ public enum ActivityKind: String, Codable, Sendable, CaseIterable {
         case .systemStatus: "gauge.with.dots.needle.bottom.50percent"
         case .imageAnalysis: "text.viewfinder"
         case .dataQuery: "tablecells"
+        // Not "doc.richtext" — that one is already fetchURL's.
+        case .document: "doc.badge.plus"
         case .note: "info.circle"
         }
     }
@@ -99,6 +107,7 @@ public enum ActivityKind: String, Codable, Sendable, CaseIterable {
         case .systemStatus: return "Checking this Mac"
         case .imageAnalysis: return "Reading \(argument.isEmpty ? "an image" : argument)"
         case .dataQuery: return "Querying the data"
+        case .document: return "Creating \(argument.isEmpty ? "a document" : argument)"
         case .note: return argument
         }
     }
@@ -131,6 +140,7 @@ public enum ActivityKind: String, Codable, Sendable, CaseIterable {
         case .systemStatus: return "Checked this Mac"
         case .imageAnalysis: return "Read \(argument.isEmpty ? "an image" : argument)"
         case .dataQuery: return "Queried the data"
+        case .document: return "Created \(argument.isEmpty ? "a document" : argument)"
         case .note: return argument
         }
     }
@@ -163,6 +173,7 @@ public enum ActivityKind: String, Codable, Sendable, CaseIterable {
         case .systemStatus: return "checked this Mac"
         case .imageAnalysis: return "read \(count) image\(plural)"
         case .dataQuery: return "\(count) data quer\(count == 1 ? "y" : "ies")"
+        case .document: return "created \(count) document\(plural)"
         case .note: return "\(count) note\(plural)"
         }
     }
@@ -230,6 +241,82 @@ public struct ActivityRecord: Identifiable, Codable, Equatable, Sendable {
         if duration < 60 { return "\(Int(duration.rounded()))s" }
         let total = Int(duration.rounded())
         return String(format: "%dm %02ds", total / 60, total % 60)
+    }
+}
+
+/// How a whole reply's tool work reads as one line.
+///
+/// The transcript used to show a row per call, and the same fact could
+/// appear four times over: the row label, the expanded label, the tool
+/// result restating it, and the model's own prose saying it again. One
+/// summary line per reply replaces that; this is the text on it, kept in
+/// VelaCore so the phrasing is testable without a view.
+public enum ActivitySummary {
+
+    /// `"2 web searches · wrote 1 file"` — per-kind units in the order the
+    /// kinds first appeared, which is the order the work happened in.
+    /// Reuses each kind's own `aggregateUnit`, since "searched the web 3
+    /// times" and "read 3 files" want different nouns.
+    public static func label(for records: [ActivityRecord]) -> String {
+        guard !records.isEmpty else { return "" }
+        var order: [ActivityKind] = []
+        var counts: [ActivityKind: Int] = [:]
+        for record in records {
+            if counts[record.kind] == nil { order.append(record.kind) }
+            counts[record.kind, default: 0] += 1
+        }
+        var parts = order.map { kind in kind.aggregateUnit(count: counts[kind] ?? 0) }
+        let failures = records.filter(\.isError).count
+        if failures > 0 {
+            parts.append("\(failures) failed")
+        }
+        let joined = parts.joined(separator: " · ")
+        return joined.prefix(1).uppercased() + joined.dropFirst()
+    }
+
+    /// Wall-clock span of the whole run — first start to last finish, not
+    /// the sum, since calls can overlap.
+    ///
+    /// `nil` below a second: a reply that spent 40ms in a tool learns the
+    /// reader nothing by saying so, and "<0.1s" on every row was most of
+    /// what made the old presentation noisy. Also `nil` when either end
+    /// went unobserved, so an old transcript never implies a number it
+    /// doesn't have.
+    public static func durationLabel(for records: [ActivityRecord]) -> String? {
+        let starts = records.compactMap(\.startedAt)
+        let finishes = records.compactMap(\.finishedAt)
+        guard let first = starts.min(), let last = finishes.max() else { return nil }
+        let elapsed = last.timeIntervalSince(first)
+        guard elapsed >= 1 else { return nil }
+        if elapsed < 60 { return "\(Int(elapsed.rounded()))s" }
+        let total = Int(elapsed.rounded())
+        return String(format: "%dm %02ds", total / 60, total % 60)
+    }
+
+    /// Whether an expanded row's result text still says something the label
+    /// didn't. `write_file` answers "Wrote 956 bytes to notes.md" to a row
+    /// already reading "Wrote notes.md" — printing both is how one action
+    /// took three lines to report itself.
+    public static func resultAddsInformation(_ result: String, beyond label: String) -> Bool {
+        let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        // Multi-line results are always worth showing: search hits, command
+        // output, a query's table.
+        guard !trimmed.contains("\n") else { return true }
+        let normalize: (String) -> String = { text in
+            text.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+        let normalizedResult = normalize(trimmed)
+        let normalizedLabel = normalize(label)
+        guard !normalizedLabel.isEmpty else { return true }
+        // The label's words all present in a one-line result that is not
+        // much longer than the label = the same sentence twice.
+        let labelWords = normalizedLabel.split(separator: " ")
+        let restates = labelWords.allSatisfy { normalizedResult.contains($0) }
+        return !(restates && normalizedResult.count < normalizedLabel.count * 3)
     }
 }
 
@@ -333,6 +420,11 @@ public extension ChatMessage {
     /// non-empty — otherwise both would render the same chain twice.
     var hasTimelineReasoning: Bool {
         segments.contains { if case .reasoning = $0 { return true } else { return false } }
+    }
+
+    /// Every tool call on this message's timeline, in the order it ran.
+    var activityRecords: [ActivityRecord] {
+        segments.compactMap { if case .activity(let record) = $0 { return record } else { return nil } }
     }
 
     mutating func appendActivity(_ record: ActivityRecord) {
