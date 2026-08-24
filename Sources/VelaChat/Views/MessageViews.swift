@@ -226,11 +226,36 @@ struct MessageRow: View {
                             }
                             AskUserQuestionCard(
                                 payload: ask.payload,
-                                interactive: isLastMessage && !appModel.isGenerating
+                                interactive: isLastMessage && !appModel.isGenerating,
+                                // Anything but the live open question is a
+                                // record — collapse it to the answered line.
+                                resolved: !(isLastMessage && !appModel.isGenerating)
                             )
                             if !ask.suffix.isEmpty {
                                 RichMessageText(text: ask.suffix, isUser: false)
                             }
+                        }
+                    } else if alternateIndex == 0,
+                              AskUserQuestionPayload.hasCompleteAskUserFence(in: displayedMessage.content) {
+                        // A complete ```ask-user block that wouldn't decode
+                        // even after lenient repair — the model tried to ask.
+                        // A typed "couldn't render" row keeps the failure
+                        // looking intentional; raw JSON with an Inspector
+                        // button is exactly what this replaces.
+                        VStack(alignment: .leading, spacing: 10) {
+                            let prefix = AskUserQuestionPayload.prefixBeforeUnterminatedFence(in: displayedMessage.content)
+                            if !prefix.isEmpty {
+                                RichMessageText(text: prefix, isUser: false)
+                            }
+                            HStack(spacing: 8) {
+                                Image(systemName: "questionmark.circle.dashed")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Theme.warning)
+                                Text("The model asked a question, but it couldn't be rendered — reply normally to answer.")
+                                    .font(.callout)
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
+                            .messageColumn()
                         }
                     } else if message.isStreaming, alternateIndex == 0,
                               AskUserQuestionPayload.hasUnterminatedFence(in: displayedMessage.content) {
@@ -753,8 +778,18 @@ struct ActivityLine: View {
     @Environment(ArtifactPresenter.self) private var artifactPresenter
     @Environment(AppModel.self) private var appModel
     let records: [ActivityRecord]
-    @State private var isExpanded = false
+    @State private var isExpanded: Bool
+    @State private var didInteract = false
     @State private var isHovering = false
+
+    /// A line made only of failures starts open — and opens live if a
+    /// call fails in place — because a blocked/errored call must not fold
+    /// into something a reader has to know to click (§2.1). Once the user
+    /// has toggled the row themselves, their choice wins.
+    init(records: [ActivityRecord]) {
+        self.records = records
+        _isExpanded = State(initialValue: !records.isEmpty && records.allSatisfy(\.isError))
+    }
 
     private var isRunning: Bool { records.contains { $0.isRunning } }
 
@@ -869,10 +904,16 @@ struct ActivityLine: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 guard !isRunning else { return }
+                didInteract = true
                 withAnimation(.easeOut(duration: 0.16)) { isExpanded.toggle() }
             }
             .onHover { isHovering = $0 }
             .animation(.easeOut(duration: 0.12), value: isHovering)
+            .onChange(of: showsErrorTint) { _, failed in
+                if failed, !didInteract {
+                    withAnimation(.easeOut(duration: 0.16)) { isExpanded = true }
+                }
+            }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityDescription)
             .accessibilityAddTraits(isRunning ? [] : .isButton)
@@ -1033,7 +1074,10 @@ struct ReasoningDisclosure: View {
 
     private func row(title: String) -> some View {
         ActivityRow(
-            symbol: "brain",
+            // "thought.bubble", not "brain" — the brain glyph belongs to the
+            // memory activity rows, and reading "memory" onto every reasoning
+            // step conflated two different subsystems.
+            symbol: "thought.bubble",
             title: title,
             tint: Theme.reasoningAccent,
             isActive: isThinking,

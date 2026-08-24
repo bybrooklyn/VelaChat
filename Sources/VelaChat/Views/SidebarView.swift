@@ -96,9 +96,12 @@ struct SidebarView: View {
             sidebarToggleButton
                 .padding(.top, 10)
 
-            railButton(symbol: "square.and.pencil", help: "New Chat (⌘N)", tint: Theme.accentStrong) {
-                _ = appModel.newConversation()
-                appModel.section = .chat
+            railButton(
+                symbol: appModel.activeSurface.primaryActionSymbol,
+                help: "New Chat (⌘N)",
+                tint: Theme.accentStrong
+            ) {
+                appModel.activeSurface.performPrimaryAction(appModel)
             }
             railButton(symbol: "magnifyingglass", help: "Search conversations (⇧⌘F)") {
                 appModel.toggleSidebar()
@@ -239,10 +242,13 @@ struct SidebarView: View {
     /// button until clicked, then expands in place to take the row (macOS's
     /// own collapsing-search-field pattern), instead of permanently reserving
     /// a full-width text field most of the time shows nothing typed into it.
+    /// The background-runs indicator lives here too, but only exists while
+    /// something actually runs — idle, the row is exactly what it always was.
     private var topActionsRow: some View {
         HStack(spacing: 8) {
             newChatButton
             if !isSearchExpanded {
+                BackgroundRunsIndicator()
                 UsageGaugeButton()
             }
             if isSearchExpanded {
@@ -256,20 +262,22 @@ struct SidebarView: View {
             }
         }
         .animation(.easeOut(duration: 0.16), value: isSearchExpanded)
+        .animation(.easeOut(duration: 0.16), value: appModel.conversations.filter(\.isGenerating).count)
     }
 
     /// Not full-width on its own anymore — shares the row with search, so it
-    /// grows to fill whatever space search isn't using.
+    /// grows to fill whatever space search isn't using. Label, symbol, and
+    /// action all derive from `AppModel.activeSurface` — one derivation
+    /// point, per the navigation model.
     private var newChatButton: some View {
         Button {
-            _ = appModel.newConversation()
-            appModel.section = .chat
+            appModel.activeSurface.performPrimaryAction(appModel)
             searchQuery = ""
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "square.and.pencil")
+                Image(systemName: appModel.activeSurface.primaryActionSymbol)
                     .font(.system(size: 13, weight: .semibold))
-                Text("New Chat")
+                Text(appModel.activeSurface.primaryActionTitle)
                     .font(.subheadline.weight(.semibold))
                 if !isSearchExpanded {
                     Spacer(minLength: 0)
@@ -287,8 +295,8 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: isSearchExpanded ? nil : .infinity, alignment: .leading)
-        .help("Start a new conversation (⌘N)")
-        .accessibilityLabel("Start a new conversation (⌘N)")
+        .help(appModel.activeSurface.primaryActionHelp)
+        .accessibilityLabel(appModel.activeSurface.primaryActionHelp)
     }
 
     private var searchToggleButton: some View {

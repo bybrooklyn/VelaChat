@@ -457,10 +457,15 @@ extension AppModel {
                     self.recallByMessage[assistantID] = recalled
                     // Facts are already in the prompt via relevantMemoryText;
                     // only the conversation excerpts need adding here.
+                    // Excerpts are DATA: any tool-call syntax a past reply
+                    // contained (raw ask-user fences, card JSON) is
+                    // neutralized before injection, so retrieved history can
+                    // never hand the model a template to parrot back as a
+                    // live-looking artifact.
                     let excerpts = recalled
                         .filter { !$0.isFact }
                         .prefix(4)
-                        .map { "- \($0.text.prefix(400))" }
+                        .map { "- \(AskUserQuestionPayload.neutralizingToolCallSyntax(in: String($0.text.prefix(400))))" }
                         .joined(separator: "\n")
                     if !excerpts.isEmpty {
                         finalMessages.insert(ChatMessage(
@@ -692,7 +697,10 @@ extension AppModel {
         record.startedAt = Date()
         enqueue(.activity(record), for: assistantID, conversation: conversation)
         if let finish {
-            enqueue(.activityUpdate(id: record.id, result: finish, isError: false, finishedAt: Date()), for: assistantID, conversation: conversation)
+            // Resolved in the same block it was posted: no duration was
+            // observed, so none is stamped — a finishedAt here would
+            // manufacture a "0.0s" label for an instantaneous note.
+            enqueue(.activityUpdate(id: record.id, result: finish, isError: false, finishedAt: nil), for: assistantID, conversation: conversation)
         }
         return record.id
     }
@@ -742,6 +750,15 @@ extension AppModel {
         recallByMessage[assistantID] = nil
         conversation.updatedAt = Date()
         saveHistory()
+    }
+
+    /// Stops every background run — the background-runs surface's "Stop
+    /// All". Same per-conversation path as a manual Stop (pending questions
+    /// resolved, partial replies kept), just applied across the board.
+    func stopAll() {
+        for conversation in conversations where conversation.isGenerating {
+            stopGeneration(for: conversation)
+        }
     }
 
     func stopGeneration(for conversation: Conversation? = nil) {
@@ -1058,6 +1075,15 @@ extension AppModel {
                     ? String(result.prefix(Limits.toolResultBytes)) + "\n\n[Truncated — kept the first 4 KB.]"
                     : result
                 enqueue(.activityUpdate(id: id, result: capped, isError: isError, finishedAt: Date()), for: assistantID, conversation: conversation)
+            case .refusal(let text):
+                // A provider refusal is not a crash and not content: it's a
+                // decision. It lands as its own notice message so the
+                // transcript shows an intentional typed row.
+                postNotice(
+                    "The provider declined this request:\n\n\(text)",
+                    kind: "refusal",
+                    to: conversation
+                )
             }
         }
         if promptTokens != nil || completionTokens != nil {

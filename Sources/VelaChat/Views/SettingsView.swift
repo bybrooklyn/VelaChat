@@ -139,9 +139,6 @@ private enum SettingsRoute: Hashable {
 struct SettingsView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowChrome.self) private var chrome
-    @State private var confirmClear = false
-    @State private var confirmReset = false
-    @State private var confirmFullReset = false
     @State private var route: SettingsRoute = .root
     @State private var isAddingSnippet = false
     @State private var isAddingProvider = false
@@ -277,79 +274,7 @@ struct SettingsView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                     SettingsCard(section: .general, footer: Text("Messages are never relayed through an app-owned server.")) {
-
-                LabeledContent("Accent color") {
-                    HStack(spacing: 7) {
-                        ForEach(AccentPreset.allCases) { preset in
-                            Button {
-                                appModel.accentPreset = preset
-                            } label: {
-                                Circle()
-                                    .fill(Color(hex: preset.baseHex))
-                                    .frame(width: 20, height: 20)
-                                    .overlay {
-                                        Circle().stroke(Theme.text, lineWidth: preset == appModel.accentPreset ? 2 : 0)
-                                    }
-                            }
-                            .buttonStyle(.plain)
-                            .help(preset.displayName)
-                            .accessibilityLabel(preset.displayName)
-                            .animation(.easeOut(duration: 0.15), value: appModel.accentPreset)
-                        }
-                    }
-                }
-                Toggle("Use Apple Intelligence", isOn: $appModel.isAppleIntelligenceEnabled)
-                Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
-                Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
-                KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
-                UpdatesRow()
-                Picker("Message width", selection: $appModel.messageWidth) {
-                    ForEach(MessageWidthPreset.allCases) { preset in
-                        Text(preset.displayName).tag(preset)
-                    }
-                }
-                Picker("Density", selection: $appModel.density) {
-                    ForEach(DensityPreset.allCases) { preset in
-                        Text(preset.displayName).tag(preset)
-                    }
-                }
-                LabeledContent("Conversation history") {
-                    Text("Stored locally")
-                        .foregroundStyle(Theme.secondaryText)
-                }
-                Button("Clear conversation history") {
-                    confirmClear = true
-                }
-                .buttonStyle(SettingsDestructiveButtonStyle())
-                .confirmationDialog("Delete all conversations?", isPresented: $confirmClear) {
-                    Button("Delete Everything", role: .destructive) {
-                        appModel.clearHistory()
-                    }
-                } message: {
-                    Text("This cannot be undone.")
-                }
-                Button("Reset built-in provider presets") {
-                    confirmReset = true
-                }
-                .buttonStyle(SettingsDestructiveButtonStyle())
-                Button("Reset VelaChat completely…") {
-                    confirmFullReset = true
-                }
-                .buttonStyle(SettingsDestructiveButtonStyle())
-                .confirmationDialog("Reset VelaChat completely?", isPresented: $confirmFullReset) {
-                    Button("Erase Everything", role: .destructive) {
-                        appModel.performFullReset()
-                    }
-                } message: {
-                    Text("Every conversation, memory, setting, API key, and workspace file on this Mac is erased, and the app returns to first launch. This cannot be undone.")
-                }
-                .confirmationDialog("Reset provider presets?", isPresented: $confirmReset) {
-                    Button("Reset Presets", role: .destructive) {
-                        appModel.providers.resetBuiltIns()
-                    }
-                } message: {
-                    Text("Custom endpoints are kept, but built-in endpoint and model values return to their defaults.")
-                }
+                        GeneralCard()
                     }
 
 
@@ -765,6 +690,96 @@ struct SettingsView: View {
         panel.message = "Choose a folder containing a SKILL.md file."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         appModel.skills.addCustomFolder(url.path)
+    }
+}
+
+/// Appearance, behavior, updates, and the destructive data controls —
+/// extracted from `settingsForm` so a toggle in here invalidates this
+/// card's body only. The lag was never "Settings is big": it was every
+/// control living inside one body that observed the whole `AppModel`,
+/// so flipping any switch re-evaluated all ~600 lines of cards at once.
+private struct GeneralCard: View {
+    @Environment(AppModel.self) private var appModel
+    @State private var confirmClear = false
+    @State private var confirmReset = false
+    @State private var confirmFullReset = false
+
+    var body: some View {
+        @Bindable var appModel = appModel
+        VStack(alignment: .leading, spacing: SettingsMetrics.rowSpacing) {
+            LabeledContent("Accent color") {
+                HStack(spacing: 7) {
+                    ForEach(AccentPreset.allCases) { preset in
+                        Button {
+                            appModel.accentPreset = preset
+                        } label: {
+                            Circle()
+                                .fill(Color(hex: preset.baseHex))
+                                .frame(width: 20, height: 20)
+                                .overlay {
+                                    Circle().stroke(Theme.text, lineWidth: preset == appModel.accentPreset ? 2 : 0)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .help(preset.displayName)
+                        .accessibilityLabel(preset.displayName)
+                        .animation(.easeOut(duration: 0.15), value: appModel.accentPreset)
+                    }
+                }
+            }
+            Toggle("Use Apple Intelligence", isOn: $appModel.isAppleIntelligenceEnabled)
+            Toggle("Auto-title chats", isOn: $appModel.isAutoTitleEnabled)
+            Toggle("Hover timestamps", isOn: $appModel.isHoverTimestampsEnabled)
+            KeyboardShortcuts.Recorder("Summon VelaChat:", name: .summonVelaChat)
+            UpdatesRow()
+            Picker("Message width", selection: $appModel.messageWidth) {
+                ForEach(MessageWidthPreset.allCases) { preset in
+                    Text(preset.displayName).tag(preset)
+                }
+            }
+            Picker("Density", selection: $appModel.density) {
+                ForEach(DensityPreset.allCases) { preset in
+                    Text(preset.displayName).tag(preset)
+                }
+            }
+            LabeledContent("Conversation history") {
+                Text("Stored locally")
+                    .foregroundStyle(Theme.secondaryText)
+            }
+            Button("Clear conversation history") {
+                confirmClear = true
+            }
+            .buttonStyle(SettingsDestructiveButtonStyle())
+            .confirmationDialog("Delete all conversations?", isPresented: $confirmClear) {
+                Button("Delete Everything", role: .destructive) {
+                    appModel.clearHistory()
+                }
+            } message: {
+                Text("This cannot be undone.")
+            }
+            Button("Reset built-in provider presets") {
+                confirmReset = true
+            }
+            .buttonStyle(SettingsDestructiveButtonStyle())
+            Button("Reset VelaChat completely…") {
+                confirmFullReset = true
+            }
+            .buttonStyle(SettingsDestructiveButtonStyle())
+            .confirmationDialog("Reset VelaChat completely?", isPresented: $confirmFullReset) {
+                Button("Erase Everything", role: .destructive) {
+                    appModel.performFullReset()
+                }
+            } message: {
+                Text("Every conversation, memory, setting, API key, and workspace file on this Mac is erased, and the app returns to first launch. This cannot be undone.")
+            }
+            .confirmationDialog("Reset provider presets?", isPresented: $confirmReset) {
+                Button("Reset Presets", role: .destructive) {
+                    appModel.providers.resetBuiltIns()
+                }
+            } message: {
+                Text("Custom endpoints are kept, but built-in endpoint and model values return to their defaults.")
+            }
+        }
     }
 }
 

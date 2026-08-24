@@ -1,5 +1,41 @@
 # VelaChat — working notes
 
+## 2026-08-22 — Phase 1 close-out + Phase 2 UI substrate (velacore-extraction, phase-2-ui-substrate; per velachat-plan-v2.md)
+
+Phase 1 finished: the `costUSD` pricing extension moved from VelaChat to
+VelaCore (Wave 2's stated scope; it had been left app-side), and eight test
+files dropped stale `@testable import VelaChat` (verified by symbol
+cross-reference that nothing resolved through the app target;
+`TokenCalibrationStoreTests` keeps its import legitimately). CI green.
+
+Phase 2 (§13: navigation + cross-cutting rules + traced bugs), one commit
+each on `phase-2-ui-substrate`: §12.2 instant retry notes no longer stamp a
+finishedAt that manufactured "0.0s" (`RevealOp.activityUpdate` now carries
+`Date?`); `<0.1s` floors tiny real durations. §12.5 reasoning row uses
+`thought.bubble`, not `brain` (brain = memory rows). §2.1 an all-failed
+activity line starts open and opens live when a call fails in place (user's
+manual toggle wins after they touch it). §12.3 cards apply one
+`Theme.messageColumn()` token instead of five private maxWidth frames.
+§12.4 answered ask_user collapses to "User answered …" record row
+(expandable to what was asked); only the live mount stays interactive.
+§14 Step 1 `GeneralCard` extracted with narrow observation scope (the lag
+was every toggle re-bodying ~600 lines of inline form). §2.2 OpenAI
+`delta.refusal` decodes → new `.refusal(String)` ChatStreamEvent → typed
+notice row (`kind: "refusal"`); bridge auto-deny will reuse it. §2.3 all
+three halves: recalled excerpts neutralized via
+`AskUserQuestionPayload.neutralizingToolCallSyntax` (past fences become
+"(asked a question)"), parse retries leniently over repaired JSON
+(curly quotes/trailing commas), and unparseable complete fences render a
+typed "couldn't be rendered" row — never raw JSON + Inspector
+(`RetrievedHistoryTests.swift` pins all of it). §1.2 slice:
+`AppModel.Surface { conversations, design }` drives both sidebar primary
+buttons' label/symbol/action; `BackgroundRunsView` is ONE view mounted twice
+(sidebar indicator popover + QuickComposer popover) and exists only while a
+conversation runs; `stopAll()` added. Design canvas itself stays §15/v2.
+Needs human verification: Settings toggle responsiveness (redraw scope),
+refusal row against a real refusing provider, background-runs popover while
+a run is live.
+
 ## 2026-08-19 — Round 3 (bc153a4..HEAD; GitHub: private bybrooklyn/VelaChat)
 
 S1a instant titles (fired at send from the first message; fullscreen

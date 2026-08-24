@@ -25,6 +25,23 @@ struct QuickComposerView: View {
                 }
             }
 
+            // The background-runs surface's menu-bar mount — the same view
+            // the in-window indicator popover shows (one implementation, two
+            // mounts), so steering a background run needs no main window.
+            // Absent entirely while nothing runs; the popover never carries
+            // an idle empty list.
+            let running = appModel.conversations.filter(\.isGenerating)
+            if !running.isEmpty {
+                BackgroundRunsView()
+                    .padding(10)
+                    .background(Theme.surfaceLow.opacity(0.7), in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+                            .stroke(Theme.controlStroke.opacity(0.5), lineWidth: 1)
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             TextField("Message", text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
