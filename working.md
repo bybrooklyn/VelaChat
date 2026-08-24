@@ -1,5 +1,75 @@
 # VelaChat — working notes
 
+## 2026-08-24 — merge-up, then §9.2 data analysis (phase-7-data-analysis)
+
+Merged the whole stacked chain into main first: PRs #8–#15
+(velacore-extraction → phase-2 … → phase-7-documents), all green, all
+retargeted onto main and merged in order. main's tree now equals what
+phase-7-documents had; zero open PRs.
+
+§9.2 on top of that. The uniformity trick, as planned: every source
+becomes tables in one ephemeral in-memory SQLite database per
+conversation, so the model writes one SQL dialect no matter what was
+attached. `XLSXReader` is the read half of §9.1's OOXML spine (writer
+first genuinely paid off — the part graph and shared-strings indirection
+were already understood); `DataSourceLoader` does CSV/TSV (RFC 4180
+quoting, sniffed delimiter, all-numeric first row = data not header),
+JSON (arrays, wrapped arrays, ndjson, one level of flattening),
+and xlsx; `AnalysisDatabase` owns the sqlite3 C-API handle in the same
+prepare/bind/step/reset idiom as `MemoryStore`.
+
+**Read-only is enforced by SQLite, not by the prompt.**
+`sqlite3_set_authorizer` permits SELECT/READ/functions-except-
+load_extension and denies everything else, so DELETE/UPDATE/DROP/ATTACH/
+PRAGMA are refused before prepare returns. A trailing second statement is
+refused too. Two bugs this shape cost, both worth remembering:
+(1) the authorizer must be lifted for the HOST's own work through one
+`withHostAccess` seam — an earlier version lifted-and-restored inside
+each helper, and the restore from the first helper then denied the
+`PRAGMA table_info` of the next loop iteration, so `schema()` silently
+returned zero tables while the data was demonstrably there;
+(2) `sqlite3_prepare_v2`'s tail pointer is only valid while the SQL
+buffer is, so the multi-statement check has to happen inside the
+`withUTF8` closure — reading it afterwards is a dangling read that
+happened to look like "allowed".
+
+Third lesson, from the CSV parser: **`"\r\n"` is ONE `Character` in
+Swift** (a grapheme cluster), so `case "\r"` never matches in a CRLF
+file and every row lands in one field. Match `"\r\n"` explicitly.
+
+Attachments: CSV/TSV/JSON/xlsx/SQLite now attach as `Kind.data` — raw
+bytes in the blob store (never UserDefaults), never inlined into the
+prompt. Previously a CSV became a `.text` attachment: UTF-8 decodable,
+so 60 KB of rows went into the prompt truncated and un-queryable, and an
+.xlsx was rejected outright as undecodable binary. What the model gets
+instead is the schema block (tables, column types, three real rows),
+composed as a REQUIRED prompt section — `query_data` without a schema is
+a tool it can only guess at. The tool is attached whenever data is: it's
+read-only at the engine, so gating it behind workspace/agent tiers would
+only stop a user who attached a spreadsheet from asking about it.
+
+Charts: Swift `Charts` (verified it compiles under the CLT-only
+toolchain before designing around it), `StatisticsView` untouched. The
+spec's `type` picks the mark; the renderer never re-infers one.
+
+Verified locally with a swiftc harness against the built VelaCore
+objects (69 assertions, all pass) — `swiftc main.swift -I .build/debug/
+Modules .build/debug/VelaCore.build/*.o .build/debug/ZIPFoundation.build/
+*.o`, with `@testable import` so internals are reachable. Note
+`setvbuf(stdout, nil, _IONBF, 0)` in any such harness: a fatalError
+otherwise swallows every buffered FAIL line printed before it.
+
+**The machine's disk is full** (131 MB free of 228 GB), which broke the
+final codesign step of `swift build` — "internal error in Code Signing
+subsystem", leaving a 0-byte binary. Compilation itself was fine. The
+app has NOT been launched against these changes; CI is the verification
+path until there's space.
+
+Needs human verification: attach a real CSV/xlsx and ask a question that
+requires an aggregate; check the result table and a rendered chart; try a
+SQLite file (it ATTACHes read-only from a temp copy); confirm a big
+spreadsheet no longer floods the prompt.
+
 ## 2026-08-23 — §9.1 document production (phase-7-documents)
 
 The three OOXML emitters over one shared spine. `OOXMLPackage`
