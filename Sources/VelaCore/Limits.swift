@@ -147,6 +147,11 @@ public enum Limits {
     /// Real rows shown per table in the schema handed to the model —
     /// enough to see the shape of the values, not enough to be the data.
     public static let dataSampleRows = 3
+    /// Bytes of the fixed-width result table a query hands back to the
+    /// model. Larger than a stored tool result on purpose — the model is
+    /// reading these numbers to answer with them, and the transcript's
+    /// table card holds every row regardless.
+    public static let dataQueryTextBytes = 12_000
     /// One query's wall-clock budget, enforced by SQLite's own progress
     /// handler. Deliberately far below `toolTimeout`: a query this slow is
     /// a query to rewrite, and the model gets told so while there is still

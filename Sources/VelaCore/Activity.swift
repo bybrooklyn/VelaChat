@@ -8,7 +8,7 @@ public enum ActivityKind: String, Codable, Sendable {
     case schedule, clipboard, mcp
     case memory, memorySave, memorySearch, memoryEdit
     case fileEdit, fileSearch, command, plan, subagent
-    case systemStatus, imageAnalysis
+    case systemStatus, imageAnalysis, dataQuery
 
     public static func from(toolName: String) -> ActivityKind {
         switch toolName {
@@ -20,6 +20,7 @@ public enum ActivityKind: String, Codable, Sendable {
         case ToolCatalog.listWorkspaceFiles.name: .fileList
         case ToolCatalog.editFile.name: .fileEdit
         case ToolCatalog.searchFiles.name: .fileSearch
+        case ToolCatalog.queryData.name: .dataQuery
         case ToolCatalog.runCommand.name: .command
         case ToolCatalog.updatePlan.name: .plan
         case Subagents.definition.name: .subagent
@@ -65,6 +66,7 @@ public enum ActivityKind: String, Codable, Sendable {
         case .subagent: "person.2"
         case .systemStatus: "gauge.with.dots.needle.bottom.50percent"
         case .imageAnalysis: "text.viewfinder"
+        case .dataQuery: "tablecells"
         case .note: "info.circle"
         }
     }
@@ -96,6 +98,7 @@ public enum ActivityKind: String, Codable, Sendable {
         case .subagent: return "Running subagents"
         case .systemStatus: return "Checking this Mac"
         case .imageAnalysis: return "Reading \(argument.isEmpty ? "an image" : argument)"
+        case .dataQuery: return "Querying the data"
         case .note: return argument
         }
     }
@@ -127,6 +130,7 @@ public enum ActivityKind: String, Codable, Sendable {
         case .subagent: return "Ran subagents"
         case .systemStatus: return "Checked this Mac"
         case .imageAnalysis: return "Read \(argument.isEmpty ? "an image" : argument)"
+        case .dataQuery: return "Queried the data"
         case .note: return argument
         }
     }
@@ -158,6 +162,7 @@ public enum ActivityKind: String, Codable, Sendable {
         case .subagent: return "\(count) subagent run\(plural)"
         case .systemStatus: return "checked this Mac"
         case .imageAnalysis: return "read \(count) image\(plural)"
+        case .dataQuery: return "\(count) data quer\(count == 1 ? "y" : "ies")"
         case .note: return "\(count) note\(plural)"
         }
     }
