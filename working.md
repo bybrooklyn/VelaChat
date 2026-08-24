@@ -1,5 +1,56 @@
 # VelaChat — working notes
 
+## 2026-08-23 — §9.1 document production (phase-7-documents)
+
+The three OOXML emitters over one shared spine. `OOXMLPackage`
+(VelaCore, over **vendored ZIPFoundation 0.9.20** — `Vendor/`, trimmed
+manifest, no test target) owns the zip container; `XLSXDocument`,
+`DOCXDocument`, `PPTXDocument` each contribute their parts; `SimplePDFWriter`
+renders the docx block model minus tables through CoreText-only
+(no AppKit, stays VelaCore-clean; CGDataConsumer over NSMutableData so
+it returns bytes, not a save-panel file). Deliberate subset, chosen to
+be openable-without-repair: xlsx = sheets/rows/sharedStrings/bold/
+custom numFmts/widths/merges (numFmts MUST precede fonts in styleSheet;
+fills MUST carry the legacy gray125 second entry); docx = headings 1–4,
+runs, real numbering part for bullet/numbered lists (not glyph fakery),
+bordered tables with shaded header; pptx = fixed-layout text boxes on a
+16:9 canvas (title / title+bullets), python-pptx-textbox style — no
+placeholder inheritance, minimal-but-schema-complete master+layout+theme
+(fmtScheme lists must have exactly 3 entries each). All text goes through
+`XMLText.escaped` which DROPS XML-1.0-invalid control chars — one stray
+0x00 from a model would otherwise corrupt the whole file.
+
+`create_document` tool: format xlsx|docx|pptx|pdf|md; content schema
+defined ONCE in `DocumentBuilder` (VelaCore, testable); tool path writes
+through the same `SandboxManager.resolve` + `writeApproved` gate as
+write_file (attached folders ask, sandbox silent); filename extension
+appended when missing; limits in Limits (`documentMaxCells` 100k,
+`documentMaxSlides` 60) throw with named ceilings rather than truncate.
+Withheld in planning mode (added to `PlanMode.withheldToolNames`).
+Advertised only with agent abilities + workspace enabled (the tier where
+edit_file already sat). Export menu gains Word/Excel/PowerPoint entries
+mapping a conversation onto the same emitters (`ConversationExporter`).
+
+Verified locally (sandbox can't open Numbers): swiftc harness (49
+assertions, all pass) + `unzip -t` + **qlmanage QuickLook thumbnails** —
+macOS's own Office importers parsed all four formats and rendered real
+content (title slide, shaded table, grid with right-aligned numbers).
+That qlmanage trick is the closest thing to "opens without a repair
+prompt" available in-sandbox; use it for future file-format work.
+ZIPFoundation note: `Archive.addEntry` is nonmutating on the memory
+backend (compiler flags `var` as never-mutated); in-memory round trip is
+`Archive(data:accessMode:.create)` → addEntry → `.data`.
+
+Still open in Phase 7: §9.2 data analysis (its xlsx READER reuses this
+OOXML layer — writer-first paid off), §9.3 browsing, §9.5 batch, §9.6
+transcription, §9.8 watch folders; then Phase 5b checkpoints, Phase 8
+computer use, Phase 9 menu-bar polish.
+
+Needs human verification: open generated xlsx/docx/pptx in
+Numbers/Pages/Keynote (and Excel if at hand) — QuickLook parsing is
+strong evidence, not proof; also the three new Export menu items and a
+live `create_document` call in a real conversation.
+
 ## 2026-08-23 — Phase 7 begins: scratchpad, git tools, gist (phase-7-capabilities)
 
 Three self-contained capabilities that fully reuse existing infra:
