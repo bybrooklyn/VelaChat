@@ -52,23 +52,35 @@ Charts: Swift `Charts` (verified it compiles under the CLT-only
 toolchain before designing around it), `StatisticsView` untouched. The
 spec's `type` picks the mark; the renderer never re-infers one.
 
-Verified locally with a swiftc harness against the built VelaCore
-objects (69 assertions, all pass) — `swiftc main.swift -I .build/debug/
-Modules .build/debug/VelaCore.build/*.o .build/debug/ZIPFoundation.build/
-*.o`, with `@testable import` so internals are reachable. Note
-`setvbuf(stdout, nil, _IONBF, 0)` in any such harness: a fatalError
+Verified locally with two swiftc harnesses against the built VelaCore
+objects — `swiftc main.swift -I .build/debug/Modules
+.build/debug/VelaCore.build/*.o .build/debug/ZIPFoundation.build/*.o`,
+with `@testable import` so internals are reachable. 69 assertions for
+the loaders/database/chart contract, and 23 more for the session actor
+(that one also compiles `Sources/VelaChat/DataAnalysisSessions.swift`
+directly, since it only imports Foundation + VelaCore — a way to test
+app-target code without building the app). Both sets ship as XCTest.
+Note `setvbuf(stdout, nil, _IONBF, 0)` in any such harness: a fatalError
 otherwise swallows every buffered FAIL line printed before it.
 
-**The machine's disk is full** (131 MB free of 228 GB), which broke the
-final codesign step of `swift build` — "internal error in Code Signing
-subsystem", leaving a 0-byte binary. Compilation itself was fine. The
-app has NOT been launched against these changes; CI is the verification
-path until there's space.
+Release bundle built and launched (`just app`, `open`), window captured
+by window ID — the app comes up and renders normally with these changes.
+Mid-round the machine's disk filled (131 MB free of 228 GB) and broke
+the codesign step of `swift build` — "internal error in Code Signing
+subsystem", leaving a 0-byte binary while compilation itself was fine.
+Worth recognizing: that error means no space, not a broken signing
+setup. It cleared on its own (macOS purging caches under pressure).
 
 Needs human verification: attach a real CSV/xlsx and ask a question that
 requires an aggregate; check the result table and a rendered chart; try a
 SQLite file (it ATTACHes read-only from a temp copy); confirm a big
-spreadsheet no longer floods the prompt.
+spreadsheet no longer floods the prompt. GUI automation can't do any of
+this here (no Accessibility permission), so the whole chain from a
+dropped file to a rendered chart is untested by anything but its parts.
+
+Still open in Phase 7: §9.3 browsing, §9.5 batch, §9.6 transcription,
+§9.8 watch folders; then Phase 5b checkpoints, Phase 8 computer use,
+Phase 9 menu-bar polish.
 
 ## 2026-08-23 — §9.1 document production (phase-7-documents)
 
