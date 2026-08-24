@@ -64,7 +64,8 @@ public enum SystemPrompt {
             isPlanning: Bool = false,
             activeSkillNames: [String] = [],
             memoryCount: Int = 0,
-            attachmentNames: [String] = []
+            attachmentNames: [String] = [],
+            dataSchema: String = ""
         ) {
             self.tools = tools
             self.nativeSearch = nativeSearch
@@ -80,6 +81,7 @@ public enum SystemPrompt {
             self.activeSkillNames = activeSkillNames
             self.memoryCount = memoryCount
             self.attachmentNames = attachmentNames
+            self.dataSchema = dataSchema
         }
         public var tools: [ToolCatalog.Definition] = []
         public var nativeSearch = false
@@ -98,6 +100,10 @@ public enum SystemPrompt {
         public var activeSkillNames: [String] = []
         public var memoryCount = 0
         public var attachmentNames: [String] = []
+        /// §9.2 — the tables loaded from data files attached to this
+        /// conversation, as `DataAnalysis.schemaText` renders them. Empty
+        /// when nothing is attached.
+        public var dataSchema = ""
 
         public func hasTool(_ definition: ToolCatalog.Definition) -> Bool {
             tools.contains { $0.name == definition.name }
@@ -125,6 +131,12 @@ public enum SystemPrompt {
         // starts apologizing for being unable to help.
         if context.isPlanning {
             sections.append(Section(priority: 1, body: planningStance))
+        }
+        // Required, like the tool inventory: query_data without the schema
+        // is a tool the model can only guess at, and a guessed table name
+        // is an error round-trip the user pays for.
+        if !context.dataSchema.isEmpty, context.hasTool(ToolCatalog.queryData) {
+            sections.append(Section(priority: 1, body: dataGuidance(context)))
         }
         if let agent = agentGuidance(context) {
             sections.append(Section(priority: 2, body: agent))
@@ -222,6 +234,25 @@ public enum SystemPrompt {
             lines.append("Persistent memory: \(context.memoryCount) saved fact\(context.memoryCount == 1 ? "" : "s") about the user.")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// §9.2 — what the model knows about the attached data before it
+    /// writes a line of SQL: table names, column names and types, and a
+    /// few real rows. Structure, not the pile — the file itself is never
+    /// inlined into the prompt, which is the whole reason a 200,000-row
+    /// CSV is answerable here at all.
+    private static func dataGuidance(_ context: Context) -> String {
+        """
+        # Attached data
+        These tables are loaded and queryable with the `query_data` tool. \
+        The rows shown are samples, not the data — there are more.
+
+        \(context.dataSchema)
+
+        Answer questions about this data by querying it, never by \
+        estimating from the samples above. Aggregate in SQL. The numbers \
+        you report must come from a query you actually ran.
+        """
     }
 
     /// The stance here is deliberately *directive*, not permissive.

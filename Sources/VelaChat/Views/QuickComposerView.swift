@@ -153,6 +153,8 @@ struct QuickComposerView: View {
         for url in panel.urls {
             if let attachment = Attachment.fromFile(url: url) {
                 conversation.draftAttachments.append(attachment)
+            } else {
+                appModel.postNotice(Attachment.attachFailureReason(for: url))
             }
         }
     }

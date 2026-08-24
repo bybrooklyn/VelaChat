@@ -429,6 +429,14 @@ final class AppModel {
     /// Live plan steps per assistant message (update_plan) — rendered as
     /// the checklist card in that reply.
     var planByMessage: [UUID: [ToolCatalog.PlanStep]] = [:]
+    /// §9.2 query results per assistant message, rendered as the result
+    /// table (and chart) under that reply. Like the plan above, this is
+    /// live UI state rather than history: the tool result itself is what
+    /// persists in the transcript.
+    var dataResultsByMessage: [UUID: [DataQueryOutcome]] = [:]
+    /// One in-memory analysis database per conversation, built from its
+    /// attached data files (§9.2).
+    let analysisSessions = DataAnalysisSessions()
     /// Live network reachability (NWPathMonitor). Drives the offline chip
     /// and lets in-flight sends wait for the network instead of failing.
     var isOnline = true
@@ -1789,6 +1797,7 @@ final class AppModel {
         calibrationSampleByMessage = calibrationSampleByMessage.filter { !ids.contains($0.key) }
         searchByMessage = searchByMessage.filter { !ids.contains($0.key) }
         planByMessage = planByMessage.filter { !ids.contains($0.key) }
+        dataResultsByMessage = dataResultsByMessage.filter { !ids.contains($0.key) }
         finishReasonByMessage = finishReasonByMessage.filter { !ids.contains($0.key) }
         for id in ids {
             revealTasks[id]?.cancel()
@@ -1809,6 +1818,10 @@ final class AppModel {
         SandboxManager.cleanup(for: conversation.id)
         pruneAttachmentBlobs()
         memoryIndexer.forget(conversationID: conversation.id)
+        // The analysis database holds every loaded row in memory; a deleted
+        // conversation must not keep a spreadsheet resident for the rest of
+        // the session.
+        Task { [analysisSessions] in await analysisSessions.discard(conversationID: conversation.id) }
         Task { await ChatGPTWebChat.shared.forgetContinuation(for: conversation.id) }
         if activeConversationID == conversation.id {
             activeConversationID = conversations.first?.id ?? newConversation().id
@@ -1831,6 +1844,7 @@ final class AppModel {
         calibrationSampleByMessage.removeAll()
         searchByMessage.removeAll()
         planByMessage.removeAll()
+        dataResultsByMessage.removeAll()
         finishReasonByMessage.removeAll()
         for (_, task) in revealTasks { task.cancel() }
         revealTasks.removeAll()

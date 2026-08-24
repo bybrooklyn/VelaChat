@@ -1,5 +1,107 @@
 # VelaChat — working notes
 
+## 2026-08-24 — the reasoning row drew an empty box
+
+Reported as "the app feels weird", narrowed to visual. The reasoning
+row — which appears on nearly every reply — was drawing a blank grey
+square instead of a glyph: `"thought.bubble"` is **not an SF Symbol on
+any macOS**. It came in with the Phase 2 substrate commit that gave
+reasoning its own glyph instead of the memory brain (right intent, name
+never checked), and reached the user when that phase chain merged.
+
+A wrong symbol name is invisible to the compiler and silent at runtime —
+SwiftUI draws an empty box and carries on. So the fix ships with a test
+that scans `Sources/` for `systemName:` / `systemImage:` / `symbol:`
+literals and resolves each through `NSImage(systemSymbolName:)`, plus one
+that walks every `ActivityKind.symbol` (the switch the scan can't see).
+Both would have caught this the moment it was written. Sweeping the whole
+tree found exactly one bad name, so nothing else is affected.
+
+Replacement is `ellipsis.bubble` — a thought bubble that exists, and
+still not the brain.
+
+## 2026-08-24 — merge-up, then §9.2 data analysis (phase-7-data-analysis)
+
+Merged the whole stacked chain into main first: PRs #8–#15
+(velacore-extraction → phase-2 … → phase-7-documents), all green, all
+retargeted onto main and merged in order. main's tree now equals what
+phase-7-documents had; zero open PRs.
+
+§9.2 on top of that. The uniformity trick, as planned: every source
+becomes tables in one ephemeral in-memory SQLite database per
+conversation, so the model writes one SQL dialect no matter what was
+attached. `XLSXReader` is the read half of §9.1's OOXML spine (writer
+first genuinely paid off — the part graph and shared-strings indirection
+were already understood); `DataSourceLoader` does CSV/TSV (RFC 4180
+quoting, sniffed delimiter, all-numeric first row = data not header),
+JSON (arrays, wrapped arrays, ndjson, one level of flattening),
+and xlsx; `AnalysisDatabase` owns the sqlite3 C-API handle in the same
+prepare/bind/step/reset idiom as `MemoryStore`.
+
+**Read-only is enforced by SQLite, not by the prompt.**
+`sqlite3_set_authorizer` permits SELECT/READ/functions-except-
+load_extension and denies everything else, so DELETE/UPDATE/DROP/ATTACH/
+PRAGMA are refused before prepare returns. A trailing second statement is
+refused too. Two bugs this shape cost, both worth remembering:
+(1) the authorizer must be lifted for the HOST's own work through one
+`withHostAccess` seam — an earlier version lifted-and-restored inside
+each helper, and the restore from the first helper then denied the
+`PRAGMA table_info` of the next loop iteration, so `schema()` silently
+returned zero tables while the data was demonstrably there;
+(2) `sqlite3_prepare_v2`'s tail pointer is only valid while the SQL
+buffer is, so the multi-statement check has to happen inside the
+`withUTF8` closure — reading it afterwards is a dangling read that
+happened to look like "allowed".
+
+Third lesson, from the CSV parser: **`"\r\n"` is ONE `Character` in
+Swift** (a grapheme cluster), so `case "\r"` never matches in a CRLF
+file and every row lands in one field. Match `"\r\n"` explicitly.
+
+Attachments: CSV/TSV/JSON/xlsx/SQLite now attach as `Kind.data` — raw
+bytes in the blob store (never UserDefaults), never inlined into the
+prompt. Previously a CSV became a `.text` attachment: UTF-8 decodable,
+so 60 KB of rows went into the prompt truncated and un-queryable, and an
+.xlsx was rejected outright as undecodable binary. What the model gets
+instead is the schema block (tables, column types, three real rows),
+composed as a REQUIRED prompt section — `query_data` without a schema is
+a tool it can only guess at. The tool is attached whenever data is: it's
+read-only at the engine, so gating it behind workspace/agent tiers would
+only stop a user who attached a spreadsheet from asking about it.
+
+Charts: Swift `Charts` (verified it compiles under the CLT-only
+toolchain before designing around it), `StatisticsView` untouched. The
+spec's `type` picks the mark; the renderer never re-infers one.
+
+Verified locally with two swiftc harnesses against the built VelaCore
+objects — `swiftc main.swift -I .build/debug/Modules
+.build/debug/VelaCore.build/*.o .build/debug/ZIPFoundation.build/*.o`,
+with `@testable import` so internals are reachable. 69 assertions for
+the loaders/database/chart contract, and 23 more for the session actor
+(that one also compiles `Sources/VelaChat/DataAnalysisSessions.swift`
+directly, since it only imports Foundation + VelaCore — a way to test
+app-target code without building the app). Both sets ship as XCTest.
+Note `setvbuf(stdout, nil, _IONBF, 0)` in any such harness: a fatalError
+otherwise swallows every buffered FAIL line printed before it.
+
+Release bundle built and launched (`just app`, `open`), window captured
+by window ID — the app comes up and renders normally with these changes.
+Mid-round the machine's disk filled (131 MB free of 228 GB) and broke
+the codesign step of `swift build` — "internal error in Code Signing
+subsystem", leaving a 0-byte binary while compilation itself was fine.
+Worth recognizing: that error means no space, not a broken signing
+setup. It cleared on its own (macOS purging caches under pressure).
+
+Needs human verification: attach a real CSV/xlsx and ask a question that
+requires an aggregate; check the result table and a rendered chart; try a
+SQLite file (it ATTACHes read-only from a temp copy); confirm a big
+spreadsheet no longer floods the prompt. GUI automation can't do any of
+this here (no Accessibility permission), so the whole chain from a
+dropped file to a rendered chart is untested by anything but its parts.
+
+Still open in Phase 7: §9.3 browsing, §9.5 batch, §9.6 transcription,
+§9.8 watch folders; then Phase 5b checkpoints, Phase 8 computer use,
+Phase 9 menu-bar polish.
+
 ## 2026-08-23 — §9.1 document production (phase-7-documents)
 
 The three OOXML emitters over one shared spine. `OOXMLPackage`

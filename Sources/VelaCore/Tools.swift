@@ -182,6 +182,16 @@ public enum ToolCatalog {
         parametersJSON: #"{"type":"object","properties":{"format":{"type":"string","enum":["xlsx","docx","pptx","pdf","md"],"description":"xlsx = spreadsheet of sheets/rows/cells; docx or pdf = flowing document blocks; pptx = slides; md = plain text"},"filename":{"type":"string","description":"File name relative to the workspace root, e.g. \"q3-report.xlsx\". The right extension is appended if missing."},"content":{"type":"object","description":"xlsx: {\"sheets\":[{\"name\":\"Q3\",\"rows\":[[\"Region\",\"Revenue\"],[\"North\",1250]],\"widths\":[120,90]}]} or single-sheet shorthand {\"rows\":[...]}. Cells are strings, numbers, null, or {\"text\"/\"number\",\"bold\":true,\"format\":\"$#,##0\"}. docx/pdf: {\"blocks\":[{\"type\":\"heading\",\"level\":1,\"text\":\"Title\"},{\"type\":\"paragraph\",\"text\":\"...\"},{\"type\":\"bullet\",\"text\":\"...\"},{\"type\":\"numbered\",\"text\":\"...\"},{\"type\":\"table\",\"rows\":[[\"A\",\"B\"]],\"header\":true}]} — pdf cannot render tables. pptx: {\"slides\":[{\"layout\":\"title\",\"title\":\"...\",\"subtitle\":\"...\"},{\"layout\":\"bullets\",\"title\":\"...\",\"bullets\":[\"...\"]}]}. md: {\"text\":\"...\"}."}},"required":["format","content"]}"#,
         guidance: "Use when the deliverable is a file the user will open elsewhere — a spreadsheet to sort, a deck to present, a formatted report — rather than prose for this chat; a markdown table pasted into your reply is not a spreadsheet. Prefer xlsx for anything tabular, docx for structured reports, and keep each cell atomic (one value, not a sentence of several)."
     )
+    /// §9.2 — the data-analysis tool. The model writes SQL, never code:
+    /// there is no arbitrary execution here, and read-only is enforced by
+    /// SQLite's authorizer (see `AnalysisDatabase`), not by this
+    /// description asking nicely.
+    public static let queryData = Definition(
+        name: "query_data",
+        description: "Run one read-only SQL query against the data attached to this conversation and get the result rows back as a table (capped at 200 rows). SQLite dialect. The tables, their columns and types, and a few sample rows were given to you when the data was attached — query those names exactly. It cannot modify, create, drop, or attach anything: a statement that tries is refused by the database engine. Optionally include a \"chart\" object and VelaChat draws the result as a chart under the table.",
+        parametersJSON: #"{"type":"object","properties":{"sql":{"type":"string","description":"One read-only SQLite query, e.g. \"SELECT region, SUM(revenue) AS revenue FROM sales GROUP BY region ORDER BY revenue DESC\". One statement per call."},"chart":{"type":"object","description":"Optional chart of this query's result.","properties":{"type":{"type":"string","enum":["bar","line","scatter","area"],"description":"The mark to draw"},"title":{"type":"string"},"x":{"type":"object","properties":{"field":{"type":"string","description":"A column name from THIS query's result"},"label":{"type":"string"}},"required":["field"]},"y":{"type":"object","properties":{"field":{"type":"string","description":"A column name from THIS query's result"},"label":{"type":"string"}},"required":["field"]},"series":{"type":"string","description":"Optional column whose values split the data into separate series"},"sort":{"type":"string","enum":["x_asc","x_desc","y_asc","y_desc"]},"limit":{"type":"integer","description":"Optional cap on plotted rows"}},"required":["type","x","y"]}},"required":["sql"]}"#,
+        guidance: "Explore with small queries first — the schema and samples were already given, so don't re-list the tables. Aggregate in SQL rather than pulling every row and adding them up yourself; a result that hits the row cap is a query that should have been a GROUP BY. If a query errors, read the message and fix the SQL rather than resending it unchanged. Chart when the shape earns it: one categorical column plus one numeric → bar; an ordered or time x-axis → line; two numerics → scatter. Every field you name in the chart must be a column of that same query's result."
+    )
     public static let searchFiles = Definition(
         name: "search_files",
         description: "Find files in this conversation's workspace by filename pattern, by content, or both. glob filters filenames (\"*\" and \"?\" wildcards, matched against the workspace-relative path and against the bare filename); query is a case-insensitive regular expression matched line by line against file contents. With query the result is \"path:line: text\" per match, with glob alone it is a list of paths. Capped at 100 results, which it says when it hits.",
@@ -329,6 +339,11 @@ public enum ToolCatalog {
         public var askUser: (@Sendable (String) async -> String)? = nil
         /// spawn_agents runner (name, prompt) pairs → combined result.
         public var spawnAgents: (@Sendable ([(name: String, prompt: String)]) async -> String)? = nil
+        /// §9.2 `query_data`: (SQL, optional chart spec as JSON text) → the
+        /// result table the model reads. The host owns the conversation's
+        /// `AnalysisDatabase` and the transcript card; nil = nothing is
+        /// attached to query.
+        public var queryData: (@Sendable (_ sql: String, _ chartJSON: String?) async -> String)? = nil
     }
 
     public struct PlanStep: Sendable, Equatable, Codable {
@@ -391,6 +406,7 @@ public enum ToolCatalog {
             ?? (arguments["url"] as? String)
             ?? (arguments["expression"] as? String)
             ?? (arguments["filename"] as? String)
+            ?? (arguments["sql"] as? String)
             ?? ""    }
 
     /// Outer wrapper: repairs malformed argument JSON where possible and
@@ -492,6 +508,20 @@ public enum ToolCatalog {
             return await createDocumentResult(format: format, filename: arguments?["filename"] as? String ?? "", content: content, context: context)
         case searchFiles.name:
             return searchFilesResult(glob: arguments?["glob"] as? String, query: arguments?["query"] as? String, context: context)
+        case queryData.name:
+            guard let sql = arguments?["sql"] as? String, !sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return "Error: \"sql\" is required."
+            }
+            guard let runner = context.queryData else {
+                return "Error: no data is attached to this conversation. Ask the user to attach a CSV, spreadsheet, JSON, or SQLite file."
+            }
+            // The chart object travels as JSON text rather than as a
+            // dictionary: `[String: Any]` is not Sendable, and this closure
+            // crosses into the host actor.
+            let chartJSON = (arguments?["chart"] as? [String: Any])
+                .flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+                .flatMap { String(data: $0, encoding: .utf8) }
+            return await runner(sql, chartJSON)
         case runCommand.name:
             guard let command = arguments?["command"] as? String, !command.isEmpty else { return "Error: \"command\" is required." }
             guard let runner = context.runCommand else { return "Error: running commands is disabled. The user can enable it in Settings → Agent abilities." }

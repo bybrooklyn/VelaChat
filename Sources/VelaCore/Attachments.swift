@@ -8,21 +8,32 @@ import PDFKit
 public struct Attachment: Identifiable, Codable, Equatable {
     public enum Kind: String, Codable {
         case image, text, code, pdf, git
+        /// §9.2 — a CSV/TSV/JSON/xlsx/SQLite file attached to be *queried*
+        /// rather than read. Its bytes are never folded into the prompt:
+        /// they are loaded into the conversation's analysis database, and
+        /// what the model sees is the schema plus a few sample rows.
+        case data
     }
+
+    /// Kinds whose payload is raw bytes rather than text — the ones that
+    /// belong in the blob store rather than in the conversation history.
+    var storesRawBytes: Bool { kind == .image || kind == .data }
 
     public let id: UUID
     public var kind: Kind
     public var filename: String
     public var mimeType: String
-    /// Raw image bytes for `.image`; UTF-8 text for everything else
+    /// Raw bytes for `.image` and `.data`; UTF-8 text for everything else
     /// (already-extracted text for `.pdf`).
     ///
-    /// Image bytes are NOT encoded into the conversation history. That
-    /// history lives in `UserDefaults`, which is read into memory whole at
-    /// launch and rewritten on every save — a handful of screenshots there
-    /// meant tens of megabytes of base64 in a preferences plist. Images
-    /// are written to a blob store on disk instead and loaded lazily; text
-    /// attachments are small and stay inline where they're simplest.
+    /// Image and data-file bytes are NOT encoded into the conversation
+    /// history. That history lives in `UserDefaults`, which is read into
+    /// memory whole at launch and rewritten on every save — a handful of
+    /// screenshots there meant tens of megabytes of base64 in a
+    /// preferences plist, and a spreadsheet is the same problem with a
+    /// different extension. Both go to a blob store on disk instead and
+    /// load lazily; text attachments are small and stay inline where
+    /// they're simplest.
     public var data: Data {
         get {
             if let inlineData { return inlineData }
@@ -30,7 +41,7 @@ public struct Attachment: Identifiable, Codable, Equatable {
             return AttachmentStore.load(blobID) ?? Data()
         }
         set {
-            if kind == .image, newValue.count > Limits.inlineAttachmentBytes {
+            if storesRawBytes, newValue.count > Limits.inlineAttachmentBytes {
                 blobID = AttachmentStore.save(newValue, suggestedID: blobID ?? id)
                 inlineData = nil
             } else {
@@ -75,7 +86,7 @@ public struct Attachment: Identifiable, Codable, Equatable {
         // Histories written before the blob store keep their bytes inline;
         // they're read here and migrate to disk on the next save.
         inlineData = try container.decodeIfPresent(Data.self, forKey: .data)
-        if kind == .image, let inlineData, inlineData.count > Limits.inlineAttachmentBytes {
+        if storesRawBytes, let inlineData, inlineData.count > Limits.inlineAttachmentBytes {
             blobID = AttachmentStore.save(inlineData, suggestedID: id)
             self.inlineData = nil
         }
@@ -93,8 +104,11 @@ public struct Attachment: Identifiable, Codable, Equatable {
         try container.encodeIfPresent(inlineData, forKey: .data)
     }
 
+    /// nil for anything whose bytes must not be folded into the prompt —
+    /// images, and data files (which reach the model as a schema plus a
+    /// queryable table, not as 40,000 rows of CSV).
     public var textContent: String? {
-        guard kind != .image else { return nil }
+        guard !storesRawBytes else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
@@ -104,6 +118,13 @@ public struct Attachment: Identifiable, Codable, Equatable {
             // this is the widely-used rough OpenAI vision estimate for a
             // single moderate-resolution image, not an exact figure.
             return 765
+        }
+        if kind == .data {
+            // What a data file actually costs the context is its schema
+            // block, which is a few columns and three sample rows — not its
+            // size on disk. A rough constant is far closer to the truth
+            // here than bytes/4 would be.
+            return 200
         }
         return max(1, data.count / 4)
     }
@@ -144,11 +165,61 @@ public struct Attachment: Identifiable, Codable, Equatable {
             return Attachment(kind: .image, filename: filename, mimeType: mime, data: data)
         }
         if ext == "pdf" { return fromPDF(filename: filename, data: data) }
+        // §9.2 — data formats are checked BEFORE the text branch on
+        // purpose: a CSV decodes as UTF-8 perfectly well, and attaching it
+        // as text is exactly the behaviour this replaces (60 KB of rows
+        // inlined into the prompt, truncated, un-queryable).
+        if DataSourceLoader.Format.detect(filename: filename) != nil {
+            return fromDataFile(filename: filename, data: data)
+        }
         if let text = String(data: data, encoding: .utf8) {
             let kind: Kind = codeKind(forExtension: ext) ? .code : .text
             return .fromText(filename: filename, kind: kind, content: text, mimeType: kind == .code ? "text/x-\(ext)" : "text/plain")
         }
         return nil
+    }
+
+    /// Why `fromFile` returned nil. The user picked this file on purpose,
+    /// so the one thing not to do is drop it without a word — which is
+    /// what happened to every undecodable binary before, and would now
+    /// happen to a spreadsheet one byte over the ceiling.
+    public static func attachFailureReason(for url: URL) -> String {
+        let name = url.lastPathComponent
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+        if DataSourceLoader.Format.detect(filename: name) != nil {
+            if let size, size > Limits.dataSourceBytes {
+                let megabytes = Double(size) / 1_000_000
+                let ceiling = Limits.dataSourceBytes / 1_000_000
+                return String(format: "%@ is %.0f MB — too large to attach (the limit for data files is %d MB). Filter or split it first.", name, megabytes, ceiling)
+            }
+            return "\(name) couldn't be read."
+        }
+        if (name as NSString).pathExtension.lowercased() == "pdf" {
+            return "\(name) has no text to extract — a scanned PDF is an image, not a document VelaChat can read."
+        }
+        return "\(name) isn't something VelaChat can attach — it isn't text, code, an image, a PDF, or a data file (CSV, TSV, JSON, xlsx, SQLite)."
+    }
+
+    /// A data file attaches whole and unparsed: loading it into the
+    /// analysis database happens per conversation, at send time, where the
+    /// database lives. Over the size ceiling it falls back to nil rather
+    /// than pretending — a 200 MB export is a real file the user should be
+    /// told about, not something to silently half-load.
+    public static func fromDataFile(filename: String, data: Data) -> Attachment? {
+        guard data.count <= Limits.dataSourceBytes else { return nil }
+        let mimeTypes = [
+            "csv": "text/csv", "tsv": "text/tab-separated-values", "tab": "text/tab-separated-values",
+            "json": "application/json", "ndjson": "application/x-ndjson", "jsonl": "application/x-ndjson",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "sqlite": "application/vnd.sqlite3", "sqlite3": "application/vnd.sqlite3", "db": "application/vnd.sqlite3",
+        ]
+        let ext = (filename as NSString).pathExtension.lowercased()
+        return Attachment(
+            kind: .data,
+            filename: filename,
+            mimeType: mimeTypes[ext] ?? "application/octet-stream",
+            data: data
+        )
     }
 
     public static func fromPDF(filename: String, data pdfData: Data) -> Attachment? {

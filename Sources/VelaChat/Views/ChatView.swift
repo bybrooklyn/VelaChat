@@ -692,7 +692,10 @@ struct ChatView: View {
             appModel.setWorkspaceRoot(url)
             return
         }
-        guard let attachment = Attachment.fromFile(url: url) else { return }
+        guard let attachment = Attachment.fromFile(url: url) else {
+            appModel.postNotice(Attachment.attachFailureReason(for: url))
+            return
+        }
         draftAttachments.wrappedValue.append(attachment)
         if attachment.kind == .image { warnIfNoVisionSupport() }
     }

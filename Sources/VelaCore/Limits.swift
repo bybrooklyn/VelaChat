@@ -129,4 +129,32 @@ public enum Limits {
     /// enormous file into the workspace, not targets.
     public static let documentMaxCells = 100_000
     public static let documentMaxSlides = 60
+
+    // MARK: - Data analysis (§9.2)
+
+    /// Rows one `query_data` call returns. The result is read by a model
+    /// and rendered as a table, and both stop learning anything new well
+    /// before this — a query that wants more rows than this wants an
+    /// aggregate instead, which is what the truncation notice says.
+    public static let dataQueryRows = 200
+    /// Rows loaded from one attached source. A ceiling against a runaway
+    /// file, not a target: the in-memory database holds every loaded row.
+    public static let dataMaxRowsLoaded = 250_000
+    /// Bytes of one attached data file. Well past a spreadsheet a person
+    /// made, well short of something that would be loaded into memory
+    /// twice (raw bytes plus parsed rows) at a cost the app would feel.
+    public static let dataSourceBytes = 25_000_000
+    /// Real rows shown per table in the schema handed to the model —
+    /// enough to see the shape of the values, not enough to be the data.
+    public static let dataSampleRows = 3
+    /// Bytes of the fixed-width result table a query hands back to the
+    /// model. Larger than a stored tool result on purpose — the model is
+    /// reading these numbers to answer with them, and the transcript's
+    /// table card holds every row regardless.
+    public static let dataQueryTextBytes = 12_000
+    /// One query's wall-clock budget, enforced by SQLite's own progress
+    /// handler. Deliberately far below `toolTimeout`: a query this slow is
+    /// a query to rewrite, and the model gets told so while there is still
+    /// time in the round to do it.
+    public static let dataQueryTimeout: TimeInterval = 15
 }

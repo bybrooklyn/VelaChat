@@ -181,6 +181,12 @@ struct MessageRow: View {
                         )
                     }
 
+                    if alternateIndex == 0, let results = appModel.dataResultsByMessage[message.id], !results.isEmpty {
+                        ForEach(results) { outcome in
+                            DataResultCard(outcome: outcome)
+                        }
+                    }
+
                     if alternateIndex == 0, let recalled = appModel.recallByMessage[message.id], !recalled.isEmpty {
                         RecallLine(recalls: recalled)
                     }
@@ -524,6 +530,7 @@ struct AttachmentChip: View {
         case .code: "chevron.left.forwardslash.chevron.right"
         case .text: "doc.text"
         case .git: "arrow.triangle.branch"
+        case .data: "tablecells"
         }
     }
 }
@@ -1074,10 +1081,17 @@ struct ReasoningDisclosure: View {
 
     private func row(title: String) -> some View {
         ActivityRow(
-            // "thought.bubble", not "brain" — the brain glyph belongs to the
-            // memory activity rows, and reading "memory" onto every reasoning
-            // step conflated two different subsystems.
-            symbol: "thought.bubble",
+            // A bubble, not "brain" — the brain glyph belongs to the memory
+            // activity rows, and reading "memory" onto every reasoning step
+            // conflated two different subsystems.
+            //
+            // It must also be a symbol that EXISTS: this row used
+            // "thought.bubble", which is not an SF Symbol on any macOS, so
+            // every reasoning row in the transcript drew an empty grey box.
+            // Anything added here should be checked against
+            // `NSImage(systemSymbolName:)` before it ships — a wrong name
+            // fails silently at render time, not at build time.
+            symbol: "ellipsis.bubble",
             title: title,
             tint: Theme.reasoningAccent,
             isActive: isThinking,

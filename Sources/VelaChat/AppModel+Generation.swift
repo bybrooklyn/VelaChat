@@ -151,6 +151,29 @@ extension AppModel {
         // to silently lose all tools because `modelInfo` came back nil.
         let modelSupportsTools = (modelInfo ?? RemoteModel(id: model)).supportsTools
             && profile.kind != .appleIntelligence  // on-device path has no tool loop
+        // §9.2 — every data file attached to this conversation, oldest
+        // first. Names only: the bytes come through the provider below, and
+        // only for files the session hasn't loaded yet. Carrying them here
+        // would mean re-reading a 20 MB spreadsheet off disk on every send
+        // and holding it for the whole generation.
+        let dataSources: [DataAnalysisSessions.Source] = conversation.realMessages
+            .flatMap(\.attachments)
+            .filter { $0.kind == .data && $0.isIncluded }
+            .map { DataAnalysisSessions.Source(attachmentID: $0.id, filename: $0.filename) }
+        // An immutable binding to capture: `conversation` is a var here, and
+        // a weak capture of a var is an error under Swift 6 concurrency.
+        let sourceConversation = conversation
+        let dataBytes: DataAnalysisSessions.ByteProvider = { [weak sourceConversation] attachmentID in
+            // The inner capture list is load-bearing: a weak binding is
+            // mutable, and capturing it again inside a concurrent closure
+            // is an error under Swift 6.
+            await MainActor.run { [sourceConversation] in
+                sourceConversation?.messages
+                    .flatMap(\.attachments)
+                    .first { $0.id == attachmentID }?
+                    .data
+            }
+        }
         var tools: [ToolCatalog.Definition] = []
         if modelSupportsTools {
             if isConversationSearchEnabled {
@@ -196,6 +219,14 @@ extension AppModel {
             // is the only way out of planning mode.
             if isAgentToolsEnabled || conversation.isPlanning {
                 tools.append(ToolCatalog.updatePlan)
+            }
+            // §9.2 — attached data is queryable whenever it exists. No
+            // workspace, no agent abilities, no approval tier: the tool is
+            // read-only at the engine, so gating it behind the write
+            // permissions would only mean a user who attached a spreadsheet
+            // can't ask about it.
+            if !dataSources.isEmpty {
+                tools.append(ToolCatalog.queryData)
             }
             // Always available on a tool-capable model: asking is not an
             // "agent ability", it's how the model avoids guessing.
@@ -395,6 +426,30 @@ extension AppModel {
                 )
             }
         }
+        if !dataSources.isEmpty {
+            let conversationID = conversation.id
+            let queryAssistantID = assistantID
+            toolContext.queryData = { [weak self] sql, chartJSON in
+                guard let self else { return "Error: the app is shutting down." }
+                let outcome = await self.analysisSessions.query(
+                    conversationID: conversationID,
+                    sources: dataSources,
+                    bytes: dataBytes,
+                    sql: sql,
+                    chartJSON: chartJSON
+                )
+                // The card and the model read the same outcome — a table
+                // in the transcript that disagrees with the numbers in the
+                // reply would be worse than no table at all.
+                await MainActor.run { [weak self] in
+                    guard let self, outcome.error == nil else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        self.dataResultsByMessage[queryAssistantID, default: []].append(outcome)
+                    }
+                }
+                return outcome.toolResultText
+            }
+        }
         toolContext.mcpCall = { [weak self] name, argumentsJSON in
             await MainActor.run { [weak self] in self?.mcp }?.call(prefixedName: name, argumentsJSON: argumentsJSON)
                 ?? "Error: MCP is unavailable."
@@ -474,6 +529,19 @@ extension AppModel {
                 // store is gone, so this reads the mirror of MemoryStore.
                 promptContext.memoryCount = self.facts.count
                 promptContext.attachmentNames = conversation.realMessages.flatMap { $0.attachments.map(\.filename) }
+                // §9.2 — loading happens here, on the way into the prompt:
+                // by the time the model can call query_data it has already
+                // been told what tables exist, which is the difference
+                // between one query and three guesses.
+                if !dataSources.isEmpty {
+                    self.statusMessage = "Loading attached data…"
+                    promptContext.dataSchema = await self.analysisSessions.schemaText(
+                        for: conversation.id,
+                        sources: dataSources,
+                        bytes: dataBytes
+                    )
+                    self.statusMessage = nil
+                }
             }
             // Past conversations that look relevant to what was just
             // asked. Retrieval is keyword-driven (see MemoryStore.recall),
