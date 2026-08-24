@@ -317,19 +317,24 @@ public struct XLSXDocument {
 
         var rowsXML = ""
         var dimensionColumnCount = 0
-        for rowIndex in 0...lastMeaningfulRow where lastMeaningfulRow >= 0 {
-            let row = sheet.rows[rowIndex]
-            var lastCellIndex = -1
-            for (offset, cell) in row.enumerated() where cellMeansSomething(cell) { lastCellIndex = offset }
-            guard lastCellIndex >= 0 else { continue }
-            dimensionColumnCount = max(dimensionColumnCount, lastCellIndex + 1)
-            var cellsXML = ""
-            for cellIndex in 0...lastCellIndex {
-                let cell = cellIndex < row.count ? row[cellIndex] : Cell(.text(""))
-                guard cellMeansSomething(cell) else { continue }
-                cellsXML += cellXML(cell, atRow: rowIndex, column: cellIndex, sharedStringIndexes: sharedStringIndexes, styleIndexes: styleIndexes)
+        // An all-empty sheet is still valid xlsx (an empty sheetData) —
+        // the range must be guarded before formation, not filtered after:
+        // `0...(-1)` crashes before any `where` clause gets a say.
+        if lastMeaningfulRow >= 0 {
+            for rowIndex in 0...lastMeaningfulRow {
+                let row = sheet.rows[rowIndex]
+                var lastCellIndex = -1
+                for (offset, cell) in row.enumerated() where cellMeansSomething(cell) { lastCellIndex = offset }
+                guard lastCellIndex >= 0 else { continue }
+                dimensionColumnCount = max(dimensionColumnCount, lastCellIndex + 1)
+                var cellsXML = ""
+                for cellIndex in 0...lastCellIndex {
+                    let cell = cellIndex < row.count ? row[cellIndex] : Cell(.text(""))
+                    guard cellMeansSomething(cell) else { continue }
+                    cellsXML += cellXML(cell, atRow: rowIndex, column: cellIndex, sharedStringIndexes: sharedStringIndexes, styleIndexes: styleIndexes)
+                }
+                rowsXML += "<row r=\"\(rowIndex + 1)\">\(cellsXML)</row>"
             }
-            rowsXML += "<row r=\"\(rowIndex + 1)\">\(cellsXML)</row>"
         }
         body += "<sheetData>\(rowsXML)</sheetData>"
 

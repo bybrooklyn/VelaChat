@@ -223,12 +223,38 @@ final class DocumentEmittersTests: XCTestCase {
 
         let result = await ToolCatalog.execute(
             name: ToolCatalog.createDocument.name,
-            argumentsJSON: #"{"format":"xlsx","filename":"report","content":{"rows":[[["Region","Rev"],["North",1250]]]}}"#,
+            argumentsJSON: #"{"format":"xlsx","filename":"report","content":{"rows":[["Region","Rev"],["North",1250]]}}"#,
             context: context
         )
         XCTAssertTrue(result.contains("Created report.xlsx"), result)
         let written = try Data(contentsOf: workspace.appendingPathComponent("report.xlsx"))
         XCTAssertEqual(written.prefix(2), Data("PK".utf8))
+        let parts = try entries(of: written)
+        XCTAssertTrue(try part(parts, "xl/worksheets/sheet1.xml").contains("<c r=\"A1\" t=\"s\">"), "cell data survives the tool path")
+    }
+
+    @MainActor
+    func testCreateDocumentToolSurvivesAnAllEmptySheet() async throws {
+        // Regression: a sheet where every cell decodes empty (nulls, or
+        // cells that are themselves arrays) used to crash the emitter —
+        // `0...(-1)` forms an invalid range before any filter runs. An
+        // empty sheet is valid xlsx and must emit as one.
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let context = ToolCatalog.ExecutionContext(conversationSummaries: [], searchEndpoint: "", workspaceDirectory: workspace)
+
+        let result = await ToolCatalog.execute(
+            name: ToolCatalog.createDocument.name,
+            argumentsJSON: #"{"format":"xlsx","filename":"empty","content":{"rows":[[null,null],[["nested","array"]]]}}"#,
+            context: context
+        )
+        XCTAssertTrue(result.contains("Created empty.xlsx"), result)
+        let written = try Data(contentsOf: workspace.appendingPathComponent("empty.xlsx"))
+        let parts = try entries(of: written)
+        let sheet = try part(parts, "xl/worksheets/sheet1.xml")
+        XCTAssertTrue(sheet.contains("<sheetData></sheetData>"), sheet)
+        try assertAllPartsAreWellFormedXML(parts)
     }
 
     @MainActor
