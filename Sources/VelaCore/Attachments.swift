@@ -179,6 +179,27 @@ public struct Attachment: Identifiable, Codable, Equatable {
         return nil
     }
 
+    /// Why `fromFile` returned nil. The user picked this file on purpose,
+    /// so the one thing not to do is drop it without a word — which is
+    /// what happened to every undecodable binary before, and would now
+    /// happen to a spreadsheet one byte over the ceiling.
+    public static func attachFailureReason(for url: URL) -> String {
+        let name = url.lastPathComponent
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+        if DataSourceLoader.Format.detect(filename: name) != nil {
+            if let size, size > Limits.dataSourceBytes {
+                let megabytes = Double(size) / 1_000_000
+                let ceiling = Limits.dataSourceBytes / 1_000_000
+                return String(format: "%@ is %.0f MB — too large to attach (the limit for data files is %d MB). Filter or split it first.", name, megabytes, ceiling)
+            }
+            return "\(name) couldn't be read."
+        }
+        if (name as NSString).pathExtension.lowercased() == "pdf" {
+            return "\(name) has no text to extract — a scanned PDF is an image, not a document VelaChat can read."
+        }
+        return "\(name) isn't something VelaChat can attach — it isn't text, code, an image, a PDF, or a data file (CSV, TSV, JSON, xlsx, SQLite)."
+    }
+
     /// A data file attaches whole and unparsed: loading it into the
     /// analysis database happens per conversation, at send time, where the
     /// database lives. Over the size ceiling it falls back to nil rather
