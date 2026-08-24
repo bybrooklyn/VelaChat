@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 
 /// Real brand marks, drawn as vectors, on a brand-colored tile — the way
 /// every other AI client presents providers. SF Symbols read as generic

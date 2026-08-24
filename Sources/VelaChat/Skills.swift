@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import Observation
 
 /// A saved prompt, invoked from the composer's `/` menu by name instead of

@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 
 struct RootView: View {
     @Environment(AppModel.self) private var appModel

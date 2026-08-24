@@ -1,4 +1,5 @@
 import AppKit
+import VelaCore
 import Observation
 
 /// Fetches real provider logos: the provider's own site first

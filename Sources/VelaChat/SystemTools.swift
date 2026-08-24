@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import AppKit
 import Vision
 import IOKit.ps

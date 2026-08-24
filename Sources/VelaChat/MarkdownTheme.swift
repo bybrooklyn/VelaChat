@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 import AppKit
 import MarkdownUI
 import HighlightSwift

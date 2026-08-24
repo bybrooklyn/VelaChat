@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import Observation
 
 /// One configured MCP server — the standard `mcpServers` JSON shape

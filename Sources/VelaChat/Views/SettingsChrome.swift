@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 
 /// The shared chrome every Settings screen is built from.
 ///

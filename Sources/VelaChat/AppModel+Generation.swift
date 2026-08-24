@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import SwiftUI
 import AppKit
 import UserNotifications
@@ -635,8 +636,8 @@ extension AppModel {
 
     /// The `ask_user` tool's gate: decodes the payload, puts a real
     /// question card on screen, and suspends the tool call until the user
-    /// answers. Mirrors `confirmSubagents` — same continuation + one-shot
-    /// `DecisionGuard` shape, so a double-tap can never resume twice.
+    /// answers. Mirrors `confirmSubagents` — both suspend on
+    /// `withOneShotResume`, so a double-tap can never resume twice.
     ///
     /// A malformed payload comes back as a normal tool error rather than
     /// throwing: the model can then re-ask correctly instead of the whole
@@ -647,13 +648,8 @@ extension AppModel {
               !payload.questions.isEmpty else {
             return "Error: the questions payload was malformed. Re-send it with 1-4 questions, each with at least 2 options."
         }
-        let answer: String? = await withCheckedContinuation { continuation in
-            let box = DecisionGuard()
-            pendingQuestion = PendingQuestion(conversationID: conversationID, payload: payload) { response in
-                guard !box.answered else { return }
-                box.answered = true
-                continuation.resume(returning: response)
-            }
+        let answer: String? = await withOneShotResume { resume in
+            pendingQuestion = PendingQuestion(conversationID: conversationID, payload: payload, respond: resume)
         }
         pendingQuestion = nil
         guard let answer, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -665,19 +661,15 @@ extension AppModel {
     /// Subagent fan-out confirmation — same pause-and-decide shape as a
     /// command approval, since it also spends real requests.
     func confirmSubagents(count: Int, summary: String, conversationID: UUID) async -> Bool {
-        let decision: CommandApproval.Decision = await withCheckedContinuation { continuation in
-            let box = DecisionGuard()
+        let decision: CommandApproval.Decision = await withOneShotResume { resume in
             pendingApproval = CommandApproval(
                 conversationID: conversationID,
                 command: "Run \(count) subagent\(count == 1 ? "" : "s") in parallel: \(summary)",
                 directory: activeConversation?.workspaceRoot ?? SandboxManager.directory(for: conversationID),
                 reason: "Each subagent is a separate request to your provider, and they run at the same time.",
-                isSubagentRequest: true
-            ) { decision in
-                guard !box.answered else { return }
-                box.answered = true
-                continuation.resume(returning: decision)
-            }
+                isSubagentRequest: true,
+                decide: resume
+            )
         }
         pendingApproval = nil
         if case .deny = decision { return false }

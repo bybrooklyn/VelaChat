@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 import AppKit
 
 /// A curated accent hue, not a full theme — background/text/material stay

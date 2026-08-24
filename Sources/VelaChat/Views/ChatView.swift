@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 import HighlightSwift
 import AppKit
 import UniformTypeIdentifiers

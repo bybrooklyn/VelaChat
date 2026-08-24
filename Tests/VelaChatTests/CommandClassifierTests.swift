@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// The command classifier decides what runs without asking the user, so a
 /// regression here is a security regression, not a cosmetic one. These

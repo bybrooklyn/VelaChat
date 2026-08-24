@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import Observation
 import KeyboardShortcuts
 import SwiftUI
@@ -18,38 +19,6 @@ final class AppModel {
     }
 
     static let appVersion = "1.0"
-
-    /// Teaches the model a real capability it has — asking the user a
-    /// multiple-choice question instead of guessing — the same idea as
-    /// Claude Code's own `AskUserQuestion` tool, adapted to a fenced-block
-    /// convention so it works over plain chat completions without needing
-    /// real function calling. `AskUserQuestionPayload.parse` (Models.swift)
-    /// is the matching reader; `AskUserQuestionCard` (ChatView.swift) is the
-    /// interactive card rendered from it.
-    static let askUserQuestionInstruction = """
-        # Asking the user
-        When a real decision or ambiguity is worth pausing on — not for \
-        routine replies — write first and ask at the end. Give a short, \
-        genuinely useful reply: what you already know, or the part of the \
-        work you can do without the answer. Finish the thought, and only \
-        then put the question block last, so the user is never left \
-        staring at half a paragraph above a question card. Nothing may \
-        follow the block. It takes exactly this shape:
-
-        ```ask-user
-        {"questions": [{"header": "Approach", "question": "Which approach should I take?", "multiSelect": false, "options": [{"label": "Short option name", "description": "One-sentence explanation", "recommended": true}, {"label": "Another option", "description": "One-sentence explanation"}]}], "allowNotes": true}
-        ```
-
-        Rules: 1–4 questions per block, each with 2–4 mutually distinct \
-        options. `header` is a very short chip label (max ~12 chars, e.g. \
-        "Scope", "Auth"). Mark at most ONE option per question \
-        `"recommended": true` — the one you'd pick — and list it first. \
-        Set `"multiSelect": true` only when several options genuinely \
-        combine. Batch related decisions into one block instead of asking \
-        one at a time across replies. The user's selections (and any note) \
-        come back as their next message. Never use this for questions a \
-        tool or the conversation itself can answer.
-        """
 
     // The old fenced ```remember``` propose-and-confirm flow is gone: the
     // model manages memory itself through the real save_memory /
@@ -1914,10 +1883,6 @@ final class AppModel {
     }
 
     /// One-shot latch for an approval card's answer (see `executeCommand`).
-    final class DecisionGuard: @unchecked Sendable {
-        var answered = false
-    }
-
     /// run_command's gate. Read-only commands run immediately; everything
     /// else pauses the generation on a real approval card in the
     /// transcript. A denial goes back to the model as a normal tool
@@ -1955,23 +1920,15 @@ final class AppModel {
         }
 
         if needsPrompt {
-            let decision: CommandApproval.Decision = await withCheckedContinuation { continuation in
-                // The card can be answered exactly once; a stray second tap
-                // must not crash on a double resume. `decide` is only ever
-                // called from the card's buttons, i.e. the main actor.
-                let box = DecisionGuard()
-                let approval = CommandApproval(
+            let decision: CommandApproval.Decision = await withOneShotResume { resume in
+                pendingApproval = CommandApproval(
                     conversationID: conversationID,
                     command: command,
                     directory: directory,
                     reason: reason,
-                    trustFolderPath: trustFolderPath
-                ) { decision in
-                    guard !box.answered else { return }
-                    box.answered = true
-                    continuation.resume(returning: decision)
-                }
-                pendingApproval = approval
+                    trustFolderPath: trustFolderPath,
+                    decide: resume
+                )
             }
             pendingApproval = nil
             switch decision {

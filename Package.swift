@@ -19,9 +19,18 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
+        // Non-UI logic (protocol layers, pure data models, cost/redaction math, tool
+        // dispatch). No SwiftUI/AppKit — testable on the Command-Line-Tools toolchain
+        // without XCTest ever touching a view. Extracted subsystem-by-subsystem from
+        // VelaChat; see AGENTS.md / velachat-plan-v2.md §1.1 for the extraction plan.
+        .target(
+            name: "VelaCore",
+            path: "Sources/VelaCore"
+        ),
         .executableTarget(
             name: "VelaChat",
             dependencies: [
+                "VelaCore",
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "HighlightSwift", package: "HighlightSwift"),
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
@@ -31,7 +40,7 @@ let package = Package(
         ),
         .testTarget(
             name: "VelaChatTests",
-            dependencies: ["VelaChat"],
+            dependencies: ["VelaChat", "VelaCore"],
             path: "Tests/VelaChatTests",
             // Read via `#filePath` at runtime, not bundled as resources —
             // excluded so SwiftPM stops warning about unhandled files.

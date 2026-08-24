@@ -1,4 +1,5 @@
 import Foundation
+import VelaCore
 import Observation
 
 private struct CachedModelCatalog: Codable {

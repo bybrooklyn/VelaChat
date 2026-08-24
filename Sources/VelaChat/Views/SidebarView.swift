@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 
 struct SidebarView: View {
     @Environment(AppModel.self) private var appModel

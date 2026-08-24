@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 import WebKit
 
 /// The ChatGPT provider's editor section: session status, a real

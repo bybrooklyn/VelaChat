@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 
 /// Real brand marks, hardcoded: official simple-icons path data (24x24
 /// viewBox, single path, CC0) embedded verbatim and rendered through a

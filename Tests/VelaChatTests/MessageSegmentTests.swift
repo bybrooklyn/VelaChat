@@ -1,5 +1,5 @@
 import XCTest
-@testable import VelaChat
+@testable import VelaCore
 
 /// `MessageSegment` is persisted with every conversation, so adding a case
 /// to it is a storage-format change. These pin the two halves of that: the
