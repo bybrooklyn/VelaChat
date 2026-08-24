@@ -8,6 +8,11 @@ build/
 # macOS
 .DS_Store
 
+# Agent scratch: worktrees checked out by background agents, and
+# machine-local tool permissions. Neither belongs to anyone else's clone.
+.claude/worktrees/
+.claude/settings.local.json
+
 # Sparkle signing material must never be committed — the private key lives
 # only in the SPARKLE_PRIVATE_KEY GitHub secret.
 *.pem
