@@ -1,5 +1,28 @@
 # VelaChat — working notes
 
+## 2026-08-23 — Phase 7 begins: scratchpad, git tools, gist (phase-7-capabilities)
+
+Three self-contained capabilities that fully reuse existing infra:
+§9.10 `scratchpad` tool (read/append `.scratchpad.md` per conversation;
+agent-only, dot-file so it never lists; survives compaction by living on
+disk; trimmed from the FRONT? no — keeps the newest toolResultBytes).
+§9.7 first-class git tools (`get_git_status` structured via porcelain v2
+parser, `git_diff` capped, `git_log`, `git_commit` via `-F -` stdin so
+quotes/newlines survive, `create_pr` via gh with GH_PROMPT_DISABLED) —
+reads free, commit confirmable through `approveGitWrite`, PR sensitive
+always; gh absent degrades to a clear message while commits still work.
+§9.9 `publish_gist`: every payload scanned through the SAME Redactor
+builtIns as the send path (invariant 5) — any hit BLOCKS and names file +
+rule; approval always asks even for secret gists; multi-file staging under
+real names. Raw-string lesson: `"###` inside `#"…"#` terminates the string
+(the `#` after the quote starts delimiter matching) — avoid `"`+`#`
+sequences or raise the hash count.
+
+Still open in Phase 7: §9.1 documents (xlsx→docx→pptx), §9.2 data
+analysis, §9.3 browsing, §9.5 batch, §9.6 transcription, §9.8 watch
+folders; then Phase 5b checkpoints (deferred by decision), Phase 8
+computer use, Phase 9 menu-bar polish.
+
 ## 2026-08-23 — Phase 6: Claude Code bridge (phase-6-claude-bridge)
 
 §7 complete on the built protocol layer. `ProviderKind.claudeCode`: Anthropic

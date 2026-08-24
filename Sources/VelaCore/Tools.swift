@@ -91,6 +91,57 @@ public enum ToolCatalog {
         guidance: "If an attachment looks cut off, or the user asks about a part of it you cannot see, read the whole file here before answering rather than reasoning from the visible fragment."
     )
 
+    /// §9.10 — the agent scratchpad: one plain file per conversation,
+    /// agent-only, living on disk so its contents survive context
+    /// compaction with no re-injection machinery. Distinct from write_file:
+    /// never shown to the user as a deliverable, and append-shaped.
+    public static let scratchpad = Definition(
+        name: "scratchpad",
+        description: "Read or append to your private scratchpad for this conversation — persistent notes that survive even when older parts of this conversation leave the context window. One action per call: \"read\" returns everything written so far; \"append\" adds text under an optional heading.",
+        parametersJSON: #"{"type":"object","properties":{"action":{"type":"string","enum":["read","append"],"description":"\"read\" returns the full pad; \"append\" adds text at the end."},"text":{"type":"string","description":"For append: what to add. Keep it dense — findings, decisions, open questions, next steps."},"heading":{"type":"string","description":"Optional heading appended before the text, e.g. 'Findings 1-10'."}},"required":["action"]}"#,
+        guidance: "Write down anything you will need later: intermediate results while processing a long list, candidate answers before choosing, where you left off in a multi-step task. Read it back after any context compaction notice rather than working from memory."
+    )
+
+    // MARK: - Git / PR tools (§9.7)
+
+    public static let gitStatus = Definition(
+        name: "get_git_status",
+        description: "Structured working-tree state of this conversation's attached folder as a git repository: current branch, ahead/behind counts, staged, unstaged, and untracked files. Read-only.",
+        parametersJSON: #"{"type":"object","properties":{}}"#,
+        guidance: "Check before proposing changes so commits and diffs reference reality. Requires an attached folder that is a real repository."
+    )
+    public static let gitDiff = Definition(
+        name: "git_diff",
+        description: "Unified diff of uncommitted changes in the attached repository (staged and unstaged combined, capped in size). Read-only.",
+        parametersJSON: #"{"type":"object","properties":{"staged":{"type":"boolean","description":"true = only what is staged; omit for everything uncommitted."}}}"#,
+        guidance: "Read a diff before writing commit messages or claiming what changed — never reconstruct edits from memory."
+    )
+    public static let gitLog = Definition(
+        name: "git_log",
+        description: "Recent commit history (hash + subject), newest first. Read-only.",
+        parametersJSON: #"{"type":"object","properties":{"count":{"type":"integer","description":"How many commits (default 20, max 100)."}}}"#,
+        guidance: "Use to learn conventions for messages or find where work left off."
+    )
+    public static let gitCommit = Definition(
+        name: "git_commit",
+        description: "Commit STAGED changes with the given message in the attached repository. Does not stage anything itself.",
+        parametersJSON: #"{"type":"object","properties":{"message":{"type":"string","description":"The full commit message."}},"required":["message"]}"#,
+        guidance: "Stage first with get_git_status + the user's confirmation flow, read git_diff before writing the message, and follow the repository's own message style from git_log."
+    )
+    public static let createPullRequest = Definition(
+        name: "create_pr",
+        description: "Open a pull request on GitHub via the gh CLI: pushes the current branch if needed, then creates the PR. Always asks for explicit approval — publishing to a shared repository is not auto-allowed.",
+        parametersJSON: #"{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string","description":"Full PR description in markdown."},"base":{"type":"string","description":"Target branch; defaults to the repo's default."}},"required":["title","body"]}"#,
+        guidance: "Only after the user has seen and approved the diff. If gh isn't installed the tool says so instead of failing opaquely."
+    )
+
+    public static let publishGist = Definition(
+        name: "publish_gist",
+        description: "Publish one or more workspace files as a GitHub gist via the gh CLI. Secret by default (unlisted, not private — anyone with the link can read it). Every file is scanned for API keys and tokens first; a hit blocks publishing until you redact it. Always asks before publishing.",
+        parametersJSON: #"{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"},"description":"Paths relative to the workspace root."},"description":{"type":"string","description":"Short gist description."},"public":{"type":"boolean","description":"true = publicly listed. Default false (secret)."}},"required":["files"]}"#,
+        guidance: "For sharing a result the user asked to publish. Never include credentials; if the scan reports hits, tell the user which file and rule matched rather than trying to sneak past."
+    )
+
     /// A real, private, per-conversation folder on disk — not a general
     /// filesystem. See `SandboxManager` for the actual safety boundary
     /// (path validation, not process sandboxing) and why a shell-execution
@@ -245,6 +296,10 @@ public enum ToolCatalog {
         /// Ask the host to approve one write; `true` proceeds. Consulted
         /// only when `requiresWriteApproval` is set.
         public var approveWrite: (@Sendable (_ relativePath: String) async -> Bool)? = nil
+        /// The §9.7 git tools' approval channel for mutating operations
+        /// (commit/push/PR): `true` proceeds. The host decides tiering via
+        /// the classifier; sensitive ops must always ask.
+        public var approveGitWrite: (@Sendable (_ summary: String, _ isSensitive: Bool) async -> Bool)? = nil
         /// The Claude bridge's permission channel: claude asks to use one
         /// of ITS tools; `true` writes an allow frame, `false` a deny (with
         /// a mandatory reason). nil = every request auto-denies.
@@ -453,9 +508,41 @@ public enum ToolCatalog {
             guard !steps.isEmpty else { return "Error: no valid steps provided." }
             guard let sink = context.updatePlan else { return "Error: planning is unavailable." }
             return await sink(steps)
+        case gitStatus.name:
+            return await GitToolExecutor.status(context: context)
+        case gitDiff.name:
+            return await GitToolExecutor.diff(stagedOnly: arguments?["staged"] as? Bool ?? false, context: context)
+        case gitLog.name:
+            let requested = arguments?["count"] as? Int ?? Int(arguments?["count"] as? Double ?? 20)
+            return await GitToolExecutor.log(count: requested, context: context)
+        case gitCommit.name:
+            guard let message = arguments?["message"] as? String, !message.isEmpty else { return "Error: \"message\" is required." }
+            return await GitToolExecutor.commit(message: message, context: context)
+        case createPullRequest.name:
+            guard let title = arguments?["title"] as? String, !title.isEmpty,
+                  let body = arguments?["body"] as? String else {
+                return "Error: \"title\" and \"body\" are required."
+            }
+            let base = arguments?["base"] as? String
+            return await GitToolExecutor.pullRequest(title: title, body: body, base: base, context: context)
+        case publishGist.name:
+            guard let files = arguments?["files"] as? [String], !files.isEmpty else {
+                return "Error: \"files\" must list at least one workspace path."
+            }
+            let isPublic = arguments?["public"] as? Bool ?? false
+            let gistDescription = arguments?["description"] as? String ?? ""
+            return await GitToolExecutor.gist(
+                files: files,
+                gistDescription: gistDescription,
+                isPublic: isPublic,
+                context: context
+            )
         case readFile.name:
             guard let path = arguments?["path"] as? String else { return "Error: \"path\" is required." }
             return readFileResult(path: path, context: context)
+        case scratchpad.name:
+            let action = arguments?["action"] as? String ?? ""
+            return scratchpadResult(action: action, text: arguments?["text"] as? String ?? "", heading: arguments?["heading"] as? String, context: context)
         case listWorkspaceFiles.name:
             return listWorkspaceFilesResult(context: context)
         case fetchURL.name:
@@ -749,6 +836,45 @@ public enum ToolCatalog {
         return text
     }
 
+    // MARK: - Scratchpad (§9.10)
+
+    static let scratchpadFilename = ".scratchpad.md"
+
+    private static func scratchpadResult(action: String, text: String, heading: String?, context: ExecutionContext) -> String {
+        let url = context.workspaceDirectory.appendingPathComponent(scratchpadFilename)
+        switch action {
+        case "read":
+            guard let current = try? String(contentsOf: url, encoding: .utf8), !current.isEmpty else {
+                return "(the scratchpad is empty)"
+            }
+            // A compaction-surviving note must itself survive the reply cap.
+            if current.count > Limits.toolResultBytes {
+                return String(current.suffix(Limits.toolResultBytes)) + "\n[Older scratchpad entries were trimmed.]"
+            }
+            return current
+        case "append":
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return "Error: \"text\" is required when appending."
+            }
+            var addition = ""
+            if let heading, !heading.isEmpty {
+                addition += "\n\n## \(heading)\n"
+            } else {
+                addition += "\n\n"
+            }
+            addition += text
+            let current = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            do {
+                try (current + addition).write(to: url, atomically: true, encoding: .utf8)
+                return "Appended to the scratchpad."
+            } catch {
+                return "Error writing the scratchpad: \(error.localizedDescription)"
+            }
+        default:
+            return "Error: \"action\" must be \"read\" or \"append\"."
+        }
+    }
+
     private static func listWorkspaceFilesResult(context: ExecutionContext) -> String {
         let root = context.workspaceDirectory
         guard let items = try? FileManager.default.contentsOfDirectory(atPath: root.path), !items.isEmpty else {
@@ -759,7 +885,7 @@ public enum ToolCatalog {
         // (An explicit read_file of an ignored path still works — hiding a
         // file from the overview must not make it unopenable.)
         let ignoreRules = GitIgnore.load(from: root)
-        let visible = items.sorted().filter { !GitIgnore.ignores(ignoreRules, relativePath: $0) }
+        let visible = items.sorted().filter { !$0.hasPrefix(".") && !GitIgnore.ignores(ignoreRules, relativePath: $0) }
         if visible.isEmpty {
             return items.count > 0
                 ? "All \(items.count) entries are git-ignored; nothing to list. Use read_file with an exact name if you need one anyway."

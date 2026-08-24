@@ -175,6 +175,17 @@ extension AppModel {
                 if isAgentToolsEnabled {
                     tools.append(contentsOf: [ToolCatalog.editFile, ToolCatalog.searchFiles])
                 }
+                // Compaction-surviving notes ride the workspace too, but are
+                // agent-only and never listed as a workspace file.
+                tools.append(ToolCatalog.scratchpad)
+                if conversation.projectWorkspace != nil {
+                    tools.append(contentsOf: [ToolCatalog.gitStatus, ToolCatalog.gitDiff, ToolCatalog.gitLog])
+                    if isAgentToolsEnabled {
+                        tools.append(ToolCatalog.gitCommit)
+                        tools.append(ToolCatalog.createPullRequest)
+                        tools.append(ToolCatalog.publishGist)
+                    }
+                }
             }
             // Also attached while planning even with the agent abilities
             // off: update_plan is how a plan gets posted, and the plan card
@@ -294,6 +305,13 @@ extension AppModel {
                     input: input,
                     conversationID: conversationID
                 )
+            }
+        }
+        if conversation.projectWorkspace != nil {
+            let folderPath = conversation.projectWorkspace?.path ?? conversation.workspaceRoot.path
+            toolContext.approveGitWrite = { [weak self] summary, sensitive in
+                guard let self else { return false }
+                return await self.approveGitOperation(summary: summary, folderPath: folderPath, sensitive: sensitive, conversationID: conversation.id)
             }
         }
         toolContext.attachmentTexts = attachmentTexts
