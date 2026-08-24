@@ -331,6 +331,53 @@ struct ChatView: View {
         .frame(maxWidth: contentWidth, alignment: .leading)
     }
 
+    /// The attached project folder's chip: which folder this conversation
+    /// works in, and — when it's a repository — the current branch. The
+    /// one place the workspace context is visible while composing; detach
+    /// stays in Settings, where the other destructive controls live.
+    private struct WorkspaceChip: View {
+        @Environment(AppModel.self) private var appModel
+        let conversation: Conversation
+        @State private var branch: String?
+        @State private var resolvedName: String = ""
+
+        var body: some View {
+            HStack(spacing: 6) {
+                Image(systemName: "folder.fill")
+                    .font(.caption2)
+                Text(resolvedName)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let branch {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 8, weight: .semibold))
+                        Text(branch)
+                            .font(.caption2.weight(.medium))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Theme.controlBackground, in: Capsule())
+                    .help("Current branch in the attached folder")
+                    .accessibilityLabel("Branch \(branch ?? "")")
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Theme.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .task(id: conversation.projectWorkspace) { refresh() }
+        }
+
+        private func refresh() {
+            let url = conversation.workspaceRoot
+            resolvedName = url.lastPathComponent
+            branch = GitInfo.branch(of: url)
+        }
+    }
+
     /// A blocked `ask_user` call, pinned just above the composer.
     ///
     /// It lives in the composer's own stack rather than as an overlay over
@@ -425,6 +472,11 @@ struct ChatView: View {
                 .transition(.opacity)
             }
 
+            if let conversation = appModel.activeConversation, conversation.projectWorkspace != nil {
+                WorkspaceChip(conversation: conversation)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
             if let conversation = appModel.activeConversation, !conversation.activeSkillPaths.isEmpty {
                 activeSkillsRow(conversation)
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -511,6 +563,7 @@ struct ChatView: View {
                                 onFile: { isAttachMenuShown = false; presentAttachPanel() },
                                 onFolder: { isAttachMenuShown = false; presentFolderPanel() },
                                 onPasteboard: { isAttachMenuShown = false; pasteFromClipboard() },
+                                onDismiss: { isAttachMenuShown = false },
                                 onRepo: { repo in
                                     isAttachMenuShown = false
                                     appModel.cloneGitHubRepo(repo)
@@ -632,11 +685,11 @@ struct ChatView: View {
     private func addAttachment(from url: URL) {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            if let attachment = Attachment.fromGitFolder(url: url) {
-                draftAttachments.wrappedValue.append(attachment)
-            } else {
-                appModel.postNotice("\(url.lastPathComponent) isn't a git repository — only git-repo folders can be attached right now.")
-            }
+            // A dropped folder means "work in here": it becomes the
+            // conversation's workspace root — file tools, commands, and the
+            // write gate all operate inside it — not a file attachment.
+            // (Cloned repos still land a git summary via their own flow.)
+            appModel.setWorkspaceRoot(url)
             return
         }
         guard let attachment = Attachment.fromFile(url: url) else { return }

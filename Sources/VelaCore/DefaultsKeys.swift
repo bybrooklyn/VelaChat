@@ -61,6 +61,12 @@ public enum DefaultsKey {
     public static let thinkingLevel = "velachat.thinking-level"
     public static let usageLedger = "velachat.usage-ledger"
     public static let quotaSnapshots = "velachat.quota-snapshots"
+    /// Recently attached project folders — plain path strings, most recent
+    /// first (the bookmark is re-created fresh on every reattach).
+    public static let recentProjects = "velachat.recent-projects"
+    /// Session-scoped "allow file edits in this folder" answers for the
+    /// write gate. Deliberately session-only: trust resets with the app.
+    public static let workspaceWriteApprovals = "velachat.workspace-write-approvals"
 
     // ChatGPT provider
     public static let chatGPTDeviceID = "velachat.chatgpt-device-id"

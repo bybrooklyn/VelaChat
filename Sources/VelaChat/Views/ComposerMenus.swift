@@ -7,11 +7,14 @@ import MarkdownUI
 /// is installed and logged in), clipboard, and a cloud page that morphs in
 /// with providers marked coming-soon.
 struct AttachMenu: View {
-    enum Page { case root, repos, cloud }
+    enum Page { case root, recents, repos, cloud }
 
     let onFile: () -> Void
     let onFolder: () -> Void
     let onPasteboard: () -> Void
+    /// Closes the popover — the recents rows act inline, so they dismiss
+    /// before reattaching.
+    let onDismiss: () -> Void
     let onRepo: (String) -> Void
     /// Planning mode lives here rather than in Settings because it is a
     /// per-conversation decision made in the middle of composing, next to
@@ -20,6 +23,7 @@ struct AttachMenu: View {
     let onPlanMode: () -> Void
 
     @State private var page: Page = .root
+    @State private var recentProjects: [String] = []
     @State private var repos: [String]? = nil
     @State private var ghChecked = false
     @State private var ghAvailable = false
@@ -29,6 +33,7 @@ struct AttachMenu: View {
         VStack(alignment: .leading, spacing: 2) {
             switch page {
             case .root: rootPage
+            case .recents: recentsPage
             case .repos: reposPage
             case .cloud: cloudPage
             }
@@ -38,7 +43,10 @@ struct AttachMenu: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: page)
         // Reopening the menu must start at the root, not wherever the
         // last visit left off.
-        .onAppear { page = .root }
+        .onAppear {
+            page = .root
+            recentProjects = appModel.recentProjects
+        }
         .task {
             guard !ghChecked else { return }
             ghChecked = true
@@ -52,6 +60,14 @@ struct AttachMenu: View {
     private var rootPage: some View {
         menuRow(symbol: "doc.badge.plus", title: "Attach file…", action: onFile)
         menuRow(symbol: "folder.badge.gearshape", title: "Open folder as workspace…", action: onFolder)
+        // Recently attached folders — one click to reattach. The bookmark
+        // is created fresh on reattach, so a folder that moved since still
+        // lands correctly.
+        if !recentProjects.isEmpty {
+            menuRow(symbol: "clock.arrow.circlepath", title: "Recent folders", chevron: true) {
+                page = .recents
+            }
+        }
         menuRow(
             symbol: isPlanning ? "checkmark.circle" : "list.bullet.rectangle",
             title: isPlanning ? "Leave planning mode" : "Plan first (no edits)",
@@ -69,6 +85,28 @@ struct AttachMenu: View {
         menuRow(symbol: "cloud", title: "Cloud storage", chevron: true) {
             page = .cloud
         }
+    }
+
+    @ViewBuilder
+    private var recentsPage: some View {
+        backRow(title: "Recent folders")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(recentProjects, id: \.self) { path in
+                    menuRow(symbol: "folder", title: (path as NSString).lastPathComponent, note: path) {
+                        appModel.forgetRecentProject(path: path)
+                        onDismiss()
+                        appModel.setWorkspaceRoot(URL(fileURLWithPath: path))
+                    }
+                    .contextMenu {
+                        Button("Remove from Recents", role: .destructive) {
+                            appModel.forgetRecentProject(path: path)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: 260)
     }
 
     @ViewBuilder
@@ -121,17 +159,26 @@ struct AttachMenu: View {
         .padding(.vertical, 4)
     }
 
-    private func menuRow(symbol: String, title: String, chevron: Bool = false, action: @escaping () -> Void) -> some View {
+    private func menuRow(symbol: String, title: String, note: String? = nil, chevron: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 9) {
                 Image(systemName: symbol)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.secondaryText)
                     .frame(width: 18)
-                Text(title)
-                    .font(.callout)
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.callout)
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                    if let note {
+                        Text(note)
+                            .font(.caption2)
+                            .foregroundStyle(Theme.tertiaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
                 Spacer(minLength: 0)
                 if chevron {
                     Image(systemName: "chevron.right")
