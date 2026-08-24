@@ -1,5 +1,34 @@
 # VelaChat — working notes
 
+## 2026-08-23 — Phase 6: Claude Code bridge (phase-6-claude-bridge)
+
+§7 complete on the built protocol layer. `ProviderKind.claudeCode`: Anthropic
+tint/burst glyph, subscription usage style, no key required, curated
+sonnet/opus/haiku list, thinking ladder auto/off/low/medium/high, provider
+panel renders install state via a new public `ClaudeBridge.installedPath`
+facade (locator stays internal to VelaCore). The driver
+(`ClaudeProcessDriver.swift`): exact argv (`--print` + verified isolation
+flags + literal `stdio` sentinel + explicit `--model`; empty
+`--setting-sources ""` is a real argv element), cwd = workspace,
+instruction files materialized before the turn, PATH augmented like
+CommandRunner. claude runs its OWN tool loop — show-everything reads
+`assistant` tool_use frames keyed to activity rows; tool results replay as
+activityFinished; permission escalations route through
+`toolContext.claudePermission` → §3-classified CommandApproval card
+(Bash classifies as its command string; sensitive hides trust paths;
+free-tier tools ask once per session); host-imposed 120 s timeout
+auto-denies WITH a reason (deny-without-message = infinite claude retry).
+One process per turn: conversation composes into the initial user turn
+(labeled transcript when long, raw message when short); watchdog kills the
+subprocess on Stop; missing result frame surfaces stderr.
+`quotaSnapshot(fromRateLimit:)` maps ONLY definite exhaustion (status
+rate_limited + real reset) — no invented percentages. CI lessons burned in:
+the rate-limit info keys are camelCase ON THE WIRE (fixture-verified — my
+snake_case "fix" was backwards, caught by the fixture test), and a python
+patch that prints "patched" can still have replaced nothing — verify by
+content, not by parameter-name grep. Local swiftc harnesses (protocol file
++ main.swift) now used for wire-format debugging instead of burning CI runs.
+
 ## 2026-08-22 — Phase 5: folder attach (phase-5-folder-attach)
 
 Per §6 with two decisions from Brook: checkpoints split to Phase 5b; write

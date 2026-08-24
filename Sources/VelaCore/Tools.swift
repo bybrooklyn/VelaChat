@@ -245,6 +245,10 @@ public enum ToolCatalog {
         /// Ask the host to approve one write; `true` proceeds. Consulted
         /// only when `requiresWriteApproval` is set.
         public var approveWrite: (@Sendable (_ relativePath: String) async -> Bool)? = nil
+        /// The Claude bridge's permission channel: claude asks to use one
+        /// of ITS tools; `true` writes an allow frame, `false` a deny (with
+        /// a mandatory reason). nil = every request auto-denies.
+        public var claudePermission: (@Sendable (_ toolName: String, _ inputSummary: String, _ input: JSONValue) async -> Bool)? = nil
         /// run_command approval + execution, injected only when the agent
         /// abilities are enabled. Returns the command's combined output (or
         /// an "Error:"/denied message). nil = the tool is disabled.

@@ -116,4 +116,8 @@ public enum Limits {
     /// it, silently sleeping would be worse than reporting the failure and
     /// letting the user decide.
     public static let quotaWindowResumeMaxDelay: TimeInterval = 6 * 3_600
+    /// The bridge's own permission timeout. An unanswered control request
+    /// hangs `claude` indefinitely (verified: >75s with no self-cancel), so
+    /// the HOST imposes the deadline and auto-denies with a message.
+    public static let claudePermissionTimeout: TimeInterval = 120
 }

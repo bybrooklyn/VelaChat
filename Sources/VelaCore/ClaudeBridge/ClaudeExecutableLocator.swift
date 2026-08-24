@@ -128,3 +128,14 @@ enum ClaudeExecutableLocator {
         return args
     }
 }
+
+/// Public facade for the app-side UI: install status without exposing the
+/// locator's internals across the target boundary.
+public enum ClaudeBridge {
+    /// The resolved absolute path to the user's `claude`, or nil when it
+    /// isn't installed — nil is a state the UI renders with instructions,
+    /// never silence.
+    public static var installedPath: String? {
+        ClaudeExecutableLocator.locate()?.url.path
+    }
+}

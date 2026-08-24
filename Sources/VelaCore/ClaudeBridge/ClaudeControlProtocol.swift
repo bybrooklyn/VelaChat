@@ -363,6 +363,10 @@ public struct ClaudeRateLimitEvent: Decodable {
         public var rateLimitType: String?
         public var isUsingOverage: Bool?
 
+        // Keys are camelCase ON THE WIRE (verified against the recorded
+        // 2.1.236 fixture) — no CodingKeys needed, and a snake_case guess
+        // silently decodes every field as nil.
+
         public var resetDate: Date? { resetsAt.map { Date(timeIntervalSince1970: $0) } }
 
         /// Minutes in the window named by `rateLimitType`, when it maps to
