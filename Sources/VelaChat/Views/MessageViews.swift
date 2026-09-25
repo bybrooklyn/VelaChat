@@ -13,11 +13,13 @@ struct MessageRow: View {
     @State private var isEditing = false
     @State private var editedText = ""
     @State private var alternateIndex = 0
+    @FocusState private var editFieldFocused: Bool
 
     private var totalVersions: Int { message.alternates.count + 1 }
     private var displayedMessage: ChatMessage {
-        guard alternateIndex > 0, alternateIndex - 1 < message.alternates.count else { return message }
-        return message.alternates[alternateIndex - 1]
+        let safeIndex = min(max(alternateIndex, 0), message.alternates.count)
+        guard safeIndex > 0 else { return message }
+        return message.alternates[safeIndex - 1]
     }
 
     private var pinIndicator: some View {
@@ -31,6 +33,17 @@ struct MessageRow: View {
     }
 
     var isGroupedWithPrevious: Bool = false
+
+    private func beginEditing() {
+        guard !appModel.isGenerating else { return }
+        editedText = message.content
+        isEditing = true
+    }
+
+    private func cancelEditing() {
+        editFieldFocused = false
+        isEditing = false
+    }
 
     static func timestampLabel(for date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
@@ -51,36 +64,43 @@ struct MessageRow: View {
             HStack(alignment: .bottom, spacing: 6) {
                 Spacer(minLength: 120)
                 Button {
-                    editedText = message.content
-                    isEditing = true
+                    beginEditing()
                 } label: {
                     Image(systemName: "pencil")
                         .font(.caption)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(VelaIconButtonStyle())
                 .foregroundStyle(Theme.tertiaryText)
                 .help("Edit message")
                 .accessibilityLabel("Edit message")
-                .opacity(isHovering && !isEditing ? 1 : 0)
-                .allowsHitTesting(isHovering && !isEditing)
-                .animation(.easeOut(duration: 0.15), value: isHovering)
+                .opacity(isEditing ? 0 : (isHovering ? 1 : 0.48))
+                .allowsHitTesting(!isEditing)
+                .disabled(appModel.isGenerating)
+                .velaAnimation(Theme.Motion.quick, value: isHovering)
                 VStack(alignment: .trailing, spacing: 4) {
                     if isEditing {
                         VStack(alignment: .trailing, spacing: 6) {
                             TextField("Message", text: $editedText, axis: .vertical)
                                 .textFieldStyle(.plain)
                                 .lineLimit(1...6)
+                                .focused($editFieldFocused)
+                                .flatFieldStyle(isFocused: editFieldFocused)
+                                .onAppear { editFieldFocused = true }
+                                .onExitCommand(perform: cancelEditing)
                             HStack(spacing: 6) {
-                                Button("Cancel") { isEditing = false }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(Theme.tertiaryText)
+                                Button("Cancel", action: cancelEditing)
+                                    .buttonStyle(VelaControlButtonStyle(tint: Theme.secondaryText))
                                 Button("Save") {
-                                    isEditing = false
+                                    guard !appModel.isGenerating else { return }
                                     appModel.editMessage(message, newContent: editedText)
+                                    editFieldFocused = false
+                                    isEditing = false
                                 }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(Theme.accent)
-                                .disabled(editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                                .disabled(
+                                    appModel.isGenerating
+                                        || editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                )
                             }
                             .font(.caption.weight(.semibold))
                         }
@@ -111,11 +131,11 @@ struct MessageRow: View {
                                     Label("Copy", systemImage: "doc.on.doc")
                                 }
                                 Button {
-                                    editedText = message.content
-                                    isEditing = true
+                                    beginEditing()
                                 } label: {
                                     Label("Edit", systemImage: "pencil")
                                 }
+                                .disabled(appModel.isGenerating)
                                 Button {
                                     if let conversation = appModel.activeConversation {
                                         appModel.branchConversation(from: message, in: conversation)
@@ -139,7 +159,7 @@ struct MessageRow: View {
                         pinIndicator
                     }
                 }
-                .animation(.easeOut(duration: 0.15), value: isEditing)
+                .velaAnimation(value: isEditing)
             }
             .onHover { isHovering = $0 }
         } else {
@@ -288,15 +308,16 @@ struct MessageRow: View {
                         // tool activity, no plan. Without this the bubble is
                         // just blank until the first token lands, which reads
                         // as "is this even doing anything" on a slow or
-                        // failing provider. `statusMessage` wins when it's
-                        // set (it names the real pre-stream work — "Starting
-                        // MCP servers…"); a generic "Thinking…" still beats
-                        // silence when nothing more specific is known yet.
-                        HStack(spacing: 8) {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Theme.tertiaryText)
-                            ShimmerText(text: appModel.statusMessage ?? "Thinking…", font: .callout)
+                        // failing provider. Specific pre-stream work is shown
+                        // once above the composer; only use the generic row
+                        // here when there is no such status to duplicate.
+                        if appModel.displayedStatusMessage == nil {
+                            HStack(spacing: 8) {
+                                Image(systemName: "ellipsis.circle")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Theme.tertiaryText)
+                                ShimmerText(text: "Thinking…", font: .callout)
+                            }
                         }
                     } else {
                         AssistantTimeline(message: displayedMessage)
@@ -359,19 +380,18 @@ struct MessageRow: View {
                         HStack(spacing: 10) {
                             if let summary = appModel.usageByMessage[displayedMessage.id] ?? displayedMessage.usage,
                                let label = summary.label {
-                                // Price against the provider that actually
-                                // produced this reply (stamped by name at
-                                // send time), not whatever is selected now.
-                                let costProviderID = appModel.providers.profiles
-                                    .first(where: { $0.name == displayedMessage.providerName })?.id
+                                // New replies carry immutable provider identity.
+                                // Name lookup is legacy-only for histories saved
+                                // before providerID/providerKind were persisted.
+                                let costProviderID = displayedMessage.providerID
+                                    ?? appModel.providers.profiles.first(where: { $0.name == displayedMessage.providerName })?.id
                                     ?? appModel.activeConversation?.providerID
-                                    ?? UUID()
                                 let cost = summary.costUSD(
-                                    for: appModel.providers.modelInfo(
-                                        for: costProviderID,
-                                        model: displayedMessage.modelID ?? ""
-                                    ),
-                                    providerKind: appModel.providers.profile(id: costProviderID)?.kind
+                                    for: costProviderID.flatMap {
+                                        appModel.providers.modelInfo(for: $0, model: displayedMessage.modelID ?? "")
+                                    },
+                                    providerKind: displayedMessage.providerKind
+                                        ?? costProviderID.flatMap { appModel.providers.profile(id: $0)?.kind }
                                 )
                                 Text(cost.map { label + String(format: " · $%.4f", $0) } ?? label)
                                     .font(.caption2)
@@ -387,14 +407,14 @@ struct MessageRow: View {
                                     .font(.caption2)
                                     .foregroundStyle(Theme.tertiaryText)
                                     .opacity(isHovering ? 1 : 0)
-                                    .animation(.easeOut(duration: 0.15), value: isHovering)
+                                    .velaAnimation(Theme.Motion.quick, value: isHovering)
                             }
                             Spacer(minLength: 0)
                         }
                         // Persistent, not hover-revealed — dim at rest,
                         // brightening when the pointer arrives.
                         .opacity(isHovering ? 1 : 0.65)
-                        .animation(.easeOut(duration: 0.15), value: isHovering)
+                        .velaAnimation(Theme.Motion.quick, value: isHovering)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -525,8 +545,10 @@ struct AttachmentChip: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.caption)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(VelaIconButtonStyle())
                 .foregroundStyle(Theme.tertiaryText)
+                .help("Remove \(attachment.filename)")
+                .accessibilityLabel("Remove \(attachment.filename)")
             }
         }
         .padding(.horizontal, 8)
@@ -554,7 +576,7 @@ struct MessageActionRow: View {
     let canRegenerate: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 2) {
             if !displayedMessage.content.isEmpty {
                 CopyButton(text: displayedMessage.content)
             }
@@ -592,10 +614,10 @@ struct MessageActionRow: View {
                 .foregroundStyle(appModel.speakingMessageID == displayedMessage.id ? Theme.accent : Theme.tertiaryText)
                 .help(appModel.speakingMessageID == displayedMessage.id ? "Stop reading" : "Read aloud")
                 .accessibilityLabel(appModel.speakingMessageID == displayedMessage.id ? "Stop reading" : "Read aloud")
-                .animation(.easeOut(duration: 0.12), value: appModel.speakingMessageID)
+                .velaAnimation(Theme.Motion.quick, value: appModel.speakingMessageID)
 
                 ShareButton(text: displayedMessage.content)
-                    .frame(width: 14, height: 14)
+                    .frame(width: 28, height: 28)
                     .help("Share")
                     .accessibilityLabel("Share")
             }
@@ -787,7 +809,7 @@ struct AssistantTimeline: View {
                 }
             }
         }
-        .animation(.easeOut(duration: 0.25), value: message.isStreaming)
+        .velaAnimation(value: message.isStreaming)
     }
 }
 
@@ -801,6 +823,7 @@ struct AssistantTimeline: View {
 /// expanded row is a control nobody finds.
 struct ActivityLine: View {
     let records: [ActivityRecord]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded: Bool
     @State private var didInteract = false
     @State private var isHovering = false
@@ -880,52 +903,55 @@ struct ActivityLine: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: showsErrorTint ? "exclamationmark.triangle" : symbol)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(showsErrorTint ? Theme.danger.opacity(0.85) : Theme.tertiaryText)
-                    .frame(width: 16)
-                if isRunning {
-                    ShimmerText(text: label, font: .callout)
-                } else {
-                    emphasizedLabel
-                        .font(.callout)
-                        .foregroundStyle(Theme.tertiaryText)
-                }
-                if !isRunning {
-                    // Always visible, brighter on hover. It used to fade in
-                    // from nothing, so the row looked inert and the detail
-                    // behind it went undiscovered — which is how "the tool
-                    // screen" became something you had to know to expand.
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(Theme.tertiaryText.opacity(isHovering ? 0.9 : 0.45))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                }
-                // Without this the HStack sized to icon + label + chevron,
-                // so `contentShape` covered only that: clicking anywhere to
-                // the right of the text — most of the row — did nothing at
-                // all, which read as a dead disclosure. The vertical padding
-                // goes with it; a 16pt strip is not a comfortable target.
-                Spacer(minLength: 0)
-            }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-            .onTapGesture {
+            Button {
                 guard !isRunning else { return }
                 didInteract = true
-                withAnimation(.easeOut(duration: 0.16)) { isExpanded.toggle() }
+                withAnimation(Theme.Motion.respectingReduceMotion(reduceMotion)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: showsErrorTint ? "exclamationmark.triangle" : symbol)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(showsErrorTint ? Theme.danger.opacity(0.85) : Theme.tertiaryText)
+                        .frame(width: 16)
+                    if isRunning {
+                        ShimmerText(text: label, font: .callout)
+                    } else {
+                        emphasizedLabel
+                            .font(.callout)
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
+                    if !isRunning {
+                        // Always visible, brighter on hover. It used to fade
+                        // in from nothing, so the row looked inert and the
+                        // detail behind it went undiscovered.
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(Theme.tertiaryText.opacity(isHovering ? 0.9 : 0.45))
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    }
+                    // Fill the available row so its full width is clickable,
+                    // not only the icon-and-label strip.
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 4)
+                .frame(minHeight: 28)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .disabled(isRunning)
             .onHover { isHovering = $0 }
-            .animation(.easeOut(duration: 0.12), value: isHovering)
+            .velaAnimation(Theme.Motion.quick, value: isHovering)
             .onChange(of: showsErrorTint) { _, failed in
                 if failed, !didInteract {
-                    withAnimation(.easeOut(duration: 0.16)) { isExpanded = true }
+                    withAnimation(Theme.Motion.respectingReduceMotion(reduceMotion)) {
+                        isExpanded = true
+                    }
                 }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityDescription)
-            .accessibilityAddTraits(isRunning ? [] : .isButton)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1110,29 +1136,35 @@ struct AlternateStepper: View {
     @Binding var index: Int
     let total: Int
 
+    private var safeIndex: Int {
+        min(max(index, 0), max(total - 1, 0))
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             Button {
-                index = min(index + 1, total - 1)
+                index = min(safeIndex + 1, total - 1)
             } label: {
                 Image(systemName: "chevron.left")
             }
-            .disabled(index >= total - 1)
+            .disabled(safeIndex >= total - 1)
 
-            Text("\(total - index)/\(total)")
+            Text("\(total - safeIndex)/\(total)")
                 .font(.caption2)
                 .foregroundStyle(Theme.tertiaryText)
                 .monospacedDigit()
 
             Button {
-                index = max(index - 1, 0)
+                index = max(safeIndex - 1, 0)
             } label: {
                 Image(systemName: "chevron.right")
             }
-            .disabled(index <= 0)
+            .disabled(safeIndex <= 0)
         }
         .buttonStyle(VelaIconButtonStyle())
         .font(.caption2.weight(.semibold))
         .foregroundStyle(Theme.tertiaryText)
+        .onAppear { index = safeIndex }
+        .onChange(of: total) { _, _ in index = safeIndex }
     }
 }

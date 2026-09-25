@@ -30,7 +30,11 @@ struct VelaChatApp: App {
                 .environment(appModel)
                 .environment(windowChrome)
                 .environment(artifactPresenter)
-                .tint(Theme.accent)
+                // Reading the observable preset here keeps system-tinted
+                // controls in sibling/root surfaces synchronized immediately;
+                // a static Theme/UserDefaults lookup alone does not invalidate
+                // the App scene when the swatch changes.
+                .tint(Color(hex: appModel.accentPreset.baseHex))
                 .frame(minWidth: 960, minHeight: 620)
                 .preferredColorScheme(.dark)
                 .environment(updater)
@@ -104,16 +108,28 @@ struct VelaChatApp: App {
         MenuBarExtra {
             QuickComposerView()
                 .environment(appModel)
-                .tint(Theme.accent)
+                .tint(Color(hex: appModel.accentPreset.baseHex))
                 .preferredColorScheme(.dark)
         } label: {
             // A subtle pulse while anything is generating in the
             // background — the one signal that closing the window didn't
             // mean losing track of an in-flight reply.
-            Image(systemName: "sailboat.fill")
-                .symbolEffect(.pulse, isActive: appModel.isAnyGenerating)
+            MenuBarIcon(isGenerating: appModel.isAnyGenerating)
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+private struct MenuBarIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let isGenerating: Bool
+
+    var body: some View {
+        // The filled/outline change keeps generation state visible even when
+        // Reduce Motion suppresses the optional pulse.
+        Image(systemName: isGenerating ? "sailboat.fill" : "sailboat")
+            .symbolEffect(.pulse, isActive: isGenerating && !reduceMotion)
+            .accessibilityValue(isGenerating ? "Generating" : "Idle")
     }
 }
 
@@ -143,34 +159,43 @@ final class WindowChrome {
 private struct WindowConfigurator: NSViewRepresentable {
     let chrome: WindowChrome
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
-            window.titlebarAppearsTransparent = true
-            window.isMovableByWindowBackground = true
-            // Kill the toolbar (the "long weird box"), NOT the titlebar —
-            // `.toolbar(.hidden, for: .windowToolbar)` collapsed the whole
-            // titlebar region and took the traffic lights with it. With
-            // just the toolbar gone the titled window keeps its lights,
-            // floating over content via the transparent titlebar.
-            window.titleVisibility = .hidden
-            window.toolbar = nil
-            context.coordinator.observe(window: window, chrome: chrome)
+    func makeNSView(context: Context) -> WindowAttachmentView {
+        let view = WindowAttachmentView()
+        let coordinator = context.coordinator
+        let chrome = chrome
+        view.didAttach = { window in
+            coordinator.configure(window: window, chrome: chrome)
         }
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: WindowAttachmentView, context: Context) {
+        if let window = nsView.window {
+            context.coordinator.configure(window: window, chrome: chrome)
+        }
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator {
         private var tokens: [NSObjectProtocol] = []
+        private weak var observedWindow: NSWindow?
 
         @MainActor
-        func observe(window: NSWindow, chrome: WindowChrome) {
+        func configure(window: NSWindow, chrome: WindowChrome) {
+            window.titlebarAppearsTransparent = true
+            window.isMovableByWindowBackground = true
+            // Keep the titlebar and traffic lights alive. RootView supplies
+            // an empty navigation title, so default-visible title text has
+            // nothing to draw and does not need an AppKit visibility hack.
+            window.titleVisibility = .visible
+            window.toolbar = nil
             chrome.isFullScreen = window.styleMask.contains(.fullScreen)
+
+            guard observedWindow !== window else { return }
+            tokens.forEach(NotificationCenter.default.removeObserver)
+            tokens.removeAll()
+            observedWindow = window
             let center = NotificationCenter.default
             tokens.append(center.addObserver(
                 forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main
@@ -211,6 +236,18 @@ private struct WindowConfigurator: NSViewRepresentable {
         deinit {
             tokens.forEach(NotificationCenter.default.removeObserver)
         }
+    }
+}
+
+/// `makeNSView` often runs before SwiftUI has attached the representable to
+/// an NSWindow. A one-shot async lookup can miss that window forever; this
+/// probe reports the real attachment lifecycle instead.
+private final class WindowAttachmentView: NSView {
+    var didAttach: ((NSWindow) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window { didAttach?(window) }
     }
 }
 

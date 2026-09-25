@@ -42,8 +42,13 @@ public struct Attachment: Identifiable, Codable, Equatable {
         }
         set {
             if storesRawBytes, newValue.count > Limits.inlineAttachmentBytes {
-                blobID = AttachmentStore.save(newValue, suggestedID: blobID ?? id)
-                inlineData = nil
+                if let saved = AttachmentStore.save(newValue, suggestedID: blobID ?? id) {
+                    blobID = saved
+                    inlineData = nil
+                } else {
+                    inlineData = newValue
+                    blobID = nil
+                }
             } else {
                 inlineData = newValue
                 blobID = nil
@@ -86,8 +91,9 @@ public struct Attachment: Identifiable, Codable, Equatable {
         // Histories written before the blob store keep their bytes inline;
         // they're read here and migrate to disk on the next save.
         inlineData = try container.decodeIfPresent(Data.self, forKey: .data)
-        if storesRawBytes, let inlineData, inlineData.count > Limits.inlineAttachmentBytes {
-            blobID = AttachmentStore.save(inlineData, suggestedID: id)
+        if storesRawBytes, let inlineData, inlineData.count > Limits.inlineAttachmentBytes,
+           let saved = AttachmentStore.save(inlineData, suggestedID: id) {
+            blobID = saved
             self.inlineData = nil
         }
     }
@@ -316,9 +322,14 @@ public enum AttachmentStore {
 
     private static let cache = NSCache<NSString, NSData>()
 
-    public static func save(_ data: Data, suggestedID: UUID) -> UUID {
+    /// Writes blob bytes to disk, returning the ID under which they can be
+    /// loaded back. Returns nil when the write fails (full disk,
+    /// unwritable store) — callers keep the bytes inline in that case so
+    /// a failed write degrades to memory pressure, never to a blob ID
+    /// that loads as empty after relaunch.
+    public static func save(_ data: Data, suggestedID: UUID) -> UUID? {
         let url = directory.appendingPathComponent(suggestedID.uuidString)
-        try? data.write(to: url, options: .atomic)
+        guard (try? data.write(to: url, options: .atomic)) != nil else { return nil }
         cache.setObject(data as NSData, forKey: suggestedID.uuidString as NSString)
         return suggestedID
     }
@@ -333,6 +344,13 @@ public enum AttachmentStore {
     public static func remove(_ id: UUID) {
         cache.removeObject(forKey: id.uuidString as NSString)
         try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
+    }
+
+    public static func removeAll() {
+        cache.removeAllObjects()
+        if let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for file in files { try? FileManager.default.removeItem(at: file) }
+        }
     }
 
     /// Deletes blobs no live attachment references any more. Called after

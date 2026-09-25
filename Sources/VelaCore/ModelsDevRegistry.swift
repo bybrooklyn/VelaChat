@@ -5,10 +5,11 @@ import Foundation
 /// reports none of it.
 ///
 /// The conflict rule is the plan's, and it is load-bearing: **the
-/// provider's own catalog always wins.** This registry only fills fields a
-/// live `RemoteModel` left `nil`, never overwrites an observed value. The
-/// same discipline applies to Ollama's `/api/show` capabilities and
-/// OpenRouter's published prices: observed beats derived (house rule 7).
+/// provider's own catalog always wins.** Registry evidence is retained even
+/// when it conflicts, so the UI can disclose the disagreement, but the
+/// resolver keeps it below provider-published/runtime evidence. The same
+/// discipline applies to Ollama's `/api/show` capabilities and OpenRouter's
+/// published prices: observed beats derived (house rule 7).
 ///
 /// Three layers of availability:
 /// 1. A live fetch of `models.dev/api.json` (the full 190-provider set),
@@ -31,6 +32,49 @@ public enum ModelsDevRegistry {
                 /// Dollars per million tokens, as published.
                 let input: Double?
                 let output: Double?
+                let reasoning: Double?
+                let cacheRead: Double?
+                let cacheWrite: Double?
+                let tiers: [Tier]?
+                let contextOver200K: ContextRates?
+
+                struct ContextRates: Decodable {
+                    let input: Double?
+                    let output: Double?
+                    let cacheRead: Double?
+                    let cacheWrite: Double?
+
+                    enum CodingKeys: String, CodingKey {
+                        case input, output
+                        case cacheRead = "cache_read"
+                        case cacheWrite = "cache_write"
+                    }
+                }
+
+                struct Tier: Decodable {
+                    struct Descriptor: Decodable {
+                        let type: String?
+                        let size: Int?
+                    }
+                    let input: Double?
+                    let output: Double?
+                    let cacheRead: Double?
+                    let cacheWrite: Double?
+                    let tier: Descriptor?
+
+                    enum CodingKeys: String, CodingKey {
+                        case input, output, tier
+                        case cacheRead = "cache_read"
+                        case cacheWrite = "cache_write"
+                    }
+                }
+
+                enum CodingKeys: String, CodingKey {
+                    case input, output, reasoning, tiers
+                    case cacheRead = "cache_read"
+                    case cacheWrite = "cache_write"
+                    case contextOver200K = "context_over_200k"
+                }
             }
             let id: String?
             let name: String?
@@ -64,6 +108,8 @@ public enum ModelsDevRegistry {
 
     private static let lock = NSLock()
     private static var providers: [String: ProviderEntry] = [:]
+    private enum Backing { case live, cache, bundled }
+    private static var backing: Backing = .bundled
 
     private static var cacheURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -81,12 +127,14 @@ public enum ModelsDevRegistry {
            let data = try? Data(contentsOf: url),
            let decoded = try? JSONDecoder().decode([String: ProviderEntry].self, from: data), !decoded.isEmpty {
             providers = decoded
+            backing = .cache
             return
         }
         if let url = Bundle.module.url(forResource: "models-dev-snapshot", withExtension: "json"),
            let data = try? Data(contentsOf: url),
            let decoded = try? JSONDecoder().decode([String: ProviderEntry].self, from: data), !decoded.isEmpty {
             providers = decoded
+            backing = .bundled
         }
     }
 
@@ -113,16 +161,17 @@ public enum ModelsDevRegistry {
                 try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? data.write(to: destination)
             }
-            store(decoded)
+            store(decoded, backing: .live)
         } catch {
             // Offline or blocked — whatever is already loaded stands.
         }
     }
 
-    private static func store(_ decoded: [String: ProviderEntry]) {
+    private static func store(_ decoded: [String: ProviderEntry], backing newBacking: Backing) {
         lock.lock()
         defer { lock.unlock() }
         providers = decoded
+        backing = newBacking
     }
 
     // MARK: - Lookup & enrichment
@@ -154,9 +203,9 @@ public enum ModelsDevRegistry {
         }
     }
 
-    /// Fills only what the live model left unknown. An observed value —
-    /// from the provider's own catalog, OpenRouter's pricing, Ollama's
-    /// `/api/show` capabilities — is never replaced by the registry's.
+    /// Adds exact registry evidence without replacing provider evidence.
+    /// Compatibility accessors still resolve the provider value first; any
+    /// disagreement remains available in `contextResolution.conflicts`.
     /// Capability flags can only ever be *upgraded* to true: `RemoteModel`
     /// stores plain bools (an absent flag was already run through
     /// `inferCapabilities`), so false means "no evidence of", and external
@@ -164,16 +213,71 @@ public enum ModelsDevRegistry {
     public static func enrich(_ models: [RemoteModel], kind: ProviderKind, baseURL: String?) -> [RemoteModel] {
         ensureLoaded()
         guard let key = providerKey(kind: kind, baseURL: baseURL),
-              let entry = lockedProvider(forKey: key)?.models else { return models }
+              let (provider, registryBacking) = lockedProvider(forKey: key),
+              let entry = provider.models else { return models }
+        let evidenceSource: ModelEvidenceSource = switch registryBacking {
+        case .live: .modelsDevLive
+        case .cache: .modelsDevCache
+        case .bundled: .bundledSnapshot
+        }
         return models.map { model in
-            guard let metadata = entry[model.id] else { return model }
+            let metadataID: String = {
+                if entry[model.id] != nil { return model.id }
+                if kind == .openRouter, model.id.lowercased().hasSuffix(":online") {
+                    return String(model.id.dropLast(":online".count))
+                }
+                return model.id
+            }()
+            guard let metadata = entry[metadataID] else { return model }
+            let scope = model.contextLimitEvidence.first?.scope
+                ?? model.outputLimitEvidence.first?.scope
+                ?? ModelEvidenceScope(
+                    endpointFingerprint: baseURL.flatMap { ModelEvidenceScope.fingerprint(endpoint: $0) },
+                    requestedModel: model.id,
+                    effectiveModel: model.id
+                )
+            var contexts = model.contextLimitEvidence
+            if let value = metadata.limit?.context, value > 0 {
+                contexts.append(ContextLimitEvidence(
+                    value: value,
+                    source: evidenceSource,
+                    scope: scope,
+                    detail: "models.dev exact model metadata"
+                ))
+            }
+            var outputs = model.outputLimitEvidence
+            if let value = metadata.limit?.output, value > 0 {
+                outputs.append(OutputLimitEvidence(
+                    value: value,
+                    source: evidenceSource,
+                    scope: scope,
+                    detail: "models.dev exact model metadata"
+                ))
+            }
+            var prices = model.pricingEvidence
+            if metadata.cost != nil {
+                let contextTier = metadata.cost?.tiers?.first(where: { $0.tier?.type == "context" })
+                let longRates = metadata.cost?.contextOver200K
+                prices.append(ModelPricingEvidence(
+                    inputPerMillion: metadata.cost?.input,
+                    outputPerMillion: metadata.cost?.output,
+                    reasoningPerMillion: metadata.cost?.reasoning,
+                    cacheReadPerMillion: metadata.cost?.cacheRead,
+                    cacheWritePerMillion: metadata.cost?.cacheWrite,
+                    longContextInputPerMillion: contextTier?.input ?? longRates?.input,
+                    longContextOutputPerMillion: contextTier?.output ?? longRates?.output,
+                    longContextCacheReadPerMillion: contextTier?.cacheRead ?? longRates?.cacheRead,
+                    longContextCacheWritePerMillion: contextTier?.cacheWrite ?? longRates?.cacheWrite,
+                    longContextThresholdTokens: contextTier?.tier?.size ?? (longRates == nil ? nil : 200_000),
+                    source: evidenceSource,
+                    detail: "models.dev exact model metadata"
+                ))
+            }
             return RemoteModel(
                 id: model.id,
                 ownedBy: model.ownedBy,
                 name: model.name ?? metadata.name,
                 description: model.description ?? metadata.description,
-                contextLength: model.contextLength ?? metadata.limit?.context,
-                maxOutputTokens: model.maxOutputTokens ?? metadata.limit?.output,
                 parameterSize: model.parameterSize,
                 sizeBytes: model.sizeBytes,
                 quantizationLevel: model.quantizationLevel,
@@ -183,15 +287,29 @@ public enum ModelsDevRegistry {
                 supportsTools: model.supportsTools || (metadata.toolCall == true),
                 supportedEfforts: model.supportedEfforts,
                 isLocal: model.isLocal,
-                inputPricePerMillion: model.inputPricePerMillion ?? metadata.cost?.input,
-                outputPricePerMillion: model.outputPricePerMillion ?? metadata.cost?.output
+                contextLimitEvidence: contexts,
+                outputLimitEvidence: outputs,
+                pricingEvidence: prices
             )
         }
     }
 
-    private static func lockedProvider(forKey key: String) -> ProviderEntry? {
+    private static func lockedProvider(forKey key: String) -> (ProviderEntry, Backing)? {
         lock.lock()
         defer { lock.unlock() }
-        return providers[key]
+        guard let provider = providers[key] else { return nil }
+        return (provider, backing)
+    }
+
+    /// Test seam for precedence/conflict coverage without touching the real
+    /// Application Support cache.
+    static func loadForTesting(_ data: Data, source: ModelEvidenceSource) throws {
+        let decoded = try JSONDecoder().decode([String: ProviderEntry].self, from: data)
+        let testBacking: Backing = switch source {
+        case .modelsDevLive: .live
+        case .modelsDevCache: .cache
+        default: .bundled
+        }
+        store(decoded, backing: testBacking)
     }
 }

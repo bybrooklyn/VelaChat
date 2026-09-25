@@ -21,9 +21,11 @@ extension CompatibleChatClient {
     /// - **`result.is_error` is false even on denials** — so nothing here
     ///   branches on it; every turn simply ends at its `result` frame.
     func streamClaudeCode(
+        profile: ProviderProfile,
         model: String,
         messages: [ChatMessage],
         toolContext: ToolCatalog.ExecutionContext?,
+        purpose: UsagePurpose,
         onEvent: @escaping @Sendable (ChatStreamEvent) -> Void
     ) async throws {
         guard let located = ClaudeExecutableLocator.locate() else {
@@ -35,7 +37,7 @@ extension CompatibleChatClient {
         // the turn, so claude sees the same AGENTS/CLAUDE context it would
         // see in a terminal there.
         for file in InstructionFiles.resolve(in: workspace).files {
-            try? InstructionFiles.materialize(from: file, into: workspace)
+            _ = try? InstructionFiles.materialize(from: file, into: workspace)
         }
 
         // The exact invocation. `--setting-sources ""` is SAFETY-CRITICAL:
@@ -84,7 +86,7 @@ extension CompatibleChatClient {
             try? stdinPipe.fileHandleForWriting.close()
         }
 
-        func write(_ frame: ClaudeOutboundFrame) {
+        let write: @Sendable (ClaudeOutboundFrame) -> Void = { frame in
             guard let data = try? frame.encoded() else { return }
             stdinPipe.fileHandleForWriting.write(data)
         }
@@ -92,14 +94,35 @@ extension CompatibleChatClient {
         write(.userTurn(text: Self.composedClaudeTurn(messages)))
 
         var activityByToolUseID: [String: UUID] = [:]
+        let requestUsageID = UUID()
+        let requestStartedAt = Date()
+        var didEmitRequestUsage = false
+        var latestUsage: ClaudeUsage?
+        var effectiveModel = model
+        defer {
+            if !didEmitRequestUsage {
+                onEvent(.requestUsage(Self.claudeRequestUsage(
+                    id: requestUsageID,
+                    profile: profile,
+                    requestedModel: model,
+                    effectiveModel: effectiveModel,
+                    purpose: purpose,
+                    outcome: Task.isCancelled ? .cancelled : .failed,
+                    usage: latestUsage,
+                    costUSD: nil,
+                    latencyMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000)
+                )))
+            }
+        }
 
         for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
             guard let frame = ClaudeStreamFrame.decode(line: line) else { continue }
             switch frame {
-            case .system:
-                break
+            case .system(let event):
+                if let reportedModel = event.model, !reportedModel.isEmpty { effectiveModel = reportedModel }
 
             case .assistant(let event):
+                if let reportedModel = event.message.model, !reportedModel.isEmpty { effectiveModel = reportedModel }
                 // Text and thinking stream as deltas; each tool_use becomes
                 // an activity row keyed by its id — show-everything reads
                 // THESE, never the control channel (Appendix B gotcha 1).
@@ -114,6 +137,7 @@ extension CompatibleChatClient {
                     onEvent(.activityStarted(id: activityID, name: use.name, argument: use.summary))
                 }
                 if let usage = event.message.usage {
+                    latestUsage = usage
                     emitClaudeUsage(usage, onEvent: onEvent)
                 }
 
@@ -142,8 +166,50 @@ extension CompatibleChatClient {
 
             case .result(let result):
                 if let usage = result.usage {
+                    latestUsage = usage
                     emitClaudeUsage(usage, onEvent: onEvent)
                 }
+                if let primary = result.primaryModelUsage(requestedModel: model, observedModel: effectiveModel) {
+                    let canonical = primary.usage.canonicalModel ?? primary.id
+                    effectiveModel = canonical
+                    let scope = ModelEvidenceScope(profile: profile, requestedModel: model, effectiveModel: canonical)
+                    let contexts = primary.usage.contextWindow.map {
+                        [ContextLimitEvidence(
+                            value: $0,
+                            source: .runtimeReport,
+                            scope: scope,
+                            detail: "Claude Code result modelUsage (\(primary.usage.provider ?? "provider unknown"))",
+                            observedAt: Date()
+                        )]
+                    } ?? []
+                    let outputs = primary.usage.maxOutputTokens.map {
+                        [OutputLimitEvidence(
+                            value: $0,
+                            source: .runtimeReport,
+                            scope: scope,
+                            detail: "Claude Code result modelUsage",
+                            observedAt: Date()
+                        )]
+                    } ?? []
+                    onEvent(.modelMetadata(RuntimeModelMetadata(
+                        requestedModel: model,
+                        effectiveModel: canonical,
+                        contextLimitEvidence: contexts,
+                        outputLimitEvidence: outputs
+                    )))
+                }
+                onEvent(.requestUsage(Self.claudeRequestUsage(
+                    id: requestUsageID,
+                    profile: profile,
+                    requestedModel: model,
+                    effectiveModel: effectiveModel,
+                    purpose: purpose,
+                    outcome: result.isError ? .failed : .succeeded,
+                    usage: result.usage ?? latestUsage,
+                    costUSD: result.totalCostUSD,
+                    latencyMilliseconds: result.durationAPIms ?? Int(Date().timeIntervalSince(requestStartedAt) * 1_000)
+                )))
+                didEmitRequestUsage = true
                 onEvent(.finished(reason: nil))
                 return
             }
@@ -171,8 +237,11 @@ extension CompatibleChatClient {
     /// cachedTokens; the 5m/1h cache-write split rides through as-is (the
     /// only provider that reports it).
     private func emitClaudeUsage(_ usage: ClaudeUsage, onEvent: @escaping @Sendable (ChatStreamEvent) -> Void) {
+        let fiveMinuteCreation = usage.cacheCreation == nil
+            ? usage.cacheCreationInputTokens
+            : usage.cacheCreation?.ephemeral5m
         let creation = CacheCreationTokens(
-            ephemeral5m: usage.cacheCreation?.ephemeral5m ?? usage.cacheCreationInputTokens,
+            ephemeral5m: fiveMinuteCreation,
             ephemeral1h: usage.cacheCreation?.ephemeral1h ?? 0
         )
         onEvent(.usage(
@@ -181,6 +250,44 @@ extension CompatibleChatClient {
             cachedTokens: usage.cacheReadInputTokens,
             cacheCreation: (creation.ephemeral5m ?? 0) > 0 || (creation.ephemeral1h ?? 0) > 0 ? creation : nil
         ))
+    }
+
+    private static func claudeRequestUsage(
+        id: UUID,
+        profile: ProviderProfile,
+        requestedModel: String,
+        effectiveModel: String?,
+        purpose: UsagePurpose,
+        outcome: UsageOutcome,
+        usage: ClaudeUsage?,
+        costUSD: Double?,
+        latencyMilliseconds: Int
+    ) -> RequestUsage {
+        let hasMetrics = usage.map {
+            $0.logicalInputTokens != nil || $0.outputTokens != nil ||
+                $0.outputTokensDetails?.thinkingTokens != nil ||
+                $0.cacheReadInputTokens != nil || $0.cacheCreationInputTokens != nil
+        } ?? false
+        let fiveMinuteCreation = usage?.cacheCreation == nil
+            ? usage?.cacheCreationInputTokens
+            : usage?.cacheCreation?.ephemeral5m
+        return RequestUsage(
+            id: id,
+            providerID: profile.id,
+            requestedModelID: requestedModel,
+            effectiveModelID: effectiveModel ?? requestedModel,
+            purpose: purpose,
+            outcome: outcome,
+            inputTokens: usage?.logicalInputTokens,
+            outputTokens: usage?.outputTokens,
+            reasoningTokens: usage?.outputTokensDetails?.thinkingTokens,
+            cacheReadTokens: usage?.cacheReadInputTokens,
+            cacheWrite5mTokens: fiveMinuteCreation,
+            cacheWrite1hTokens: usage?.cacheCreation?.ephemeral1h,
+            latencyMilliseconds: latencyMilliseconds,
+            metricProvenance: hasMetrics ? .providerReported : nil,
+            cost: costUSD.map(CostEvidence.providerReported)
+        )
     }
 }
 
@@ -195,7 +302,6 @@ extension CompatibleChatClient {
         toolContext: ToolCatalog.ExecutionContext?,
         write: @escaping @Sendable (ClaudeOutboundFrame) -> Void
     ) async {
-        let requestID = request.requestID ?? ""
         guard let requestID = request.requestID, !requestID.isEmpty else { return }
         let toolName = request.toolName ?? "tool"
         let summary = Self.permissionSummary(request)

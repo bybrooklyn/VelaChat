@@ -295,6 +295,7 @@ public struct ClaudeUsage: Decodable, Equatable {
     public var cacheReadInputTokens: Int?
     public var cacheCreationInputTokens: Int?
     public var cacheCreation: ClaudeCacheCreation?
+    public var outputTokensDetails: ClaudeOutputTokenDetails?
 
     private enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens"
@@ -302,7 +303,22 @@ public struct ClaudeUsage: Decodable, Equatable {
         case cacheReadInputTokens = "cache_read_input_tokens"
         case cacheCreationInputTokens = "cache_creation_input_tokens"
         case cacheCreation = "cache_creation"
+        case outputTokensDetails = "output_tokens_details"
     }
+
+    public var logicalInputTokens: Int? {
+        LogicalInputUsage.tokens(
+            reportedInput: inputTokens,
+            cacheRead: cacheReadInputTokens,
+            cacheWrite: cacheCreationInputTokens,
+            reportedInputIncludesCache: false
+        )
+    }
+}
+
+public struct ClaudeOutputTokenDetails: Decodable, Equatable {
+    public var thinkingTokens: Int?
+    private enum CodingKeys: String, CodingKey { case thinkingTokens = "thinking_tokens" }
 }
 
 public struct ClaudeCacheCreation: Decodable, Equatable {
@@ -325,6 +341,10 @@ public struct ClaudeResultEvent: Decodable {
     /// observed rather than recomputed — see invariant 5.
     public var totalCostUSD: Double?
     public var usage: ClaudeUsage?
+    /// Per-model telemetry from the result frame. Claude Code can use an
+    /// auxiliary model during one turn, so keep every entry and select the
+    /// main canonical model only when producing runtime metadata.
+    public var modelUsage: [String: ClaudeModelUsage]
 
     private enum CodingKeys: String, CodingKey {
         case usage
@@ -334,6 +354,7 @@ public struct ClaudeResultEvent: Decodable {
         case numTurns = "num_turns"
         case durationAPIms = "duration_api_ms"
         case totalCostUSD = "total_cost_usd"
+        case modelUsage
     }
 
     public init(from decoder: Decoder) throws {
@@ -345,7 +366,43 @@ public struct ClaudeResultEvent: Decodable {
         durationAPIms = try c.decodeIfPresent(Int.self, forKey: .durationAPIms)
         totalCostUSD = try c.decodeIfPresent(Double.self, forKey: .totalCostUSD)
         usage = try c.decodeIfPresent(ClaudeUsage.self, forKey: .usage)
+        modelUsage = try c.decodeIfPresent([String: ClaudeModelUsage].self, forKey: .modelUsage) ?? [:]
     }
+
+    public func primaryModelUsage(requestedModel: String, observedModel: String?) -> (id: String, usage: ClaudeModelUsage)? {
+        let candidates = [observedModel, requestedModel]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        for candidate in candidates {
+            if let exact = modelUsage.first(where: { $0.key.lowercased() == candidate }) {
+                return (exact.key, exact.value)
+            }
+            if let canonical = modelUsage.first(where: { $0.value.canonicalModel?.lowercased() == candidate }) {
+                return (canonical.key, canonical.value)
+            }
+        }
+        // Aliases such as "sonnet" do not equal a canonical ID. Prefer an
+        // entry containing the alias before falling back to the dominant cost.
+        for candidate in candidates {
+            if let alias = modelUsage.first(where: {
+                $0.key.lowercased().contains(candidate) || ($0.value.canonicalModel?.lowercased().contains(candidate) == true)
+            }) { return (alias.key, alias.value) }
+        }
+        guard let dominant = modelUsage.max(by: { ($0.value.costUSD ?? 0) < ($1.value.costUSD ?? 0) }) else { return nil }
+        return (dominant.key, dominant.value)
+    }
+}
+
+public struct ClaudeModelUsage: Decodable, Equatable, Sendable {
+    public var inputTokens: Int?
+    public var outputTokens: Int?
+    public var cacheReadInputTokens: Int?
+    public var cacheCreationInputTokens: Int?
+    public var costUSD: Double?
+    public var contextWindow: Int?
+    public var maxOutputTokens: Int?
+    public var canonicalModel: String?
+    public var provider: String?
 }
 
 // MARK: - rate limits

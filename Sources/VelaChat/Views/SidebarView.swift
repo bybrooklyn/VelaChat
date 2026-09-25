@@ -110,6 +110,7 @@ struct SidebarView: View {
                     searchFocused = true
                 }
             }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
             UsageGaugeButton()
             if appModel.isLocalOnlyMode {
                 Image(systemName: "hand.raised.fill")
@@ -242,13 +243,10 @@ struct SidebarView: View {
     /// button until clicked, then expands in place to take the row (macOS's
     /// own collapsing-search-field pattern), instead of permanently reserving
     /// a full-width text field most of the time shows nothing typed into it.
-    /// The background-runs indicator lives here too, but only exists while
-    /// something actually runs — idle, the row is exactly what it always was.
     private var topActionsRow: some View {
         HStack(spacing: 8) {
             newChatButton
             if !isSearchExpanded {
-                BackgroundRunsIndicator()
                 UsageGaugeButton()
             }
             if isSearchExpanded {
@@ -262,7 +260,6 @@ struct SidebarView: View {
             }
         }
         .animation(.easeOut(duration: 0.16), value: isSearchExpanded)
-        .animation(.easeOut(duration: 0.16), value: appModel.conversations.filter(\.isGenerating).count)
     }
 
     /// Not full-width on its own anymore — shares the row with search, so it
@@ -279,6 +276,8 @@ struct SidebarView: View {
                     .font(.system(size: 13, weight: .semibold))
                 Text(appModel.activeSurface.primaryActionTitle)
                     .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 if !isSearchExpanded {
                     Spacer(minLength: 0)
                     Text("⌘N")
@@ -295,6 +294,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: isSearchExpanded ? nil : .infinity, alignment: .leading)
+        .layoutPriority(1)
         .help(appModel.activeSurface.primaryActionHelp)
         .accessibilityLabel(appModel.activeSurface.primaryActionHelp)
     }
@@ -469,18 +469,19 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func row(for conversation: Conversation) -> some View {
-        ConversationRow(
-            conversation: conversation,
-            selected: appModel.activeConversationID == conversation.id,
-            renamingConversationID: $renamingConversationID,
-            renameText: $renameText,
-            onCommitRename: { appModel.renameConversation(conversation, to: renameText) }
-        )
-        .onTapGesture {
-            if renamingConversationID != nil, renamingConversationID != conversation.id {
-                renamingConversationID = nil
+        Group {
+            if renamingConversationID == conversation.id {
+                conversationRowContent(conversation)
+            } else {
+                Button {
+                    if renamingConversationID != nil { renamingConversationID = nil }
+                    appModel.selectConversation(conversation)
+                } label: {
+                    conversationRowContent(conversation)
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(appModel.activeConversationID == conversation.id ? .isSelected : [])
             }
-            appModel.selectConversation(conversation)
         }
         .contextMenu {
             Button {
@@ -529,6 +530,16 @@ struct SidebarView: View {
                 Label("Delete conversation", systemImage: "trash")
             }
         }
+    }
+
+    private func conversationRowContent(_ conversation: Conversation) -> some View {
+        ConversationRow(
+            conversation: conversation,
+            selected: appModel.activeConversationID == conversation.id,
+            renamingConversationID: $renamingConversationID,
+            renameText: $renameText,
+            onCommitRename: { appModel.renameConversation(conversation, to: renameText) }
+        )
     }
 
     /// Outlined rather than a filled glass card — it reads as a quiet control
@@ -742,6 +753,7 @@ private struct ConversationRow: View {
     @State private var isHovering = false
     @State private var displayedTitle: String = ""
     @State private var typewriterTask: Task<Void, Never>?
+    @FocusState private var renameFocused: Bool
 
     private var isRenaming: Bool { renamingConversationID == conversation.id }
 
@@ -776,28 +788,21 @@ private struct ConversationRow: View {
                     TextField("Title", text: $renameText)
                         .textFieldStyle(.plain)
                         .font(.subheadline.weight(.medium))
+                        .focused($renameFocused)
                         .onSubmit {
                             onCommitRename()
                             renamingConversationID = nil
                         }
                         .onExitCommand { renamingConversationID = nil }
                 } else {
-                    HStack(spacing: 6) {
-                        Text(displayedTitle)
-                            .font(.subheadline.weight(selected ? .medium : .regular))
-                            .foregroundStyle(selected ? Theme.text : Theme.secondaryText)
-                            .lineLimit(1)
-                            .onAppear { displayedTitle = conversation.title }
-                            .onChange(of: conversation.title) { _, newValue in
-                                animateTitleChange(to: newValue)
-                            }
-                        if conversation.isGenerating && !selected {
-                            Circle()
-                                .fill(Theme.accent)
-                                .frame(width: 5, height: 5)
-                                .symbolEffectPulse()
+                    Text(displayedTitle)
+                        .font(.subheadline.weight(selected ? .medium : .regular))
+                        .foregroundStyle(selected ? Theme.text : Theme.secondaryText)
+                        .lineLimit(1)
+                        .onAppear { displayedTitle = conversation.title }
+                        .onChange(of: conversation.title) { _, newValue in
+                            animateTitleChange(to: newValue)
                         }
-                    }
                 }
                 if !conversation.realMessages.isEmpty {
                     Text(conversation.lastMessage)
@@ -807,10 +812,18 @@ private struct ConversationRow: View {
                 }
             }
             Spacer(minLength: 0)
-            if conversation.isPinned {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Theme.tertiaryText)
+            HStack(spacing: 6) {
+                if conversation.isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+                if conversation.isGenerating {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 16, height: 16)
+                        .accessibilityLabel("Generating response")
+                }
             }
         }
         .padding(.horizontal, 8)
@@ -833,6 +846,9 @@ private struct ConversationRow: View {
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
+        .onChange(of: isRenaming) { _, renaming in
+            if renaming { DispatchQueue.main.async { renameFocused = true } }
+        }
         .onDisappear { typewriterTask?.cancel() }
     }
 }

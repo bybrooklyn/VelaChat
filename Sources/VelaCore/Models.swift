@@ -168,7 +168,7 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
     /// opposite directions — see `UsageSummary.costUSD(for:promptIncludesCached:)`.
     public var promptTokensIncludeCached: Bool {
         switch self {
-        case .anthropic: false
+        case .anthropic, .claudeCode: false
         default: true
         }
     }
@@ -183,6 +183,19 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
         case .codex, .chatGPT, .claudeCode: .subscription
         case .ollama, .lmStudio, .appleIntelligence: .local
         default: .metered
+        }
+    }
+
+    /// Whether tapping Refresh can produce fresh numbers without spending
+    /// on a real reply: a read-only usage endpoint (ChatGPT, Claude,
+    /// OpenRouter) or harvestable headers on a cheap catalog fetch. Codex
+    /// has neither — its plan windows arrive only on reply responses — so
+    /// the UI says so instead of offering a button that does nothing.
+    /// Local providers cost nothing and have no quota at all.
+    public var hasProactiveQuotaSource: Bool {
+        switch self {
+        case .codex, .ollama, .lmStudio, .appleIntelligence: false
+        default: true
         }
     }
 
@@ -317,6 +330,64 @@ public struct ProviderProfile: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// One published price schedule for a model. Competing provider and registry
+/// schedules are retained for disclosure; the compatibility price accessors
+/// choose the highest-authority exact record.
+public struct ModelPricingEvidence: Hashable, Codable, Sendable, Identifiable {
+    public let inputPerMillion: Double?
+    public let outputPerMillion: Double?
+    public let reasoningPerMillion: Double?
+    public let cacheReadPerMillion: Double?
+    public let cacheWritePerMillion: Double?
+    public let longContextInputPerMillion: Double?
+    public let longContextOutputPerMillion: Double?
+    public let longContextCacheReadPerMillion: Double?
+    public let longContextCacheWritePerMillion: Double?
+    public let longContextThresholdTokens: Int?
+    public let source: ModelEvidenceSource
+    public let exactModelMatch: Bool
+    public let detail: String?
+    public let observedAt: Date?
+
+    public init(
+        inputPerMillion: Double?,
+        outputPerMillion: Double?,
+        reasoningPerMillion: Double? = nil,
+        cacheReadPerMillion: Double? = nil,
+        cacheWritePerMillion: Double? = nil,
+        longContextInputPerMillion: Double? = nil,
+        longContextOutputPerMillion: Double? = nil,
+        longContextCacheReadPerMillion: Double? = nil,
+        longContextCacheWritePerMillion: Double? = nil,
+        longContextThresholdTokens: Int? = nil,
+        source: ModelEvidenceSource,
+        exactModelMatch: Bool = true,
+        detail: String? = nil,
+        observedAt: Date? = nil
+    ) {
+        self.inputPerMillion = inputPerMillion
+        self.outputPerMillion = outputPerMillion
+        self.reasoningPerMillion = reasoningPerMillion
+        self.cacheReadPerMillion = cacheReadPerMillion
+        self.cacheWritePerMillion = cacheWritePerMillion
+        self.longContextInputPerMillion = longContextInputPerMillion
+        self.longContextOutputPerMillion = longContextOutputPerMillion
+        self.longContextCacheReadPerMillion = longContextCacheReadPerMillion
+        self.longContextCacheWritePerMillion = longContextCacheWritePerMillion
+        self.longContextThresholdTokens = longContextThresholdTokens
+        self.source = source
+        self.exactModelMatch = exactModelMatch
+        self.detail = detail
+        self.observedAt = observedAt
+    }
+
+    public var id: String {
+        let input = inputPerMillion.map { String($0) } ?? "-"
+        let output = outputPerMillion.map { String($0) } ?? "-"
+        return "\(source.rawValue)|\(input)|\(output)|\(cacheReadPerMillion.map { String($0) } ?? "-")|\(longContextThresholdTokens.map { String($0) } ?? "-")|\(detail ?? "-")"
+    }
+}
+
 /// Metadata returned by a provider's catalog. The picker is generated from
 /// this shape rather than from a frozen list of model IDs.
 public struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
@@ -324,8 +395,19 @@ public struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
     public let name: String?
     public let ownedBy: String?
     public let description: String?
-    public let contextLength: Int?
-    public let maxOutputTokens: Int?
+    /// All applicable context figures, including lower-priority conflicts.
+    /// `contextLength` remains the compatibility accessor for callers that
+    /// only need the winning value.
+    public let contextLimitEvidence: [ContextLimitEvidence]
+    public let outputLimitEvidence: [OutputLimitEvidence]
+    public let pricingEvidence: [ModelPricingEvidence]
+    public var contextResolution: ContextLimitResolution? {
+        ModelLimitEvidenceResolver.resolveContext(contextLimitEvidence)
+    }
+    public var contextLength: Int? { contextResolution?.primary.value }
+    public var maxOutputTokens: Int? {
+        ModelLimitEvidenceResolver.resolveOutput(outputLimitEvidence)?.value
+    }
     public let parameterSize: String?
     public let sizeBytes: Int64?
     /// Ollama-specific: the GGUF quantization actually running (`"Q4_K_M"`,
@@ -368,27 +450,143 @@ public struct RemoteModel: Identifiable, Hashable, Codable, Sendable {
         supportedEfforts: [String] = [],
         isLocal: Bool = false,
         inputPricePerMillion: Double? = nil,
-        outputPricePerMillion: Double? = nil
+        outputPricePerMillion: Double? = nil,
+        contextLimitEvidence: [ContextLimitEvidence] = [],
+        outputLimitEvidence: [OutputLimitEvidence] = [],
+        pricingEvidence: [ModelPricingEvidence] = [],
+        evidenceScope: ModelEvidenceScope? = nil,
+        scalarEvidenceSource: ModelEvidenceSource = .providerCatalog,
+        scalarEvidenceDetail: String? = nil
     ) {
         self.id = id
         self.name = name
         self.ownedBy = ownedBy
         self.description = description
-        self.contextLength = contextLength
-        self.maxOutputTokens = maxOutputTokens
+        let scope = evidenceScope ?? ModelEvidenceScope(requestedModel: id, effectiveModel: id)
+        var contexts = contextLimitEvidence
+        if let contextLength, contextLength > 0,
+           !contexts.contains(where: { $0.value == contextLength && $0.source == scalarEvidenceSource && $0.scope == scope }) {
+            contexts.append(ContextLimitEvidence(
+                value: contextLength,
+                source: scalarEvidenceSource,
+                scope: scope,
+                exactModelMatch: scalarEvidenceSource != .curatedFamily,
+                detail: scalarEvidenceDetail
+            ))
+        }
+        self.contextLimitEvidence = contexts
+        var outputs = outputLimitEvidence
+        if let maxOutputTokens, maxOutputTokens > 0,
+           !outputs.contains(where: { $0.value == maxOutputTokens && $0.source == scalarEvidenceSource && $0.scope == scope }) {
+            outputs.append(OutputLimitEvidence(
+                value: maxOutputTokens,
+                source: scalarEvidenceSource,
+                scope: scope,
+                exactModelMatch: scalarEvidenceSource != .curatedFamily,
+                detail: scalarEvidenceDetail
+            ))
+        }
+        self.outputLimitEvidence = outputs
+        var prices = pricingEvidence
+        if (inputPricePerMillion != nil || outputPricePerMillion != nil),
+           !prices.contains(where: {
+               $0.inputPerMillion == inputPricePerMillion &&
+               $0.outputPerMillion == outputPricePerMillion &&
+               $0.source == scalarEvidenceSource
+           }) {
+            prices.append(ModelPricingEvidence(
+                inputPerMillion: inputPricePerMillion,
+                outputPerMillion: outputPricePerMillion,
+                source: scalarEvidenceSource,
+                exactModelMatch: scalarEvidenceSource != .curatedFamily,
+                detail: scalarEvidenceDetail
+            ))
+        }
+        self.pricingEvidence = prices
         self.parameterSize = parameterSize
         self.sizeBytes = sizeBytes
         self.quantizationLevel = quantizationLevel
         self.isCloudHosted = isCloudHosted
         self.supportedEfforts = supportedEfforts.map { $0.lowercased() }
         self.isLocal = isLocal && !isCloudHosted
-        self.inputPricePerMillion = inputPricePerMillion
-        self.outputPricePerMillion = outputPricePerMillion
+        let resolvedPricing = prices.sorted { lhs, rhs in
+            if lhs.source.priority != rhs.source.priority { return lhs.source.priority > rhs.source.priority }
+            return lhs.exactModelMatch && !rhs.exactModelMatch
+        }
+        self.inputPricePerMillion = resolvedPricing.lazy.compactMap(\.inputPerMillion).first
+        self.outputPricePerMillion = resolvedPricing.lazy.compactMap(\.outputPerMillion).first
 
         let inferred = ModelCatalog.inferCapabilities(for: id)
         self.supportsReasoning = supportsReasoning ?? inferred.reasoning
         self.supportsVision = supportsVision ?? inferred.vision
         self.supportsTools = supportsTools ?? inferred.tools
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, ownedBy, description, contextLength, maxOutputTokens
+        case contextLimitEvidence, outputLimitEvidence, pricingEvidence
+        case parameterSize, sizeBytes, quantizationLevel, isCloudHosted
+        case supportsReasoning, supportsVision, supportsTools, supportedEfforts, isLocal
+        case inputPricePerMillion, outputPricePerMillion
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try c.decode(String.self, forKey: .id)
+        let contexts = try c.decodeIfPresent([ContextLimitEvidence].self, forKey: .contextLimitEvidence) ?? []
+        let outputs = try c.decodeIfPresent([OutputLimitEvidence].self, forKey: .outputLimitEvidence) ?? []
+        let prices = try c.decodeIfPresent([ModelPricingEvidence].self, forKey: .pricingEvidence) ?? []
+        self.init(
+            id: id,
+            ownedBy: try c.decodeIfPresent(String.self, forKey: .ownedBy),
+            name: try c.decodeIfPresent(String.self, forKey: .name),
+            description: try c.decodeIfPresent(String.self, forKey: .description),
+            contextLength: contexts.isEmpty ? try c.decodeIfPresent(Int.self, forKey: .contextLength) : nil,
+            maxOutputTokens: outputs.isEmpty ? try c.decodeIfPresent(Int.self, forKey: .maxOutputTokens) : nil,
+            parameterSize: try c.decodeIfPresent(String.self, forKey: .parameterSize),
+            sizeBytes: try c.decodeIfPresent(Int64.self, forKey: .sizeBytes),
+            quantizationLevel: try c.decodeIfPresent(String.self, forKey: .quantizationLevel),
+            isCloudHosted: try c.decodeIfPresent(Bool.self, forKey: .isCloudHosted) ?? false,
+            supportsReasoning: try c.decodeIfPresent(Bool.self, forKey: .supportsReasoning),
+            supportsVision: try c.decodeIfPresent(Bool.self, forKey: .supportsVision),
+            supportsTools: try c.decodeIfPresent(Bool.self, forKey: .supportsTools),
+            supportedEfforts: try c.decodeIfPresent([String].self, forKey: .supportedEfforts) ?? [],
+            isLocal: try c.decodeIfPresent(Bool.self, forKey: .isLocal) ?? false,
+            inputPricePerMillion: prices.isEmpty ? try c.decodeIfPresent(Double.self, forKey: .inputPricePerMillion) : nil,
+            outputPricePerMillion: prices.isEmpty ? try c.decodeIfPresent(Double.self, forKey: .outputPricePerMillion) : nil,
+            contextLimitEvidence: contexts,
+            outputLimitEvidence: outputs,
+            pricingEvidence: prices,
+            evidenceScope: ModelEvidenceScope(requestedModel: id, effectiveModel: id),
+            scalarEvidenceSource: .providerCatalog,
+            scalarEvidenceDetail: "legacy cached model metadata"
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encodeIfPresent(name, forKey: .name)
+        try c.encodeIfPresent(ownedBy, forKey: .ownedBy)
+        try c.encodeIfPresent(description, forKey: .description)
+        // Keep the scalar keys so older builds can still read a newly-written
+        // disposable model cache during a downgrade.
+        try c.encodeIfPresent(contextLength, forKey: .contextLength)
+        try c.encodeIfPresent(maxOutputTokens, forKey: .maxOutputTokens)
+        try c.encode(contextLimitEvidence, forKey: .contextLimitEvidence)
+        try c.encode(outputLimitEvidence, forKey: .outputLimitEvidence)
+        try c.encode(pricingEvidence, forKey: .pricingEvidence)
+        try c.encodeIfPresent(parameterSize, forKey: .parameterSize)
+        try c.encodeIfPresent(sizeBytes, forKey: .sizeBytes)
+        try c.encodeIfPresent(quantizationLevel, forKey: .quantizationLevel)
+        try c.encode(isCloudHosted, forKey: .isCloudHosted)
+        try c.encode(supportsReasoning, forKey: .supportsReasoning)
+        try c.encode(supportsVision, forKey: .supportsVision)
+        try c.encode(supportsTools, forKey: .supportsTools)
+        try c.encode(supportedEfforts, forKey: .supportedEfforts)
+        try c.encode(isLocal, forKey: .isLocal)
+        try c.encodeIfPresent(inputPricePerMillion, forKey: .inputPricePerMillion)
+        try c.encodeIfPresent(outputPricePerMillion, forKey: .outputPricePerMillion)
     }
 
     /// A coarse $/$$/$$$ read on cost, from real per-provider pricing only
@@ -557,14 +755,14 @@ public enum ModelCatalog {
             ]
         case .claudeCode:
             return [
-                RemoteModel(id: "claude-opus-5", name: "Claude Opus 5", description: "Most capable Claude — long, complex agentic work.", contextLength: 240_000, supportsReasoning: true, supportsTools: true),
-                RemoteModel(id: "claude-sonnet-5", name: "Claude Sonnet 5", description: "Balanced default for the bridge.", contextLength: 240_000, supportsReasoning: true, supportsTools: true),
-                RemoteModel(id: "claude-haiku-5", name: "Claude Haiku 5", description: "Fastest Claude, for quick turns.", contextLength: 200_000, supportsReasoning: true, supportsTools: true),
+                RemoteModel(id: "claude-opus-5", name: "Claude Opus 5", description: "Most capable Claude — long, complex agentic work.", contextLength: 240_000, supportsReasoning: true, supportsTools: true, scalarEvidenceSource: .bundledSnapshot, scalarEvidenceDetail: "VelaChat bundled model catalog"),
+                RemoteModel(id: "claude-sonnet-5", name: "Claude Sonnet 5", description: "Balanced default for the bridge.", contextLength: 240_000, supportsReasoning: true, supportsTools: true, scalarEvidenceSource: .bundledSnapshot, scalarEvidenceDetail: "VelaChat bundled model catalog"),
+                RemoteModel(id: "claude-haiku-5", name: "Claude Haiku 5", description: "Fastest Claude, for quick turns.", contextLength: 200_000, supportsReasoning: true, supportsTools: true, scalarEvidenceSource: .bundledSnapshot, scalarEvidenceDetail: "VelaChat bundled model catalog"),
             ]
         case .deepSeek:
             return [
-                RemoteModel(id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", contextLength: 1_000_000, maxOutputTokens: 384_000, supportsReasoning: true, supportsTools: true, supportedEfforts: ["none", "low", "high", "max"]),
-                RemoteModel(id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", contextLength: 1_000_000, maxOutputTokens: 384_000, supportsReasoning: true, supportsTools: true, supportedEfforts: ["none", "low", "high", "max"]),
+                RemoteModel(id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", contextLength: 1_000_000, maxOutputTokens: 384_000, supportsReasoning: true, supportsTools: true, supportedEfforts: ["none", "low", "high", "max"], scalarEvidenceSource: .bundledSnapshot, scalarEvidenceDetail: "VelaChat bundled model catalog"),
+                RemoteModel(id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", contextLength: 1_000_000, maxOutputTokens: 384_000, supportsReasoning: true, supportsTools: true, supportedEfforts: ["none", "low", "high", "max"], scalarEvidenceSource: .bundledSnapshot, scalarEvidenceDetail: "VelaChat bundled model catalog"),
             ]
         case .openAI:
             return [
@@ -712,6 +910,8 @@ public struct ChatMessage: Identifiable, Codable, Equatable {
     /// name. `nil` on messages saved before this field existed, or on user
     /// messages, which don't have a generating provider.
     public var providerName: String?
+    public var providerID: UUID?
+    public var providerKind: ProviderKind?
     public var modelID: String?
     /// Bookmarked within this conversation — distinct from pinning a whole
     /// conversation in the sidebar. Lets a long thread's important reply be
@@ -742,12 +942,14 @@ public struct ChatMessage: Identifiable, Codable, Equatable {
     /// transcript renders as chips.
     public var redactions: [RedactionSpan] = []
 
-    public init(role: String, content: String, reasoning: String? = nil, error: String? = nil, isStreaming: Bool = false, providerName: String? = nil, modelID: String? = nil, isPinned: Bool = false, attachments: [Attachment] = [], alternates: [ChatMessage] = []) {
+    public init(role: String, content: String, reasoning: String? = nil, error: String? = nil, isStreaming: Bool = false, providerName: String? = nil, providerID: UUID? = nil, providerKind: ProviderKind? = nil, modelID: String? = nil, isPinned: Bool = false, attachments: [Attachment] = [], alternates: [ChatMessage] = []) {
         self.id = UUID()
         self.role = role
         self.content = content
         self.reasoning = reasoning
         self.providerName = providerName
+        self.providerID = providerID
+        self.providerKind = providerKind
         self.modelID = modelID
         self.attachments = attachments
         self.error = error
@@ -767,6 +969,8 @@ public struct ChatMessage: Identifiable, Codable, Equatable {
         isStreaming = try container.decode(Bool.self, forKey: .isStreaming)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         providerName = try container.decodeIfPresent(String.self, forKey: .providerName)
+        providerID = try container.decodeIfPresent(UUID.self, forKey: .providerID)
+        providerKind = try container.decodeIfPresent(ProviderKind.self, forKey: .providerKind)
         modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         attachments = try container.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
@@ -779,7 +983,7 @@ public struct ChatMessage: Identifiable, Codable, Equatable {
 
     /// Full-field copy initializer — the only way to reproduce a message
     /// with a chosen id/createdAt (the memberwise init hardcodes both).
-    public init(id: UUID, role: String, content: String, reasoning: String?, error: String?, isStreaming: Bool, createdAt: Date, providerName: String?, modelID: String?, isPinned: Bool, attachments: [Attachment], usage: UsageSummary?, alternates: [ChatMessage], segments: [MessageSegment], noticeKind: String?, redactions: [RedactionSpan] = []) {
+    public init(id: UUID, role: String, content: String, reasoning: String?, error: String?, isStreaming: Bool, createdAt: Date, providerName: String?, modelID: String?, isPinned: Bool, attachments: [Attachment], usage: UsageSummary?, alternates: [ChatMessage], segments: [MessageSegment], noticeKind: String?, providerID: UUID? = nil, providerKind: ProviderKind? = nil, redactions: [RedactionSpan] = []) {
         self.id = id
         self.role = role
         self.content = content
@@ -788,6 +992,8 @@ public struct ChatMessage: Identifiable, Codable, Equatable {
         self.isStreaming = isStreaming
         self.createdAt = createdAt
         self.providerName = providerName
+        self.providerID = providerID
+        self.providerKind = providerKind
         self.modelID = modelID
         self.isPinned = isPinned
         self.attachments = attachments
@@ -818,6 +1024,8 @@ public struct ChatMessage: Identifiable, Codable, Equatable {
             alternates: alternates.map { $0.duplicatedWithFreshID() },
             segments: segments,
             noticeKind: noticeKind,
+            providerID: providerID,
+            providerKind: providerKind,
             redactions: redactions
         )
     }
@@ -1399,6 +1607,10 @@ public struct SavedConversation: Codable {
     /// Planning mode, and whether its one-time offer has been made.
     public var isPlanning: Bool = false
     public var didOfferPlanning: Bool = false
+    /// Staged but unsent attachments. Blob bytes live on disk under their
+    /// blob IDs (or inline for small files), so persisting the values here
+    /// survives a relaunch without ever putting bytes in UserDefaults.
+    public var draftAttachments: [Attachment] = []
 
     private enum CodingKeys: String, CodingKey {
         case id, title, messages, providerID, model, createdAt, updatedAt
@@ -1408,9 +1620,10 @@ public struct SavedConversation: Codable {
         /// never written.
         case legacyWorkspaceRootPath = "workspaceRootPath"
         case isPlanning, didOfferPlanning
+        case draftAttachments
     }
 
-    public init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], projectWorkspace: ProjectWorkspace? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
+    public init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], projectWorkspace: ProjectWorkspace? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false, draftAttachments: [Attachment] = []) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1425,6 +1638,7 @@ public struct SavedConversation: Codable {
         self.projectWorkspace = projectWorkspace
         self.isPlanning = isPlanning
         self.didOfferPlanning = didOfferPlanning
+        self.draftAttachments = draftAttachments
     }
 
     public init(from decoder: Decoder) throws {
@@ -1451,6 +1665,7 @@ public struct SavedConversation: Codable {
         }
         isPlanning = try container.decodeIfPresent(Bool.self, forKey: .isPlanning) ?? false
         didOfferPlanning = try container.decodeIfPresent(Bool.self, forKey: .didOfferPlanning) ?? false
+        draftAttachments = try container.decodeIfPresent([Attachment].self, forKey: .draftAttachments) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1470,6 +1685,27 @@ public struct SavedConversation: Codable {
         try container.encodeIfPresent(projectWorkspace, forKey: .projectWorkspace)
         try container.encode(isPlanning, forKey: .isPlanning)
         try container.encode(didOfferPlanning, forKey: .didOfferPlanning)
+        try container.encode(draftAttachments, forKey: .draftAttachments)
+    }
+}
+
+/// OpenRouter key credits, from the read-only `auth/key` endpoint.
+/// Dollars spent vs. the key's cap (`nil` when the key has no limit set).
+public struct OpenRouterKeyCredit: Sendable, Equatable, Codable {
+    public var usedCredits: Double
+    public var limitCredits: Double?
+    public var label: String?
+
+    public init(usedCredits: Double, limitCredits: Double? = nil, label: String? = nil) {
+        self.usedCredits = usedCredits
+        self.limitCredits = limitCredits
+        self.label = label
+    }
+
+    /// Fraction of the cap consumed, when a cap exists.
+    public var usedFraction: Double? {
+        guard let limit = limitCredits, limit > 0 else { return nil }
+        return max(0, usedCredits / limit)
     }
 }
 
@@ -1505,6 +1741,11 @@ public struct QuotaSnapshot: Sendable, Equatable, Codable {
     public var tokensRemaining: Int?
     public var tokensLimit: Int?
     public var resetAt: Date?
+    /// OpenRouter key credits (dollars spent vs. cap), from the read-only
+    /// `auth/key` endpoint rather than headers. Nil for every other
+    /// provider; a nil limit means the key has no cap set.
+    public var creditUsed: Double?
+    public var creditLimit: Double?
     /// Codex subscription windows, verified live against the real
     /// backend's x-codex-* headers.
     public var primaryWindow: Window?
@@ -1601,6 +1842,9 @@ public struct QuotaSnapshot: Sendable, Equatable, Codable {
         if let remaining = tokensRemaining, let limit = tokensLimit, limit > 0 {
             return 1 - Double(remaining) / Double(limit)
         }
+        if let used = creditUsed, let limit = creditLimit, limit > 0 {
+            return max(0, used / limit)
+        }
         return nil
     }
 }
@@ -1618,6 +1862,23 @@ public struct CacheCreationTokens: Sendable, Equatable {
     }
 }
 
+/// Normalizes provider-specific input counters into the logical number of
+/// input tokens processed by one request. OpenAI-style prompt totals already
+/// include cache lanes; Anthropic/Claude report fresh, cache-read, and
+/// cache-write input separately.
+public enum LogicalInputUsage {
+    public static func tokens(
+        reportedInput: Int?,
+        cacheRead: Int?,
+        cacheWrite: Int?,
+        reportedInputIncludesCache: Bool
+    ) -> Int? {
+        guard reportedInput != nil || cacheRead != nil || cacheWrite != nil else { return nil }
+        if reportedInputIncludesCache { return reportedInput }
+        return (reportedInput ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
+    }
+}
+
 public enum ChatStreamEvent: Sendable {
     case delta(content: String, reasoning: String)
     /// `cachedTokens`: real provider-reported cache-hit tokens — OpenAI's
@@ -1631,6 +1892,15 @@ public enum ChatStreamEvent: Sendable {
     /// session); everyone else sends `nil`, which stays distinct from a
     /// reported zero.
     case usage(prompt: Int?, completion: Int?, cachedTokens: Int?, cacheCreation: CacheCreationTokens?)
+    /// Canonical telemetry for one actual provider request. This is additive
+    /// during migration: `.usage` continues to carry whole-reply cumulative
+    /// totals for existing message aggregation, while this event records each
+    /// chat/tool/continuation request exactly once for the durable ledger.
+    case requestUsage(RequestUsage)
+    /// Runtime-resolved model identity and limits. Claude Code and local
+    /// runtimes can report a deployment that differs from the requested alias;
+    /// callers use this to update context evidence without guessing from IDs.
+    case modelMetadata(RuntimeModelMetadata)
     /// The reply's terminal state, when the provider reports one —
     /// "length" (normalized from length/max_tokens) drives auto-continue.
     case finished(reason: String?)
@@ -1650,6 +1920,173 @@ public enum ChatStreamEvent: Sendable {
     /// a typed refusal row so a policy decision doesn't look like a
     /// broken reply.
     case refusal(String)
+}
+
+/// A provider's canonical model identity and any limits observed for the
+/// concrete runtime selected for this request.
+public struct RuntimeModelMetadata: Hashable, Codable, Sendable {
+    public let requestedModel: String
+    public let effectiveModel: String?
+    public let contextLimitEvidence: [ContextLimitEvidence]
+    public let outputLimitEvidence: [OutputLimitEvidence]
+
+    public init(
+        requestedModel: String,
+        effectiveModel: String? = nil,
+        contextLimitEvidence: [ContextLimitEvidence] = [],
+        outputLimitEvidence: [OutputLimitEvidence] = []
+    ) {
+        self.requestedModel = requestedModel
+        self.effectiveModel = effectiveModel
+        self.contextLimitEvidence = contextLimitEvidence
+        self.outputLimitEvidence = outputLimitEvidence
+    }
+}
+
+/// Result of a provider-native preflight token-count endpoint. A successful
+/// value is exact for the encoded request passed to that endpoint; callers
+/// cache by their prepared-request fingerprint rather than calling on every
+/// keystroke.
+public struct ProviderInputTokenCount: Hashable, Codable, Sendable {
+    public let inputTokens: Int
+    public let provider: ProviderKind
+    public let requestedModel: String
+    public let effectiveModel: String?
+    public let countedAt: Date
+
+    public init(
+        inputTokens: Int,
+        provider: ProviderKind,
+        requestedModel: String,
+        effectiveModel: String? = nil,
+        countedAt: Date = Date()
+    ) {
+        self.inputTokens = inputTokens
+        self.provider = provider
+        self.requestedModel = requestedModel
+        self.effectiveModel = effectiveModel
+        self.countedAt = countedAt
+    }
+}
+
+/// The immutable, fully assembled request used by both exact preflight
+/// counting and transmission. App-side composition resolves memories, skills,
+/// data/search context, pins, compaction, attachments, and system instructions
+/// into `messages` before constructing this value; tool names are de-duplicated
+/// here so a definition cannot be counted/sent twice.
+public struct PreparedRequest: @unchecked Sendable {
+    public let providerID: UUID
+    public let endpointFingerprint: String?
+    public let requestedModel: String
+    public let wireModel: String
+    public let thinking: ThinkingLevel
+    public let modelInfo: RemoteModel?
+    public let messages: [ChatMessage]
+    public let tools: [ToolCatalog.Definition]
+    public let requestedOutputTokens: Int
+    public let purpose: UsagePurpose
+    public let fingerprint: String
+
+    public init(
+        profile: ProviderProfile,
+        requestedModel: String,
+        wireModel: String,
+        thinking: ThinkingLevel,
+        modelInfo: RemoteModel? = nil,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition],
+        requestedOutputTokens: Int,
+        purpose: UsagePurpose = .chat
+    ) {
+        self.providerID = profile.id
+        self.endpointFingerprint = ModelEvidenceScope.fingerprint(endpoint: profile.endpoint)
+        self.requestedModel = requestedModel
+        self.wireModel = wireModel
+        self.thinking = thinking
+        self.modelInfo = modelInfo
+        self.messages = messages
+        var seenTools = Set<String>()
+        self.tools = tools.filter { seenTools.insert($0.name).inserted }
+        self.requestedOutputTokens = max(0, requestedOutputTokens)
+        self.purpose = purpose
+        self.fingerprint = Self.makeFingerprint(
+            providerID: profile.id,
+            endpointFingerprint: self.endpointFingerprint,
+            requestedModel: requestedModel,
+            wireModel: wireModel,
+            thinking: thinking,
+            messages: messages,
+            tools: self.tools,
+            requestedOutputTokens: self.requestedOutputTokens
+        )
+    }
+
+    public var evidenceScope: ModelEvidenceScope {
+        ModelEvidenceScope(
+            providerProfileID: providerID,
+            endpointFingerprint: endpointFingerprint,
+            requestedModel: requestedModel,
+            effectiveModel: wireModel
+        )
+    }
+
+    private static func makeFingerprint(
+        providerID: UUID,
+        endpointFingerprint: String?,
+        requestedModel: String,
+        wireModel: String,
+        thinking: ThinkingLevel,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition],
+        requestedOutputTokens: Int
+    ) -> String {
+        var digest = StableRequestDigest()
+        digest.add(providerID.uuidString)
+        digest.add(endpointFingerprint ?? "")
+        digest.add(requestedModel)
+        digest.add(wireModel)
+        digest.add(thinking.rawValue)
+        digest.add(String(requestedOutputTokens))
+        for message in messages {
+            digest.add(message.role)
+            digest.add(message.contentForRequest)
+            for image in message.imageAttachments {
+                digest.add(image.mimeType)
+                digest.add(image.data)
+            }
+        }
+        for tool in tools {
+            digest.add(tool.name)
+            digest.add(tool.wireDescription)
+            digest.add(tool.parametersJSON)
+        }
+        return digest.value
+    }
+
+    private struct StableRequestDigest {
+        private var first: UInt64 = 0xcbf29ce484222325
+        private var second: UInt64 = 0x9e3779b97f4a7c15
+
+        mutating func add(_ string: String) { add(Data(string.utf8)) }
+        mutating func add(_ data: Data) {
+            addLength(data.count)
+            for byte in data { mix(byte) }
+        }
+        mutating func addLength(_ count: Int) {
+            let value = UInt64(count)
+            for shift in stride(from: 0, to: 64, by: 8) {
+                mix(UInt8(truncatingIfNeeded: value >> UInt64(shift)))
+            }
+        }
+        mutating func mix(_ byte: UInt8) {
+            first ^= UInt64(byte)
+            first &*= 0x100000001b3
+            second ^= UInt64(byte) &+ 0x9e
+            second = (second << 7) | (second >> 57)
+            second &*= 0x9e3779b185ebca87
+        }
+        var value: String { String(format: "%016llx%016llx", first, second) }
+    }
 }
 
 public struct UsageSummary: Codable, Equatable {
@@ -1727,4 +2164,3 @@ public struct WebSearchRecord {
     public let query: String
     public let results: [WebSearchResult]
 }
-

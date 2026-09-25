@@ -31,7 +31,8 @@ public enum Subagents {
         credential: ProviderCredential,
         model: String,
         tools: [ToolCatalog.Definition],
-        toolContext: ToolCatalog.ExecutionContext
+        toolContext: ToolCatalog.ExecutionContext,
+        recordUsage: @escaping @Sendable (RequestUsage) async -> Void
     ) async -> String {
         let capped = Array(tasks.prefix(Limits.maxSubagents))
         guard !capped.isEmpty else { return "Error: no tasks provided." }
@@ -58,10 +59,15 @@ public enum Subagents {
                             thinking: .auto,
                             messages: [system, user],
                             tools: tools,
-                            toolContext: tools.isEmpty ? nil : toolContext
+                            toolContext: tools.isEmpty ? nil : toolContext,
+                            purpose: .subagent
                         )
                         for try await event in events {
-                            if case .delta(let content, _) = event { text += content }
+                            switch event {
+                            case .delta(let content, _): text += content
+                            case .requestUsage(let usage): await recordUsage(usage)
+                            default: break
+                            }
                         }
                     } catch {
                         return (index, "Error: \(error.localizedDescription)")

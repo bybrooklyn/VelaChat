@@ -1,16 +1,11 @@
 import SwiftUI
+import Combine
 import VelaCore
 import AppKit
 import KeyboardShortcuts
 
-/// The jump-rail's section catalog — order matches the cards.
-///
-/// `agentAbilities` is its own case rather than a second card also tagged
-/// `.tools`: two cards sharing one `.id(section)` inside a single
-/// `ScrollView` gave `ScrollViewReader` an ambiguous target (jumping to
-/// "Tools" landed on whichever it resolved first) and made the scroll-spy
-/// preference key collapse both cards' offsets into one value, so the rail
-/// highlight flickered between them while scrolling past.
+/// The selectable Settings panes. Each selection renders exactly one pane;
+/// there is no scroll-position-derived navigation state.
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case providers = "Providers"
@@ -23,7 +18,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case agentAbilities = "Agent Abilities"
     case mcpServers = "MCP Servers"
     case privacy = "Privacy"
-    case statistics = "Statistics"
+    case statistics = "Usage & Limits"
     case about = "About"
 
     var id: String { rawValue }
@@ -32,12 +27,12 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .providers: "server.rack"
         case .instructions: "person.text.rectangle"
-        case .memory: "brain"
-        case .skills: "sparkles"
+        case .memory: "archivebox"
+        case .skills: "puzzlepiece"
         case .snippets: "text.badge.plus"
         case .webSearch: "globe"
         case .tools: "wrench.and.screwdriver"
-        case .agentAbilities: "wand.and.stars"
+        case .agentAbilities: "slider.horizontal.3"
         case .mcpServers: "puzzlepiece.extension"
         case .privacy: "hand.raised"
         case .general: "gearshape"
@@ -47,33 +42,74 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     }
 }
 
-private struct SettingsSectionPreference: PreferenceKey {
-    static let defaultValue: [SettingsSection: CGFloat] = [:]
-    static func reduce(value: inout [SettingsSection: CGFloat], nextValue: () -> [SettingsSection: CGFloat]) {
-        value.merge(nextValue()) { _, new in new }
+/// Cross-view entry points into Settings. The pending destination is retained
+/// until `SettingsView` appears, so callers do not have to guess whether the
+/// root section switch has installed its notification subscriber yet.
+@MainActor
+enum SettingsNavigator {
+    fileprivate static let requestNotification = Notification.Name("VelaChat.SettingsDestinationRequested")
+    private static var pendingSection: SettingsSection?
+
+    static func openUsageAndLimits(in appModel: AppModel) {
+        pendingSection = .statistics
+        appModel.section = .settings
+        NotificationCenter.default.post(name: requestNotification, object: nil)
+    }
+
+    fileprivate static func takePendingSection() -> SettingsSection? {
+        defer { pendingSection = nil }
+        return pendingSection
     }
 }
 
-/// One card per settings area, on the shared `SettingsPanel` chrome
-/// (SettingsChrome.swift) plus the two things only the scrolling root
-/// needs: a scroll-target id, and its live offset for the jump rail's
-/// highlight.
+private enum SettingsCategoryGroup: String, CaseIterable, Identifiable {
+    case app = "App"
+    case personalization = "Personalization"
+    case capabilities = "Capabilities"
+    case privacyAndData = "Privacy & Data"
+
+    var id: String { rawValue }
+
+    var sections: [SettingsSection] {
+        switch self {
+        case .app:
+            [.general, .providers, .about]
+        case .personalization:
+            [.instructions, .memory, .skills, .snippets]
+        case .capabilities:
+            [.webSearch, .tools, .agentAbilities, .mcpServers]
+        case .privacyAndData:
+            [.privacy, .statistics]
+        }
+    }
+}
+
+/// One pane card on the shared `SettingsPanel` chrome. Inactive cards return
+/// `EmptyView`, so the existing inline controls can stay near their actions
+/// without rendering a hidden stack of every category.
 private struct SettingsCard<Content: View>: View {
     let section: SettingsSection
+    let isVisible: Bool
     var footer: Text? = nil
     @ViewBuilder var content: () -> Content
 
+    init(
+        section: SettingsSection,
+        isVisible: Bool,
+        footer: Text? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.section = section
+        self.isVisible = isVisible
+        self.footer = footer
+        self.content = content
+    }
+
+    @ViewBuilder
     var body: some View {
-        SettingsPanel(title: section.rawValue, symbol: section.symbol, footer: footer, content: content)
-            .id(section)
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: SettingsSectionPreference.self,
-                        value: [section: geometry.frame(in: .named("settings-scroll")).minY]
-                    )
-                }
-            }
+        if isVisible {
+            SettingsPanel(title: section.rawValue, symbol: section.symbol, footer: footer, content: content)
+        }
     }
 }
 
@@ -123,14 +159,12 @@ private struct CommandTrustRow: View {
 private enum SettingsRoute: Hashable {
     case root
     case provider(UUID)
-    case statistics
     case changelog
 
     var title: String {
         switch self {
         case .root: "Settings"
         case .provider: "Provider"
-        case .statistics: "Statistics"
         case .changelog: "What's New"
         }
     }
@@ -148,16 +182,27 @@ struct SettingsView: View {
     private var topBarHeight: CGFloat { chrome.isFullScreen ? 44 : 52 }
 
     var body: some View {
-        // The header is a normal flow element that respects the safe area —
-        // only its own background ignores it (below) — rather than the whole
-        // VStack ignoring it and guessing a compensating height. The old
-        // approach was only ever right at the exact window size it was tuned
-        // against; at any other size it either clipped the header or left an
-        // empty reserved strip above it.
-        VStack(spacing: 0) {
-            header
-            routeContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        GeometryReader { geometry in
+            let isCompact = geometry.size.width - SettingsMetrics.categorySidebarWidth
+                < SettingsMetrics.minimumDetailWidth
+            VStack(spacing: 0) {
+                header(isCompact: isCompact)
+                routeContent(isCompact: isCompact)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .sheet(isPresented: $isAddingSnippet) {
+            AddSnippetSheet(isPresented: $isAddingSnippet)
+        }
+        .sheet(isPresented: $isAddingProvider) {
+            AddProviderSheet(isPresented: $isAddingProvider) { newID in
+                activeSection = .providers
+                route = .provider(newID)
+            }
+        }
+        .onAppear { applyPendingDestination() }
+        .onReceive(NotificationCenter.default.publisher(for: SettingsNavigator.requestNotification)) { _ in
+            applyPendingDestination()
         }
     }
 
@@ -175,23 +220,19 @@ struct SettingsView: View {
         route == .root ? "Back to conversations (Esc)" : "Back to Settings (Esc)"
     }
 
-    /// Every route is laid out inside the same centred container, and the
-    /// jump rail's width is reserved even on the routes that don't have a
-    /// rail — so the content column keeps the exact same x position whether
-    /// you're looking at the settings list, a provider, or Statistics. It
-    /// used to jump sideways on every transition.
-    private var routeContent: some View {
+    /// Wide windows keep the category list visible while a provider or the
+    /// changelog is open. Compact windows move that selector into the root
+    /// header so the detail pane never gets squeezed below its readable
+    /// width.
+    private func routeContent(isCompact: Bool) -> some View {
         HStack(alignment: .top, spacing: 0) {
-            if case .root = route {
-                EmptyView()
-            } else {
-                Color.clear
-                    .frame(width: Theme.Layout.settingsRail)
-                    .accessibilityHidden(true)
+            if !isCompact {
+                categorySidebar
             }
             routeBody
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: Theme.Layout.settingsWidth)
+        .frame(maxWidth: SettingsMetrics.shellWidth)
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
@@ -203,9 +244,6 @@ struct SettingsView: View {
                 .transition(.opacity)
         case .provider(let id):
             ProviderEditorView(profileID: id, onBack: { goBack() })
-                .transition(.opacity)
-        case .statistics:
-            StatisticsView()
                 .transition(.opacity)
         case .changelog:
             ChangelogView()
@@ -223,7 +261,7 @@ struct SettingsView: View {
 
     /// Matches the chat pane's glass header so the two panes read as one app
     /// rather than two differently-chromed screens.
-    private var header: some View {
+    private func header(isCompact: Bool) -> some View {
         HStack(spacing: 10) {
             Button(action: goBack) {
                 Image(systemName: "chevron.left")
@@ -248,6 +286,10 @@ struct SettingsView: View {
                 .animation(.easeOut(duration: 0.18), value: headerTitle)
 
             Spacer(minLength: 0)
+
+            if isCompact, route == .root {
+                categoryMenu
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
@@ -265,25 +307,124 @@ struct SettingsView: View {
         }
     }
 
+    private var categoryMenu: some View {
+        Menu {
+            ForEach(SettingsCategoryGroup.allCases) { group in
+                Section(group.rawValue) {
+                    ForEach(group.sections) { section in
+                        Button {
+                            selectSection(section)
+                        } label: {
+                            Label(section.rawValue, systemImage: section.symbol)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: activeSection.symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 15)
+                Text(activeSection.rawValue)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+            .foregroundStyle(Theme.text)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(
+                Theme.surfaceHigh.opacity(0.72),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+            )
+            .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Choose a Settings category")
+        .accessibilityLabel("Settings category")
+        .accessibilityValue(activeSection.rawValue)
+    }
+
+    private var categorySidebar: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                ForEach(SettingsCategoryGroup.allCases) { group in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(group.rawValue)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Theme.tertiaryText)
+                            .textCase(.uppercase)
+                            .padding(.horizontal, 10)
+                        ForEach(group.sections) { section in
+                            Button {
+                                selectSection(section)
+                            } label: {
+                                HStack(spacing: 9) {
+                                    Image(systemName: section.symbol)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .frame(width: 17)
+                                    Text(section.rawValue)
+                                        .font(.callout)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                            }
+                            .buttonStyle(SettingsNavigationButtonStyle(isSelected: activeSection == section))
+                            .accessibilityLabel(section.rawValue)
+                            .accessibilityAddTraits(activeSection == section ? .isSelected : [])
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 18)
+        }
+        .frame(width: SettingsMetrics.categorySidebarWidth)
+        .frame(maxHeight: .infinity)
+        .background(Theme.surfaceLow.opacity(0.32))
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Theme.separator.opacity(0.4))
+                .frame(width: 1)
+        }
+    }
+
+    private func selectSection(_ section: SettingsSection) {
+        activeSection = section
+        if route != .root {
+            withAnimation(.easeOut(duration: 0.18)) { route = .root }
+        }
+    }
+
+    private func applyPendingDestination() {
+        guard let section = SettingsNavigator.takePendingSection() else { return }
+        activeSection = section
+        route = .root
+    }
+
     private var settingsForm: some View {
         @Bindable var appModel = appModel
-        return HStack(alignment: .top, spacing: 0) {
-            ScrollViewReader { proxy in
-                HStack(alignment: .top, spacing: 0) {
-                    jumpRail(proxy: proxy)
+        return Group {
+            if activeSection == .statistics {
+                StatisticsView()
+            } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
-                    SettingsCard(section: .general, footer: Text("Messages are never relayed through an app-owned server.")) {
+                    SettingsCard(section: .general, isVisible: activeSection == .general, footer: Text("Messages are never relayed through an app-owned server.")) {
                         GeneralCard()
                     }
 
 
-                    SettingsCard(section: .providers, footer: Text("Keys stay in your macOS Keychain. Requests go straight to the provider.")) {
+                    SettingsCard(section: .providers, isVisible: activeSection == .providers, footer: Text("Keys stay in your macOS Keychain. Requests go straight to the provider.")) {
 
                 ForEach(visibleProfiles) { profile in
                     // Viewing a provider must not switch to it — selection
                     // is an explicit action inside the editor now.
                     Button {
+                        activeSection = .providers
                         withAnimation(.easeOut(duration: 0.18)) { route = .provider(profile.id) }
                     } label: {
                         ProviderSettingsRow(
@@ -314,22 +455,21 @@ struct SettingsView: View {
                     }
 
 
-                    SettingsCard(section: .instructions, footer: Text("Sent invisibly with every message \u{2014} who you are and how the model should respond.")) {
+                    SettingsCard(section: .instructions, isVisible: activeSection == .instructions, footer: Text("Sent invisibly with every message \u{2014} who you are and how the model should respond.")) {
 
                 TextEditor(text: $appModel.customInstructions)
                     .font(.body)
                     .frame(minHeight: 90, maxHeight: 180)
-                    .scrollContentBackground(.hidden)
-                    .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                    .settingsMultilineFieldStyle()
                     }
 
 
-                    SettingsCard(section: .memory, footer: Text("Durable facts about you \u{2014} stable preferences, standing constraints, things still true next month. Written by the model as you chat, kept on this Mac, yours to edit or remove.")) {
+                    SettingsCard(section: .memory, isVisible: activeSection == .memory, footer: Text("Durable facts about you \u{2014} stable preferences, standing constraints, things still true next month. Written by the model as you chat, kept on this Mac, yours to edit or remove.")) {
 
                 if appModel.facts.isEmpty {
                     SettingsEmptyState(
                         text: "Nothing remembered yet — the model saves durable facts as you chat.",
-                        symbol: "brain"
+                        symbol: "archivebox"
                     )
                 } else {
                     ForEach(memoryTopics, id: \.self) { topic in
@@ -346,13 +486,12 @@ struct SettingsView: View {
                 }
                 HStack(spacing: 8) {
                     TextField("Add a memory…", text: $newMemoryText, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .flatFieldStyle()
+                        .settingsFieldStyle()
                     Button("Add") {
                         appModel.addMemory(newMemoryText)
                         newMemoryText = ""
                     }
-                    .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                    .buttonStyle(SettingsPrimaryButtonStyle())
                     .disabled(newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 Divider()
@@ -362,10 +501,10 @@ struct SettingsView: View {
                     }
 
 
-                    SettingsCard(section: .skills, footer: Text("Add any folder containing a SKILL.md \u{2014} the same format Claude Code and Codex use. Invoke one from the / menu.")) {
+                    SettingsCard(section: .skills, isVisible: activeSection == .skills, footer: Text("Add any folder containing a SKILL.md \u{2014} the same format Claude Code and Codex use. Invoke one from the / menu.")) {
 
                 if appModel.skills.skills.isEmpty {
-                    SettingsEmptyState(text: "No skills added yet.", symbol: "sparkles")
+                    SettingsEmptyState(text: "No skills added yet.", symbol: "puzzlepiece")
                 } else {
                     ForEach(appModel.skills.skills) { skill in
                         VStack(alignment: .leading, spacing: 3) {
@@ -406,7 +545,7 @@ struct SettingsView: View {
                     }
 
 
-                    SettingsCard(section: .snippets, footer: Text("Save a prompt once, reuse it from the / menu.")) {
+                    SettingsCard(section: .snippets, isVisible: activeSection == .snippets, footer: Text("Save a prompt once, reuse it from the / menu.")) {
 
                 if appModel.promptSnippets.isEmpty {
                     SettingsEmptyState(text: "No snippets saved yet.", symbol: "text.badge.plus")
@@ -441,19 +580,18 @@ struct SettingsView: View {
                     }
 
 
-                    SettingsCard(section: .webSearch, footer: Text("A SearXNG fallback for providers without built-in search (pick one from searx.space). Toggle search on in the composer.")) {
+                    SettingsCard(section: .webSearch, isVisible: activeSection == .webSearch, footer: Text("A SearXNG fallback for providers without built-in search (pick one from searx.space). Toggle search on in the composer.")) {
 
                 LabeledContent("Fallback search") {
                     TextField("https://searx.example.org", text: $appModel.searchEndpoint)
-                        .textFieldStyle(.plain)
-                        .flatFieldStyle()
+                        .settingsFieldStyle()
                         .textContentType(.URL)
                         .frame(maxWidth: 320)
                 }
                     }
 
 
-                    SettingsCard(section: .tools, footer: Text("Lets tool-capable models search your past conversations and work in a workspace folder — the private per-conversation one, or a real folder you attach from the + menu.")) {
+                    SettingsCard(section: .tools, isVisible: activeSection == .tools, footer: Text("Lets tool-capable models search your past conversations and work in a workspace folder — the private per-conversation one, or a real folder you attach from the + menu.")) {
 
                 Toggle("Workspace files", isOn: $appModel.isWorkspaceEnabled)
                 Toggle("Conversation search", isOn: $appModel.isConversationSearchEnabled)
@@ -475,7 +613,7 @@ struct SettingsView: View {
                 }
                     }
 
-                    SettingsCard(section: .agentAbilities, footer: Text("Agent abilities let the model plan visible multi-step work and edit/search files in the workspace. Read-only commands (ls, cat, rg, git status…) run immediately; anything else pauses for your approval in the chat, showing the exact command and folder first. Commands you always-allow run unsandboxed as you — a build or test command executes project code, including code the model just wrote.")) {
+                    SettingsCard(section: .agentAbilities, isVisible: activeSection == .agentAbilities, footer: Text("Agent abilities let the model plan visible multi-step work and edit/search files in the workspace. Read-only commands (ls, cat, rg, git status…) run immediately; anything else pauses for your approval in the chat, showing the exact command and folder first. Commands you always-allow run unsandboxed as you — a build or test command executes project code, including code the model just wrote.")) {
                 Toggle("Planning, file editing & search", isOn: $appModel.isAgentToolsEnabled)
                 // Bound to the EFFECTIVE state, not the raw stored bool: a
                 // chat with a project folder attached has commands on
@@ -505,8 +643,7 @@ struct SettingsView: View {
                     Toggle("Ask before each fan-out", isOn: $appModel.isSubagentApprovalRequired)
                     LabeledContent("Subagent model") {
                         TextField("Same as the chat's model", text: $appModel.subagentModelOverride)
-                            .textFieldStyle(.plain)
-                            .flatFieldStyle()
+                            .settingsFieldStyle()
                             .frame(maxWidth: 240)
                     }
                 }
@@ -525,26 +662,15 @@ struct SettingsView: View {
                     }
 
 
-                    SettingsCard(section: .mcpServers, footer: Text("MCP servers run as local processes with your account, and their tools run without per-call confirmation \u{2014} add only servers you trust. Standard mcpServers JSON works here.")) {
+                    SettingsCard(section: .mcpServers, isVisible: activeSection == .mcpServers, footer: Text("MCP servers run as local processes with your account, and their tools run without per-call confirmation \u{2014} add only servers you trust. Enabled servers start and verify lazily when a send needs their tools; \u{201C}unverified\u{201D} is not a health check. Standard mcpServers JSON works here.")) {
                         McpServersCard()
                     }
 
-                    SettingsCard(section: .privacy, footer: Text("Redaction rewrites matches before a message leaves your Mac, and marks what it changed in the transcript. Local-only mode refuses every request to a non-loopback host at the network layer, not just in the provider picker.")) {
+                    SettingsCard(section: .privacy, isVisible: activeSection == .privacy, footer: Text("Redaction rewrites matches before a message leaves your Mac, and marks what it changed in the transcript. Local-only mode refuses every request to a non-loopback host at the network layer, not just in the provider picker.")) {
                         PrivacyCard()
                     }
 
-                    SettingsCard(section: .statistics, footer: Text("Lifetime messages, tokens, and per-model usage.")) {
-
-                SettingsDisclosureRow(
-                    title: "Statistics",
-                    symbol: "chart.bar.xaxis"
-                ) {
-                    withAnimation(.easeOut(duration: 0.18)) { route = .statistics }
-                }
-                    }
-
-
-                    SettingsCard(section: .about) {
+                    SettingsCard(section: .about, isVisible: activeSection == .about) {
 
                 HStack(spacing: 12) {
                     VelaMark(size: 34)
@@ -561,6 +687,7 @@ struct SettingsView: View {
                     title: "What's New",
                     symbol: "sparkles"
                 ) {
+                    activeSection = .about
                     withAnimation(.easeOut(duration: 0.18)) { route = .changelog }
                 }
                 Link(destination: URL(string: "https://opensource.org/license/mit") ?? URL(fileURLWithPath: "/")) {
@@ -574,29 +701,7 @@ struct SettingsView: View {
                         .frame(maxWidth: SettingsMetrics.columnWidth)
                         .frame(maxWidth: .infinity, alignment: .center)
                     }
-                    .coordinateSpace(name: "settings-scroll")
-                    .onPreferenceChange(SettingsSectionPreference.self) { tops in
-                        // The section whose card top is nearest (but above)
-                        // the viewport's upper edge is "current".
-                        let current = tops
-                            .filter { $0.value < 140 }
-                            .max { $0.value < $1.value }?.key
-                            ?? tops.min { $0.value < $1.value }?.key
-                        if let current, current != activeSection {
-                            activeSection = current
-                        }
-                    }
-                }
-            }
-        }
-        // Width and centring belong to `routeContent`, which applies them
-        // to every route identically.
-        .sheet(isPresented: $isAddingSnippet) {
-            AddSnippetSheet(isPresented: $isAddingSnippet)
-        }
-        .sheet(isPresented: $isAddingProvider) {
-            AddProviderSheet(isPresented: $isAddingProvider) { newID in
-                route = .provider(newID)
+                    .id(activeSection)
             }
         }
     }
@@ -605,59 +710,6 @@ struct SettingsView: View {
     /// fallback for `swift run`, where no bundle exists.
     private static var bundleVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? AppModel.appVersion
-    }
-
-    /// The rail carries each section's glyph as well as its name — the same
-    /// glyph the card it scrolls to now shows in its own header, so the two
-    /// read as one thing. `SettingsSection.symbol` existed but nothing drew
-    /// it.
-    private func jumpRail(proxy: ScrollViewProxy) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(SettingsSection.allCases) { section in
-                jumpRailRow(section, proxy: proxy)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(width: Theme.Layout.settingsRail - 14)
-        .padding(.leading, 14)
-        .padding(.top, 20)
-        .animation(.easeOut(duration: 0.18), value: activeSection)
-    }
-
-    private func jumpRailRow(_ section: SettingsSection, proxy: ScrollViewProxy) -> some View {
-        let isActive = activeSection == section
-        return Button {
-            withAnimation(.easeOut(duration: 0.25)) {
-                proxy.scrollTo(section, anchor: .top)
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: section.symbol)
-                    .font(.system(size: 11, weight: .semibold))
-                    // A fixed box, so names line up regardless of how wide
-                    // each glyph draws.
-                    .frame(width: 15, alignment: .center)
-                Text(section.rawValue)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(isActive ? Theme.accent : Theme.secondaryText)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background {
-                if isActive {
-                    // Flat, matching sidebar rows — a glass chip on
-                    // this tiny rail read as a stray floating bead.
-                    RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
-                        .fill(Theme.sidebarSelection.opacity(0.55))
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(JumpRailButtonStyle())
-        .accessibilityLabel(section.rawValue)
     }
 
     private var memoryTopics: [String] {
@@ -673,7 +725,8 @@ struct SettingsView: View {
         }
     }
 
-    /// Preview disappears for good once any real provider is usable.
+    /// The offline Preview provider kind was retired; this list now only
+    /// hides Apple Intelligence when it is disabled or unavailable.
     private var visibleProfiles: [ProviderProfile] {
         appModel.providers.profiles.filter { profile in
             if profile.kind == .appleIntelligence { return appModel.isAppleIntelligenceEnabled }
@@ -767,7 +820,7 @@ private struct GeneralCard: View {
             .buttonStyle(SettingsDestructiveButtonStyle())
             .confirmationDialog("Reset VelaChat completely?", isPresented: $confirmFullReset) {
                 Button("Erase Everything", role: .destructive) {
-                    appModel.performFullReset()
+                    Task { await appModel.performFullReset() }
                 }
             } message: {
                 Text("Every conversation, memory, setting, API key, and workspace file on this Mac is erased, and the app returns to first launch. This cannot be undone.")
@@ -877,8 +930,7 @@ private struct PrivacyCard: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Theme.secondaryText)
             TextField("Paste something to see how it would be sent", text: $testText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .flatFieldStyle()
+                .settingsFieldStyle()
                 .lineLimit(1...4)
                 .accessibilityLabel("Redaction test input")
             let result = appModel.redaction.redactor.redact(testText)
@@ -907,16 +959,12 @@ private struct PrivacyCard: View {
         if isAddingRule {
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Rule name", text: $newName)
-                    .textFieldStyle(.plain)
-                    .flatFieldStyle()
+                    .settingsFieldStyle()
                 TextField("Regular expression", text: $newPattern)
-                    .textFieldStyle(.plain)
-                    .flatFieldStyle()
+                    .settingsFieldStyle()
                     .font(.system(.body, design: .monospaced))
                 if !newPattern.isEmpty, (try? NSRegularExpression(pattern: newPattern)) == nil {
-                    Text("Not a valid regular expression yet.")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.danger)
+                    SettingsInlineMessage(text: "Not a valid regular expression yet.", tone: .error)
                 }
                 HStack(spacing: 8) {
                     Button("Add") {
@@ -925,8 +973,7 @@ private struct PrivacyCard: View {
                         newPattern = ""
                         isAddingRule = false
                     }
-                    .buttonStyle(.glassProminent)
-                    .tint(Theme.accent)
+                    .buttonStyle(SettingsPrimaryButtonStyle())
                     .disabled(
                         newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || (try? NSRegularExpression(pattern: newPattern)) == nil
@@ -936,7 +983,7 @@ private struct PrivacyCard: View {
                         newName = ""
                         newPattern = ""
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(SettingsSecondaryButtonStyle())
                     Spacer()
                 }
             }
@@ -970,13 +1017,20 @@ private struct McpServersCard: View {
                 SettingsEmptyState(text: "No MCP servers configured.", symbol: "puzzlepiece.extension")
             }
             ForEach(appModel.mcp.servers) { server in
+                let status = status(for: server)
                 HStack(spacing: 8) {
-                    Circle()
-                        .fill(appModel.mcp.lastErrorByServer[server.id] == nil ? Theme.success : Theme.danger)
-                        .frame(width: 6, height: 6)
+                    Image(systemName: status.symbol)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(status.tint)
+                        .frame(width: 14)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(server.name)
-                            .font(.callout.weight(.medium))
+                        HStack(spacing: 7) {
+                            Text(server.name)
+                                .font(.callout.weight(.medium))
+                            Text(status.label)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(status.tint)
+                        }
                         Text(([server.command] + server.args).joined(separator: " "))
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundStyle(Theme.tertiaryText)
@@ -1055,17 +1109,14 @@ private struct McpServersCard: View {
                 TextEditor(text: $importText)
                     .font(.system(size: 12, design: .monospaced))
                     .frame(minHeight: 140)
-                    .scrollContentBackground(.hidden)
-                    .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                    .settingsMultilineFieldStyle()
                 if let importError {
-                    Text(importError)
-                        .font(.caption)
-                        .foregroundStyle(Theme.danger)
+                    SettingsInlineMessage(text: importError, tone: .error)
                 }
                 HStack {
                     Spacer()
                     Button("Cancel") { isImporting = false }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(SettingsSecondaryButtonStyle())
                     Button("Import") {
                         if let error = appModel.mcp.importJSON(importText) {
                             importError = error
@@ -1073,13 +1124,25 @@ private struct McpServersCard: View {
                             isImporting = false
                         }
                     }
-                    .buttonStyle(.glassProminent)
-                    .tint(Theme.accentStrong)
+                    .buttonStyle(SettingsPrimaryButtonStyle())
                 }
             }
             .padding(20)
             .frame(width: 460)
         }
+    }
+
+    /// The manager exposes failures but intentionally starts servers lazily,
+    /// so absence of an error is not proof of health. Label that state as
+    /// unverified instead of drawing the previous false-green dot.
+    private func status(for server: McpServerConfig) -> (label: String, symbol: String, tint: Color) {
+        if !server.enabled {
+            return ("Disabled", "pause.circle", Theme.tertiaryText)
+        }
+        if appModel.mcp.lastErrorByServer[server.id] != nil {
+            return ("Last check failed", "xmark.circle.fill", Theme.danger)
+        }
+        return ("Enabled · unverified", "questionmark.circle", Theme.warning)
     }
 }
 
@@ -1102,14 +1165,11 @@ private struct McpServerSheet: View {
             Text(config.name.isEmpty ? "New MCP Server" : config.name)
                 .font(.title3.weight(.semibold))
             TextField("Name", text: $config.name)
-                .textFieldStyle(.plain)
-                .flatFieldStyle()
+                .settingsFieldStyle()
             TextField("Command (e.g. npx)", text: $config.command)
-                .textFieldStyle(.plain)
-                .flatFieldStyle()
+                .settingsFieldStyle()
             TextField("Arguments (space-separated)", text: $argsText)
-                .textFieldStyle(.plain)
-                .flatFieldStyle()
+                .settingsFieldStyle()
             VStack(alignment: .leading, spacing: 4) {
                 Text("Environment (KEY=value per line)")
                     .font(.caption)
@@ -1117,13 +1177,12 @@ private struct McpServerSheet: View {
                 TextEditor(text: $envText)
                     .font(.system(size: 12, design: .monospaced))
                     .frame(height: 60)
-                    .scrollContentBackground(.hidden)
-                    .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                    .settingsMultilineFieldStyle()
             }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SettingsSecondaryButtonStyle())
                 Button("Save") {
                     var saved = config
                     saved.args = argsText.split(separator: " ").map(String.init)
@@ -1136,8 +1195,7 @@ private struct McpServerSheet: View {
                     onSave(saved)
                     dismiss()
                 }
-                .buttonStyle(.glassProminent)
-                .tint(Theme.accentStrong)
+                .buttonStyle(SettingsPrimaryButtonStyle())
                 .disabled(config.name.trimmingCharacters(in: .whitespaces).isEmpty || config.command.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
@@ -1204,11 +1262,11 @@ private struct MemoryFactRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "brain")
+            Image(systemName: "archivebox")
                 .font(.caption)
                 .foregroundStyle(Theme.tertiaryText)
             TextField("Memory", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
+                .settingsFieldStyle()
                 .focused($isFocused)
                 .onSubmit { commit() }
                 .accessibilityLabel("Stored memory")
@@ -1262,6 +1320,7 @@ private struct RemoteEmbeddingRow: View {
     @State private var model = Defaults.string(DefaultsKey.remoteEmbeddingModel) ?? ""
     @State private var providerID = Defaults.string(DefaultsKey.remoteEmbeddingProvider) ?? ""
     @State private var status: String?
+    @State private var statusTone: SettingsMessageTone = .information
     @State private var isTesting = false
 
     private var keyedProfiles: [ProviderProfile] {
@@ -1275,12 +1334,23 @@ private struct RemoteEmbeddingRow: View {
                 Defaults.set(newValue, DefaultsKey.remoteEmbeddingsEnabled)
                 status = nil
             })) {
-                Text("Use a hosted embedding model")
-                    .font(.callout)
+                HStack(spacing: 7) {
+                    Text("Configure hosted embeddings")
+                        .font(.callout)
+                    Text("Not active")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.warning)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Theme.warning.opacity(0.1),
+                            in: Capsule()
+                        )
+                }
             }
             .toggleStyle(.switch)
             .disabled(appModel.isLocalOnlyMode)
-            .accessibilityLabel("Use a hosted embedding model for memory")
+            .accessibilityLabel("Configure hosted embedding model for memory; not active")
 
             Text(appModel.isLocalOnlyMode
                  ? "Unavailable while local-only mode is on — a hosted embedder is network egress by definition."
@@ -1290,16 +1360,18 @@ private struct RemoteEmbeddingRow: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if isEnabled && !appModel.isLocalOnlyMode {
+                SettingsInlineMessage(
+                    text: "Configuration only: memory search still embeds on device. Hosted indexing needs a safe full re-embed migration before this endpoint can become active.",
+                    tone: .warning
+                )
                 TextField("https://api.example.com/v1/embeddings", text: $endpoint)
-                    .textFieldStyle(.plain)
-                    .flatFieldStyle()
+                    .settingsFieldStyle()
                     .accessibilityLabel("Embedding endpoint URL")
                     .onChange(of: endpoint) { _, value in
                         Defaults.set(value, DefaultsKey.remoteEmbeddingEndpoint)
                     }
                 TextField("Embedding model, e.g. text-embedding-3-small", text: $model)
-                    .textFieldStyle(.plain)
-                    .flatFieldStyle()
+                    .settingsFieldStyle()
                     .accessibilityLabel("Embedding model name")
                     .onChange(of: model) { _, value in
                         Defaults.set(value, DefaultsKey.remoteEmbeddingModel)
@@ -1319,21 +1391,14 @@ private struct RemoteEmbeddingRow: View {
                 }
                 HStack(spacing: 8) {
                     Button(isTesting ? "Testing…" : "Test") { test() }
-                        .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                        .buttonStyle(SettingsSecondaryButtonStyle())
                         .disabled(isTesting || endpoint.isEmpty || model.isEmpty)
                         .accessibilityLabel("Test the embedding endpoint")
-                    if let status {
-                        Text(status)
-                            .font(.caption)
-                            .foregroundStyle(Theme.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
                     Spacer(minLength: 0)
                 }
-                Text("Not yet used for stored vectors: enabling this configures and verifies the endpoint, and the store still embeds on device. Mixing two embedding spaces in one index would silently corrupt ranking, so the switch-over needs a re-embed pass that hasn't landed.")
-                    .font(.caption)
-                    .foregroundStyle(Theme.tertiaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let status {
+                    SettingsInlineMessage(text: status, tone: statusTone)
+                }
             }
         }
     }
@@ -1348,14 +1413,17 @@ private struct RemoteEmbeddingRow: View {
         Task {
             guard let remote = RemoteEmbedding.configured(apiKey: key) else {
                 status = "Fill in the endpoint and model first."
+                statusTone = .warning
                 isTesting = false
                 return
             }
             switch await remote.verify() {
             case .success(let dimension):
                 status = "Returned a \(dimension)-dimension vector."
+                statusTone = .success
             case .failure(let error):
                 status = error.localizedDescription
+                statusTone = .error
             }
             isTesting = false
         }
@@ -1426,19 +1494,16 @@ private struct AddProviderSheet: View {
             Text("New Endpoint")
                 .font(.title3.weight(.semibold))
             TextField("Name (e.g. \u{201C}vLLM on my server\u{201D})", text: $name)
-                .textFieldStyle(.plain)
-                .flatFieldStyle()
+                .settingsFieldStyle()
             TextField("Base endpoint (\u{2026}/v1)", text: $endpoint)
-                .textFieldStyle(.plain)
-                .flatFieldStyle()
+                .settingsFieldStyle()
                 .textContentType(.URL)
             SecureField("API key (optional)", text: $apiKey)
-                .textFieldStyle(.plain)
-                .flatFieldStyle()
+                .settingsFieldStyle()
             HStack {
                 Spacer()
                 Button("Cancel") { isPresented = false }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SettingsSecondaryButtonStyle())
                 Button("Add") {
                     let id = appModel.providers.createCompatible(name: name, endpoint: endpoint)
                     if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1447,8 +1512,7 @@ private struct AddProviderSheet: View {
                     isPresented = false
                     onCreate(id)
                 }
-                .buttonStyle(.glassProminent)
-                .tint(Theme.accentStrong)
+                .buttonStyle(SettingsPrimaryButtonStyle())
                 .disabled(!canSave)
             }
         }
@@ -1468,23 +1532,20 @@ private struct AddSnippetSheet: View {
             Text("New Snippet")
                 .font(.title3.weight(.semibold))
             TextField("Name (shown in the / menu)", text: $name)
-                .textFieldStyle(.plain)
-                .flatFieldStyle()
+                .settingsFieldStyle()
             TextEditor(text: $snippetBody)
                 .font(.body)
                 .frame(minHeight: 120)
-                .scrollContentBackground(.hidden)
-                .background(Theme.surfaceMid, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+                .settingsMultilineFieldStyle()
             HStack {
                 Spacer()
                 Button("Cancel") { isPresented = false }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SettingsSecondaryButtonStyle())
                 Button("Save") {
                     appModel.addSnippet(name: name, body: snippetBody)
                     isPresented = false
                 }
-                .buttonStyle(.glassProminent)
-                .tint(Theme.accent)
+                .buttonStyle(SettingsPrimaryButtonStyle())
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || snippetBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }

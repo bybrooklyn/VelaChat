@@ -77,6 +77,15 @@ struct QuickComposerView: View {
                 }
             }
 
+            if let attachmentStatus = appModel.displayedAttachmentLoadMessage {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(attachmentStatus)
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                }
+            }
+
             HStack(spacing: 8) {
                 ModelPickerButton()
                 Button {
@@ -116,7 +125,7 @@ struct QuickComposerView: View {
                 Button("Send") { send() }
                     .buttonStyle(.glassProminent)
                     .tint(Theme.accentStrong)
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || appModel.isGenerating)
+                    .disabled(!canSend)
             }
         }
         .padding(14)
@@ -134,10 +143,21 @@ struct QuickComposerView: View {
     }
 
     private func send() {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        appModel.sendPreservingDraftText(text)
-        text = ""
-        openMainWindow()
+        guard canSend else { return }
+        // The local field is cleared only after AppModel accepts ownership of
+        // the send. Missing-provider/already-generating rejections keep it.
+        if appModel.sendPreservingDraftText(text) {
+            text = ""
+            openMainWindow()
+        }
+    }
+
+    private var canSend: Bool {
+        let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasAttachment = !(appModel.activeConversation?.draftAttachments.isEmpty ?? true)
+        return (hasText || hasAttachment)
+            && !appModel.isGenerating
+            && !appModel.isLoadingAttachmentsForActiveConversation
     }
 
     private func openMainWindow() {
@@ -150,13 +170,7 @@ struct QuickComposerView: View {
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
         let conversation = appModel.activeConversation ?? appModel.newConversation()
-        for url in panel.urls {
-            if let attachment = Attachment.fromFile(url: url) {
-                conversation.draftAttachments.append(attachment)
-            } else {
-                appModel.postNotice(Attachment.attachFailureReason(for: url))
-            }
-        }
+        appModel.attachFiles(panel.urls, to: conversation)
     }
 
     /// Interactive capture (drag a region; space = window) straight into
@@ -164,16 +178,17 @@ struct QuickComposerView: View {
     /// produce no file — the neutral notice covers either.
     private func captureScreenshot() {
         let path = NSTemporaryDirectory() + "velachat-capture-\(UUID().uuidString).png"
+        // Capture the target before the external process suspends. The user
+        // may switch chats while selecting a region/window.
+        let conversation = appModel.activeConversation ?? appModel.newConversation()
         Task {
             _ = await AppModel.runProcess("/usr/sbin/screencapture", ["-i", path])
             let url = URL(fileURLWithPath: path)
-            defer { try? FileManager.default.removeItem(at: url) }
-            guard let attachment = Attachment.fromFile(url: url) else {
-                appModel.postNotice("No screenshot was captured. If you expected one, grant Screen Recording in System Settings → Privacy & Security.")
+            guard FileManager.default.fileExists(atPath: path) else {
+                appModel.postNotice("No screenshot was captured. If you expected one, grant Screen Recording in System Settings → Privacy & Security.", to: conversation)
                 return
             }
-            let conversation = appModel.activeConversation ?? appModel.newConversation()
-            conversation.draftAttachments.append(attachment)
+            appModel.attachFiles([url], to: conversation, removeAfterLoading: true)
         }
     }
 }

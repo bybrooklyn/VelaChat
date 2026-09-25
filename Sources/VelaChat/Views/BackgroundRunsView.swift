@@ -1,12 +1,10 @@
 import SwiftUI
 import VelaCore
 
-/// The background-runs surface — ONE view, deliberately mounted twice (the
-/// sidebar's in-window indicator popover and the menu-bar app): they cannot
-/// drift apart because there are not two implementations to drift. It
-/// renders only while something is actually running and disappears entirely
-/// when idle; callers gate on `runs.isEmpty`, so the idle state isn't even
-/// an empty list on screen.
+/// The background-runs surface used by the menu-bar app. It renders only
+/// while something is actually running and disappears entirely when idle;
+/// callers gate on `runs.isEmpty`, so the idle state isn't even an empty list
+/// on screen.
 ///
 /// A run here means any conversation generating in the background —
 /// including triggered/scheduled runs once those spawn conversations
@@ -21,10 +19,7 @@ struct BackgroundRunsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                Text(runs.count == 1 ? "1 conversation running" : "\(runs.count) conversations running")
+                Text("Running conversations")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Theme.secondaryText)
                 Spacer(minLength: 0)
@@ -76,48 +71,5 @@ struct BackgroundRunsView: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
         .background(Theme.surfaceMid.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
-    }
-}
-
-/// The in-window mount: a compact live indicator in the sidebar's action
-/// row that exists ONLY while something runs — tapping opens the shared
-/// background-runs view as a popover. Idle, it vanishes and the row looks
-/// exactly as it did before, which is the whole point of the surface.
-struct BackgroundRunsIndicator: View {
-    @Environment(AppModel.self) private var appModel
-    @State private var showsPopover = false
-
-    private var runCount: Int {
-        appModel.conversations.filter(\.isGenerating).count
-    }
-
-    var body: some View {
-        if runCount > 0 {
-            Button {
-                showsPopover.toggle()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .symbolEffectPulse()
-                    Text("\(runCount)")
-                        .font(.caption.weight(.semibold))
-                }
-                .foregroundStyle(Theme.accentForeground)
-                .padding(.horizontal, 10)
-                .frame(height: 34)
-                .background(Theme.accentStrong, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .help("Conversations running in the background")
-            .accessibilityLabel("\(runCount) conversations running in the background")
-            .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
-                BackgroundRunsView()
-                    .padding(12)
-                    .frame(width: 300)
-            }
-            .transition(.scale(scale: 0.9, anchor: .trailing).combined(with: .opacity))
-        }
     }
 }

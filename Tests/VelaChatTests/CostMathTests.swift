@@ -222,4 +222,57 @@ final class CostMathTests: XCTestCase {
         XCTAssertTrue(ProviderKind.deepSeek.promptTokensIncludeCached)
         XCTAssertTrue(ProviderKind.openRouter.promptTokensIncludeCached)
     }
+
+    func testRequestLedgerSnapshotsLongContextAndCachePricing() throws {
+        let pricedModel = RemoteModel(
+            id: "tiered-model",
+            pricingEvidence: [
+                ModelPricingEvidence(
+                    inputPerMillion: 1,
+                    outputPerMillion: 2,
+                    cacheReadPerMillion: 0.1,
+                    cacheWritePerMillion: 1.25,
+                    longContextInputPerMillion: 2,
+                    longContextOutputPerMillion: 4,
+                    longContextCacheReadPerMillion: 0.2,
+                    longContextCacheWritePerMillion: 2.5,
+                    longContextThresholdTokens: 1_000,
+                    source: .modelsDevLive
+                )
+            ]
+        )
+        let usage = RequestUsage(
+            purpose: .chat,
+            outcome: .succeeded,
+            inputTokens: 2_000,
+            outputTokens: 100,
+            cacheReadTokens: 500,
+            cacheWrite5mTokens: 100,
+            metricProvenance: .providerReported
+        ).applyingPublishedPricing(from: pricedModel)
+
+        let cost = try XCTUnwrap(usage.cost)
+        // fresh 1,400×2 + read 500×0.2 + write 100×2.5 + output 100×4
+        XCTAssertEqual(cost.amountUSD, 0.00355, accuracy: 0.0000001)
+        XCTAssertEqual(cost.longContextThresholdTokens, 1_000)
+        XCTAssertEqual(cost.cacheReadPerMillion, 0.2)
+    }
+
+    func testRequestLedgerRefusesToGuessMissingCachePrice() {
+        let model = RemoteModel(
+            id: "unknown-cache-price",
+            pricingEvidence: [
+                ModelPricingEvidence(inputPerMillion: 1, outputPerMillion: 2, source: .providerCatalog)
+            ]
+        )
+        let usage = RequestUsage(
+            purpose: .chat,
+            outcome: .succeeded,
+            inputTokens: 1_000,
+            outputTokens: 100,
+            cacheReadTokens: 500,
+            metricProvenance: .providerReported
+        ).applyingPublishedPricing(from: model)
+        XCTAssertNil(usage.cost)
+    }
 }

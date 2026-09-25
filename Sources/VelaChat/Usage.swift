@@ -76,4 +76,12 @@ final class UsageStore {
         let start = Calendar.current.dateInterval(of: .month, for: Date())?.start ?? Date().addingTimeInterval(-30 * 86_400)
         return window(providerID: providerID, since: start)
     }
+
+    /// Called only after `UsageLedger.migrateLegacy` commits (or confirms a
+    /// prior commit). Clearing both the observable mirror and its defaults key
+    /// prevents the retired 35-day store from being imported or shown again.
+    func retireLegacyAfterCommit() {
+        buckets.removeAll()
+        UserDefaults.standard.removeObject(forKey: key)
+    }
 }

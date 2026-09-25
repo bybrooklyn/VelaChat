@@ -133,6 +133,46 @@ final class ClaudeControlProtocolTests: XCTestCase {
             "the TTL split must add up to the reported creation total"
         )
         XCTAssertNotNil(usage.cacheReadInputTokens)
+        XCTAssertEqual(
+            usage.logicalInputTokens,
+            (usage.inputTokens ?? 0) + (usage.cacheReadInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0)
+        )
+        XCTAssertNotNil(usage.outputTokensDetails?.thinkingTokens)
+    }
+
+    func testResultCarriesCanonicalModelLimitsAndPerModelCost() throws {
+        let results = try frames().compactMap { frame -> ClaudeResultEvent? in
+            guard case .result(let event) = frame else { return nil }
+            return event
+        }
+        let result = try XCTUnwrap(results.first)
+        let primary = try XCTUnwrap(result.primaryModelUsage(
+            requestedModel: "sonnet",
+            observedModel: "claude-sonnet-5"
+        ))
+        XCTAssertEqual(primary.usage.canonicalModel, "claude-sonnet-5")
+        XCTAssertEqual(primary.usage.contextWindow, 1_000_000)
+        XCTAssertEqual(primary.usage.maxOutputTokens, 64_000)
+        XCTAssertEqual(primary.usage.provider, "firstParty")
+        XCTAssertNotNil(primary.usage.costUSD)
+        XCTAssertEqual(
+            try XCTUnwrap(result.totalCostUSD),
+            result.modelUsage.values.compactMap(\.costUSD).reduce(0, +),
+            accuracy: 0.000_000_1
+        )
+    }
+
+    func testPrimaryModelSelectionDoesNotChooseAuxiliaryModel() throws {
+        let result = try XCTUnwrap(try frames().compactMap { frame -> ClaudeResultEvent? in
+            guard case .result(let event) = frame, event.modelUsage.count > 1 else { return nil }
+            return event
+        }.first)
+        let primary = try XCTUnwrap(result.primaryModelUsage(
+            requestedModel: "claude-sonnet-5",
+            observedModel: nil
+        ))
+        XCTAssertEqual(primary.usage.canonicalModel, "claude-sonnet-5")
+        XCTAssertNotEqual(primary.usage.canonicalModel, "claude-haiku-4-5")
     }
 
     /// Arrives unprompted and carries a real reset time — a free quota
