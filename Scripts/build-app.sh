@@ -23,16 +23,20 @@ if [[ "${1:-}" == "--release" ]]; then
 fi
 
 # Same CLT workaround as the justfile: allow VELACHAT_SDK to override,
-# else prefer the macro-free 26.5 SDK on Xcode-less machines.
+# else prefer the macro-free 26.5 SDK on Xcode-less machines. (No bash
+# arrays here: macOS ships bash 3.2, where an empty "${arr[@]}" under
+# `set -u` is an "unbound variable" error.)
 SDK_PATH="${VELACHAT_SDK:-}"
 if [[ -z "$SDK_PATH" && -d "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" && ! -d "/Applications/Xcode.app" ]]; then
   SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
 fi
-SDK_ARGS=()
-[[ -n "$SDK_PATH" ]] && SDK_ARGS=(--sdk "$SDK_PATH")
 
 echo "▶ Building VelaChat ($CONFIG)…"
-swift build -c "$CONFIG" "${SDK_ARGS[@]}" --package-path "$ROOT"
+if [[ -n "$SDK_PATH" ]]; then
+  swift build -c "$CONFIG" --sdk "$SDK_PATH" --package-path "$ROOT"
+else
+  swift build -c "$CONFIG" --package-path "$ROOT"
+fi
 
 BIN="$ROOT/.build/$CONFIG/VelaChat"
 APP="$ROOT/build/VelaChat.app"
