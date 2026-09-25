@@ -298,6 +298,7 @@ final class UsageLedgerTests: XCTestCase {
             outputTokens: 100,
             cacheReadTokens: 1_000,
             cacheWrite5mTokens: 200,
+            latencyMilliseconds: 250,
             metricProvenance: .providerReported,
             cost: CostEvidence(
                 amountUSD: 0.0123,
@@ -319,8 +320,7 @@ final class UsageLedgerTests: XCTestCase {
                 tokensRemaining: 1_000,
                 tokensLimit: 2_000,
                 resetAt: resetDate
-            ),
-            latencyMilliseconds: 250
+            )
         )
         try await ledger.record(usage)
 

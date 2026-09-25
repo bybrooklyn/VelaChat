@@ -130,7 +130,7 @@ final class GenerationCorrectnessTests: XCTestCase {
     }
 
     func testPostCompactionEstimateIncludesSummaryAndEarlierPins() {
-        let pinned = ChatMessage(role: "user", content: "PINNED EXACT VALUE 123")
+        var pinned = ChatMessage(role: "user", content: "PINNED EXACT VALUE 123")
         pinned.isPinned = true
         let oldReply = ChatMessage(role: "assistant", content: "old reply")
         let marker = ChatMessage(role: "compaction", content: "summary with /exact/path")

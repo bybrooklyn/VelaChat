@@ -27,8 +27,8 @@ final class OpenRouterCatalogTests: XCTestCase {
         XCTAssertEqual(model.id, "openai/gpt-4o")
         XCTAssertEqual(model.contextLength, 128000)
         XCTAssertEqual(model.maxOutputTokens, 16384)
-        XCTAssertEqual(model.inputPricePerMillion, 2.5, accuracy: 0.0001)
-        XCTAssertEqual(model.outputPricePerMillion, 10, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(model.inputPricePerMillion), 2.5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(model.outputPricePerMillion), 10, accuracy: 0.0001)
         XCTAssertTrue(model.supportsVision ?? false)
         XCTAssertTrue(model.supportsTools ?? false)
     }
@@ -40,9 +40,12 @@ final class OpenRouterCatalogTests: XCTestCase {
         let decoded = try JSONDecoder().decode(
             OpenRouterKeyResponse.self, from: Data(json.utf8)
         )
-        let credit = try XCTUnwrap(decoded.data.flatMap {
-            $0.usage.map { OpenRouterKeyCredit(usedCredits: $0, limitCredits: $1.limit, label: $1.label) }
-        })
+        let info = try XCTUnwrap(decoded.data)
+        let credit = OpenRouterKeyCredit(
+            usedCredits: try XCTUnwrap(info.usage),
+            limitCredits: info.limit,
+            label: info.label
+        )
         XCTAssertEqual(credit.usedCredits, 3.5)
         XCTAssertEqual(credit.limitCredits, 10.0)
         XCTAssertEqual(credit.label, "velachat")
