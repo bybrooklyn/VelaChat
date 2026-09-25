@@ -186,6 +186,19 @@ public enum ProviderKind: String, CaseIterable, Codable, Identifiable, Sendable 
         }
     }
 
+    /// Whether tapping Refresh can produce fresh numbers without spending
+    /// on a real reply: a read-only usage endpoint (ChatGPT, Claude,
+    /// OpenRouter) or harvestable headers on a cheap catalog fetch. Codex
+    /// has neither — its plan windows arrive only on reply responses — so
+    /// the UI says so instead of offering a button that does nothing.
+    /// Local providers cost nothing and have no quota at all.
+    public var hasProactiveQuotaSource: Bool {
+        switch self {
+        case .codex, .ollama, .lmStudio, .appleIntelligence: false
+        default: true
+        }
+    }
+
     /// Where the provider's real logo lives — fetched at runtime by
     /// `RemoteLogoLoader` (own site first, Google favicons fallback).
     /// `nil` means hand-drawn mark only.

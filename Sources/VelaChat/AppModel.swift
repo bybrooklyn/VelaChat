@@ -696,7 +696,12 @@ final class AppModel {
     /// far out (or already past) to sleep on.
     nonisolated static func quotaWindowResetWait(for error: Error, quota: QuotaSnapshot?) -> TimeInterval? {
         guard case APIError.status(let code, _) = error, code == 429 else { return nil }
-        guard let resetAt = quota?.resetAt else { return nil }
+        // Plan-window snapshots (Codex/Claude/ChatGPT subscriptions) carry
+        // their resets on the windows, never top-level — reading only
+        // `resetAt` meant auto-resume silently never engaged for exactly
+        // the providers the retry note was written for. Soonest reset wins.
+        let candidates = [quota?.resetAt, quota?.primaryWindow?.resetAt, quota?.secondaryWindow?.resetAt].compactMap { $0 }
+        guard let resetAt = candidates.min() else { return nil }
         let wait = resetAt.timeIntervalSinceNow + 5
         guard wait > 0, wait <= Limits.quotaWindowResumeMaxDelay else { return nil }
         return wait

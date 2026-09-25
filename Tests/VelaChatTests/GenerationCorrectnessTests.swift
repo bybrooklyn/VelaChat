@@ -231,4 +231,44 @@ final class GenerationCorrectnessTests: XCTestCase {
         XCTAssertTrue(box.denied)
         XCTAssertNil(model.pendingApprovalsByConversation[conversationID])
     }
+
+    func testQuotaResetWaitUsesSubscriptionWindows() {
+        let rateLimited = APIError.status(429, "rate limited")
+        XCTAssertNil(AppModel.quotaWindowResetWait(for: APIError.message("nope"), quota: nil))
+        XCTAssertNil(AppModel.quotaWindowResetWait(for: rateLimited, quota: nil))
+        XCTAssertNil(AppModel.quotaWindowResetWait(for: rateLimited, quota: QuotaSnapshot()))
+
+        // Top-level reset still works (header-based providers).
+        let headerQuota = QuotaSnapshot(resetAt: Date().addingTimeInterval(600))
+        XCTAssertEqual(
+            AppModel.quotaWindowResetWait(for: rateLimited, quota: headerQuota) ?? -1,
+            605, accuracy: 5
+        )
+
+        // Plan-window snapshots carry resets on the windows, never
+        // top-level: the soonest window wins.
+        let windowed = QuotaSnapshot(
+            primaryWindow: QuotaSnapshot.Window(usedPercent: 100, windowMinutes: 300, resetAt: Date().addingTimeInterval(1_200)),
+            secondaryWindow: QuotaSnapshot.Window(usedPercent: 100, windowMinutes: 10_080, resetAt: Date().addingTimeInterval(300))
+        )
+        XCTAssertEqual(
+            AppModel.quotaWindowResetWait(for: rateLimited, quota: windowed) ?? -1,
+            305, accuracy: 5
+        )
+
+        // Past the resume bound, or already past: no wait.
+        let far = QuotaSnapshot(primaryWindow: QuotaSnapshot.Window(
+            usedPercent: 100, windowMinutes: 10_080,
+            resetAt: Date().addingTimeInterval(Limits.quotaWindowResumeMaxDelay + 1_000)
+        ))
+        XCTAssertNil(AppModel.quotaWindowResetWait(for: rateLimited, quota: far))
+    }
+
+    func testProactiveQuotaSourceFlags() {
+        XCTAssertFalse(ProviderKind.codex.hasProactiveQuotaSource)
+        XCTAssertFalse(ProviderKind.ollama.hasProactiveQuotaSource)
+        XCTAssertTrue(ProviderKind.openRouter.hasProactiveQuotaSource)
+        XCTAssertTrue(ProviderKind.claudeCode.hasProactiveQuotaSource)
+        XCTAssertTrue(ProviderKind.anthropic.hasProactiveQuotaSource)
+    }
 }

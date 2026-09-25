@@ -163,8 +163,14 @@ struct StatisticsView: View {
                             .font(.caption2).foregroundStyle(Theme.tertiaryText)
                     }
                     Spacer()
-                    Button("Refresh") { appModel.refreshQuota(for: provider, force: true) }
-                        .buttonStyle(SettingsSecondaryButtonStyle())
+                    if provider.kind.hasProactiveQuotaSource {
+                        Button("Refresh") { appModel.refreshQuota(for: provider, force: true) }
+                            .buttonStyle(SettingsSecondaryButtonStyle())
+                    } else {
+                        Text("Plan windows update after each reply.")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
                 }
                 if let quota = appModel.quotaByProvider[provider.id] {
                     if let plan = quota.planName { SettingsValueRow("Plan", plan) }
@@ -175,6 +181,13 @@ struct StatisticsView: View {
                     }
                     if let remaining = quota.tokensRemaining {
                         SettingsValueRow("Tokens remaining", quota.tokensLimit.map { "\(remaining) of \($0)" } ?? "\(remaining)")
+                    }
+                    if let used = quota.creditUsed {
+                        SettingsValueRow(
+                            "Credits used",
+                            quota.creditLimit.map { String(format: "$%.2f of $%.2f", used, $0) }
+                                ?? String(format: "$%.2f · no key cap set", used)
+                        )
                     }
                     Text("Observed \(quota.capturedAt, style: .relative) ago")
                         .font(.caption2)
