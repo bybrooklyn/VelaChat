@@ -100,6 +100,10 @@ public enum DefaultsKey {
     public static let mcpServers = "velachat.mcp-servers"
     public static let customSkillPaths = "velachat.custom-skill-paths"
     public static let skillsMigrationV1 = "velachat.skills-migration-v1"
+    /// Epoch seconds of the last explicit usage-history clear. A startup
+    /// legacy migration that snapshotted its source before this moment
+    /// skips the import instead of resurrecting just-cleared rows.
+    public static let usageHistoryClearedAt = "velachat.usage-history-cleared-at"
 
     /// The prefix a full reset purges — every key above shares it, and the
     /// reset path relies on that rather than an enumerated list it could

@@ -820,7 +820,7 @@ private struct GeneralCard: View {
             .buttonStyle(SettingsDestructiveButtonStyle())
             .confirmationDialog("Reset VelaChat completely?", isPresented: $confirmFullReset) {
                 Button("Erase Everything", role: .destructive) {
-                    appModel.performFullReset()
+                    Task { await appModel.performFullReset() }
                 }
             } message: {
                 Text("Every conversation, memory, setting, API key, and workspace file on this Mac is erased, and the app returns to first launch. This cannot be undone.")

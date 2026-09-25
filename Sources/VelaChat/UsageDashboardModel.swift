@@ -52,6 +52,10 @@ final class UsageDashboardModel {
         let period = period
         isLoading = true
         errorMessage = nil
+        // Stamped before the wipe so a startup legacy migration still
+        // assembling its source skips the import instead of resurrecting
+        // these rows after the clear commits.
+        Defaults.set(Date().timeIntervalSince1970, DefaultsKey.usageHistoryClearedAt)
         refreshTask = Task { [weak self] in
             do {
                 try await ledger.clear()

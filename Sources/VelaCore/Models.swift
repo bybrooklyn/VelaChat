@@ -1594,6 +1594,10 @@ public struct SavedConversation: Codable {
     /// Planning mode, and whether its one-time offer has been made.
     public var isPlanning: Bool = false
     public var didOfferPlanning: Bool = false
+    /// Staged but unsent attachments. Blob bytes live on disk under their
+    /// blob IDs (or inline for small files), so persisting the values here
+    /// survives a relaunch without ever putting bytes in UserDefaults.
+    public var draftAttachments: [Attachment] = []
 
     private enum CodingKeys: String, CodingKey {
         case id, title, messages, providerID, model, createdAt, updatedAt
@@ -1603,9 +1607,10 @@ public struct SavedConversation: Codable {
         /// never written.
         case legacyWorkspaceRootPath = "workspaceRootPath"
         case isPlanning, didOfferPlanning
+        case draftAttachments
     }
 
-    public init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], projectWorkspace: ProjectWorkspace? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false) {
+    public init(id: UUID, title: String, messages: [ChatMessage], providerID: UUID?, model: String, createdAt: Date, updatedAt: Date, draftText: String = "", titleIsCustom: Bool = false, isPinned: Bool = false, activeSkillPaths: [String] = [], projectWorkspace: ProjectWorkspace? = nil, isPlanning: Bool = false, didOfferPlanning: Bool = false, draftAttachments: [Attachment] = []) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -1620,6 +1625,7 @@ public struct SavedConversation: Codable {
         self.projectWorkspace = projectWorkspace
         self.isPlanning = isPlanning
         self.didOfferPlanning = didOfferPlanning
+        self.draftAttachments = draftAttachments
     }
 
     public init(from decoder: Decoder) throws {
@@ -1646,6 +1652,7 @@ public struct SavedConversation: Codable {
         }
         isPlanning = try container.decodeIfPresent(Bool.self, forKey: .isPlanning) ?? false
         didOfferPlanning = try container.decodeIfPresent(Bool.self, forKey: .didOfferPlanning) ?? false
+        draftAttachments = try container.decodeIfPresent([Attachment].self, forKey: .draftAttachments) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1665,6 +1672,7 @@ public struct SavedConversation: Codable {
         try container.encodeIfPresent(projectWorkspace, forKey: .projectWorkspace)
         try container.encode(isPlanning, forKey: .isPlanning)
         try container.encode(didOfferPlanning, forKey: .didOfferPlanning)
+        try container.encode(draftAttachments, forKey: .draftAttachments)
     }
 }
 

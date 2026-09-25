@@ -278,6 +278,16 @@ public actor UsageLedger {
 
         var preparedBackfill: [RequestUsage] = []
         var skippedInsideRange = 0
+        // Same-provider hulls only — deliberately not any-hull: a message
+        // on a provider with no buckets of its own still imports even
+        // inside another provider's span (see the `otherProvider` case in
+        // UsageLedgerTests), because its tokens were never counted
+        // anywhere. Two known residual edges: a reply created just before
+        // a hull but completed inside it double-counts (buckets key on
+        // completion hour, backfill on send-start), and messages orphaned
+        // by a provider delete/re-add miss their old hull. Both are
+        // one-time, shrinking-population effects; widening the skip would
+        // trade rare inflation for silent drops of real usage.
         for item in messageBackfill {
             var usage = item.usage
             if let providerID = usage.providerID,

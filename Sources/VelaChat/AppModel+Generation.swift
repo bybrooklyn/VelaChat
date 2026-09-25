@@ -999,6 +999,8 @@ extension AppModel {
             conversation.messages[index].reconcileRunningActivities()
             recordUsage(for: conversation, assistantID: assistantID)
         }
+        sendStartedAt.removeValue(forKey: assistantID)
+        finishReasonByMessage.removeValue(forKey: assistantID)
         settleGenerationIdentity(for: conversation)
         conversation.currentGenerationID = nil
         conversation.generationTask = nil
@@ -1214,6 +1216,10 @@ extension AppModel {
             conversation.messages[index].reconcileRunningActivities()
             // A stopped reply still consumed tokens; count what we saw.
             recordUsage(for: conversation, assistantID: assistantID)
+            // Terminal for this reply: TTFT and finish-reason entries must
+            // not outlive it into the session-long maps.
+            sendStartedAt.removeValue(forKey: assistantID)
+            finishReasonByMessage.removeValue(forKey: assistantID)
         } else if let identity,
                   let messages = generationRestorationByIdentity[identity.id] {
             // Stop during model discovery/preparation rolls back a historical
@@ -1247,7 +1253,12 @@ extension AppModel {
         // everything after it, e.g. a failed reply) must go too — otherwise
         // retry duplicates the prompt instead of resending it.
         let snapshot = conversation.messages
+        let removed = Array(conversation.messages[lastUserIndex...])
         conversation.messages.removeSubrange(lastUserIndex...)
+        // Per-message caches (usage, recall, reveal queues) keyed by the
+        // removed IDs would otherwise leak; the snapshot keeps the durable
+        // copies (`message.usage` rides on the struct) for a restore.
+        discardTransientState(for: removed)
         send(lastUser.content, replacingReplyWith: nil, attachments: lastUser.attachments, restoring: (conversation, snapshot))
     }
 
@@ -1603,6 +1614,11 @@ extension AppModel {
         let calibration = calibrationSampleByMessage.removeValue(forKey: assistantID)
         guard let message = conversation.messages.first(where: { $0.id == assistantID }),
               let summary = usageByMessage[assistantID] ?? message.usage else { return }
+        // The message itself carries the durable copy (stamped at apply
+        // time); the map entry has served its purpose and would otherwise
+        // accumulate one row per reply for the whole session. Later reads
+        // fall back to `message.usage`, so repeated calls stay correct.
+        usageByMessage.removeValue(forKey: assistantID)
         // Durable accounting is emitted once per actual provider request as
         // `.requestUsage` above. Do not also write the old per-reply hourly
         // bucket here: tool loops/auto-continues would be collapsed and every
@@ -1787,6 +1803,7 @@ extension AppModel {
         flushReveal(for: assistantID, conversation: conversation)
         recordUsage(for: conversation, assistantID: assistantID)
         finishReasonByMessage[assistantID] = nil
+        sendStartedAt.removeValue(forKey: assistantID)
         // The end-of-reply state changes (streaming indicator out, action
         // row and usage label in) fade rather than popping in one frame.
         withAnimation(.easeOut(duration: 0.3)) {
@@ -2050,6 +2067,8 @@ extension AppModel {
         }
         recordUsage(for: conversation, assistantID: assistantID)
         learnContextWindow(from: message, conversation: conversation, model: learnedModel)
+        sendStartedAt.removeValue(forKey: assistantID)
+        finishReasonByMessage.removeValue(forKey: assistantID)
         conversation.updatedAt = Date()
         // See the matching comment in `finishGeneration` — same race guard.
         if conversation.currentGenerationID == assistantID {

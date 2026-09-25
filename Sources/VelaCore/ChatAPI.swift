@@ -748,7 +748,12 @@ public final class CompatibleChatClient: @unchecked Sendable {
             let requestStartedAt = Date()
             var didEmitRequestUsage = false
             var latestRoundUsage: StreamChunk.Usage?
-            var effectiveModel = model
+            // Nil until the provider names a concrete deployment: the
+            // ledger builders fall back to the requested model, so an
+            // unechoed request groups under what was asked for rather
+            // than the wire ID (which may carry route suffixes like
+            // `:online` the model catalog never contains).
+            var effectiveModel: String? = nil
             var requestQuota: QuotaSnapshot?
             defer {
                 if !didEmitRequestUsage {
@@ -765,20 +770,11 @@ public final class CompatibleChatClient: @unchecked Sendable {
                     )))
                 }
             }
-            let (bytes, response, retriedWithoutUsage) = try await openChatCompletionStream(
+            let (bytes, response, _) = try await openChatCompletionStream(
                 request: request,
                 profile: profile,
                 includedUsage: includeStreamingUsage
             )
-            if retriedWithoutUsage {
-                onEvent(.requestUsage(RequestUsage(
-                    providerID: profile.id,
-                    requestedModelID: usageRequestedModel,
-                    effectiveModelID: model,
-                    purpose: round == 0 ? purpose : .toolRound,
-                    outcome: .failed
-                )))
-            }
             if let http = response as? HTTPURLResponse, let quota = QuotaSnapshot(headers: http.allHeaderFields) {
                 requestQuota = quota
                 onEvent(.quota(quota))
@@ -855,7 +851,7 @@ public final class CompatibleChatClient: @unchecked Sendable {
                 quota: requestQuota
             )))
             didEmitRequestUsage = true
-            if effectiveModel.caseInsensitiveCompare(model) != .orderedSame {
+            if let effectiveModel, effectiveModel.caseInsensitiveCompare(model) != .orderedSame {
                 onEvent(.modelMetadata(RuntimeModelMetadata(
                     requestedModel: usageRequestedModel,
                     effectiveModel: effectiveModel
@@ -1445,7 +1441,10 @@ public final class CompatibleChatClient: @unchecked Sendable {
             let requestStartedAt = Date()
             var didEmitRequestUsage = false
             var latestRequestUsage: CodexResponseEvent.Response.Usage?
-            var effectiveModel = model
+            // Nil until the provider names a concrete deployment (see the
+            // compatible path): unechoed requests group under the
+            // requested model, not the wire ID.
+            var effectiveModel: String? = nil
             var requestQuota: QuotaSnapshot?
             defer {
                 if !didEmitRequestUsage {
@@ -1538,7 +1537,7 @@ public final class CompatibleChatClient: @unchecked Sendable {
                 quota: requestQuota
             )))
             didEmitRequestUsage = true
-            if effectiveModel.caseInsensitiveCompare(model) != .orderedSame {
+            if let effectiveModel, effectiveModel.caseInsensitiveCompare(model) != .orderedSame {
                 onEvent(.modelMetadata(RuntimeModelMetadata(
                     requestedModel: model,
                     effectiveModel: effectiveModel
@@ -1781,7 +1780,10 @@ public final class CompatibleChatClient: @unchecked Sendable {
             let requestStartedAt = Date()
             var didEmitRequestUsage = false
             var latestRequestUsage: AnthropicStreamEvent.Usage?
-            var effectiveModel = model
+            // Nil until the provider names a concrete deployment (see the
+            // compatible path): unechoed requests group under the
+            // requested model, not the wire ID.
+            var effectiveModel: String? = nil
             var requestQuota: QuotaSnapshot?
             defer {
                 if !didEmitRequestUsage {
@@ -1872,7 +1874,7 @@ public final class CompatibleChatClient: @unchecked Sendable {
                 quota: requestQuota
             )))
             didEmitRequestUsage = true
-            if effectiveModel.caseInsensitiveCompare(model) != .orderedSame {
+            if let effectiveModel, effectiveModel.caseInsensitiveCompare(model) != .orderedSame {
                 onEvent(.modelMetadata(RuntimeModelMetadata(
                     requestedModel: model,
                     effectiveModel: effectiveModel

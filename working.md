@@ -67,6 +67,41 @@ OAuth/key endpoints need real credentials; single-model lookup needs
 a hand-typed-ID walkthrough; mermaid offline message + Reload button
 need eyes (no Screen Recording here).
 
+## 2026-09-25 (cont.) — banked findings round (uncommitted)
+
+Worked the review-findings bank top-down, same tree.
+
+**Data loss, fixed.** History writes serialize through a dedicated
+queue: the quit/destructive sync flush drains queued async encodes
+first, so a slow detached write can no longer land after it with a
+staler snapshot. Corrupt history salvages per-conversation (readable
+rows kept, original stashed, counts reported) instead of total loss.
+Pending chats with real content snapshot with everything else;
+`SavedConversation` carries `draftAttachments` (backward-compatible:
+decodeIfPresent, defaulted init param). `AttachmentStore.save`
+returns nil on failure and callers keep bytes inline — a failed disk
+write now degrades to memory pressure, never a blob ID that loads
+empty. Usage clear stamps `usageHistoryClearedAt`; a startup
+migration that snapshotted earlier commits an empty marker + retires
+legacy instead of resurrecting rows. Full reset awaits its SQLite
+wipes (was fire-and-forget). `clearHistory` now forgets memory index
+entries and discards analysis sessions like delete does.
+
+**Leaks, fixed.** `recordUsage` evicts its map entry (message carries
+the durable copy); `discardTransientState` covers recall + TTFT maps;
+edit/regenerate/retry discard removed ranges; stop/fail/cancel/
+complete all evict TTFT + finish-reason entries.
+
+**Counting, fixed.** `stream_options` retry phantom row deleted (the
+defer already covers genuine failures). `effectiveModel` defaults to
+nil until a provider echoes a deployment, so unechoed requests group
+under the requested model instead of the `:online`-suffixed wire ID
+(all three stream paths). Migration skip stays same-provider by
+deliberate contract (widening it broke the `otherProvider` test and
+risks dropping real usage); the hour-boundary and rename edges are
+documented at the skip site. Today row shows tracker-style pacing
+against the 7-day daily average, computed from a second ledger query.
+
 ## 2026-08-24 — one activity line per reply, and artifacts you can click
 
 Feedback: the tool rows "just suck", and produced files "aren't clickable

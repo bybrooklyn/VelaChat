@@ -1535,6 +1535,7 @@ final class AppModel {
     /// defaults key is removed only after the ledger confirms its transaction
     /// committed; failures remain retryable on the next launch.
     private func migrateLegacyUsageIfNeeded() async {
+        let snapshotStartedAt = Date().timeIntervalSince1970
         let aggregates: [LegacyUsageAggregate] = usage.buckets.compactMap { key, bucket in
             let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
             guard parts.count == 2,
@@ -1612,6 +1613,20 @@ final class AppModel {
         }
 
         do {
+            // The user cleared usage history while this migration was still
+            // assembling its source: honor the clear. Committing an empty
+            // migration records the marker (so a relaunch doesn't retry
+            // into the same race) and retires the legacy buckets the clear
+            // was meant to erase.
+            if Defaults.double(DefaultsKey.usageHistoryClearedAt) > snapshotStartedAt {
+                _ = try await UsageLedger.shared.migrateLegacy(
+                    identifier: "velachat-usage-ledger-v1",
+                    aggregates: [],
+                    messageBackfill: []
+                )
+                usage.retireLegacyAfterCommit()
+                return
+            }
             let result = try await UsageLedger.shared.migrateLegacy(
                 identifier: "velachat-usage-ledger-v1",
                 aggregates: aggregates,
@@ -1834,7 +1849,7 @@ final class AppModel {
     /// workspace files, logo cache, hotkey — then returns to onboarding.
     /// Order matters: in-memory state resets BEFORE the defaults purge,
     /// because property didSets re-write their keys.
-    func performFullReset() {
+    func performFullReset() async {
         for conversation in conversations where conversation.isGenerating {
             stopGeneration(for: conversation)
         }
@@ -1842,10 +1857,14 @@ final class AppModel {
         // Keep open SQLite files in place and clear them through their actors;
         // deleting the parent directory under a live handle leaves the process
         // writing to an unlinked database until relaunch.
-        Task {
-            try? await UsageLedger.shared.clear()
-            await MemoryStore.shared.deleteEverything()
+        // Awaited, not fire-and-forget: quitting mid-reset used to let the
+        // "erased" usage history and memories survive onto the next launch.
+        do {
+            try await UsageLedger.shared.clear()
+        } catch {
+            print("[VelaChat] Full reset could not clear usage history: \(error.localizedDescription)")
         }
+        await MemoryStore.shared.deleteEverything()
         AttachmentStore.removeAll()
         RemoteLogoLoader.shared.reset()
         // App Support caches/workspaces with no open database handles.
@@ -2437,6 +2456,8 @@ final class AppModel {
         planByMessage = planByMessage.filter { !ids.contains($0.key) }
         dataResultsByMessage = dataResultsByMessage.filter { !ids.contains($0.key) }
         finishReasonByMessage = finishReasonByMessage.filter { !ids.contains($0.key) }
+        recallByMessage = recallByMessage.filter { !ids.contains($0.key) }
+        sendStartedAt = sendStartedAt.filter { !ids.contains($0.key) }
         for id in ids {
             revealTasks[id]?.cancel()
             revealTasks[id] = nil
@@ -2486,7 +2507,12 @@ final class AppModel {
         for conversation in conversations {
             cancelPendingInteractions(conversationID: conversation.id)
             SandboxManager.cleanup(for: conversation.id)
+            memoryIndexer.forget(conversationID: conversation.id)
             let id = conversation.id
+            // Matches deleteConversation: the analysis database must not
+            // keep a cleared spreadsheet resident, and cleared chats must
+            // stop resurfacing through memory recall.
+            Task { [analysisSessions] in await analysisSessions.discard(conversationID: id) }
             Task { await ChatGPTWebChat.shared.forgetContinuation(for: id) }
         }
         conversations.removeAll()
@@ -2586,6 +2612,7 @@ final class AppModel {
             ? conversation.messages[nextIndex]
             : nil
         let snapshot = conversation.messages
+        discardTransientState(for: Array(conversation.messages[index...]))
         conversation.messages.removeSubrange(index...)
         send(newContent, replacingReplyWith: priorReply, attachments: message.attachments, restoring: (conversation, snapshot))
     }
@@ -2609,6 +2636,7 @@ final class AppModel {
         let priorUser = conversation.messages[index - 1]
         let priorReply = conversation.messages[index]
         let snapshot = conversation.messages
+        discardTransientState(for: Array(conversation.messages[(index - 1)...]))
         conversation.messages.removeSubrange((index - 1)...)
         send(priorUser.content, replacingReplyWith: priorReply, attachments: priorUser.attachments, restoring: (conversation, snapshot))
     }
@@ -3075,6 +3103,11 @@ final class AppModel {
     /// pin, and finished reply stalled the main thread. Mutations mark dirty;
     /// the actual encode runs ~1s later, off the main thread. Destructive
     /// operations and app termination call `flushHistoryNow()` instead.
+    ///
+    /// All encodes serialize through `historyWriteQueue` so ordering is
+    /// call-order, never last-finisher-wins.
+    private let historyWriteQueue = DispatchQueue(label: "chat.vela.history-write", qos: .utility)
+
     func saveHistory() {
         guard historySaveTask == nil else { return }
         historySaveTask = Task { [weak self] in
@@ -3095,20 +3128,34 @@ final class AppModel {
     }
 
     func writeHistoryNow(synchronously: Bool = false) {
-        let snapshots = conversations.map {
-            SavedConversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, projectWorkspace: $0.projectWorkspace, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning)
+        // A pending chat with real content (typed draft, staged files) is
+        // unsent work, not an empty row: it snapshots with everything else
+        // and restores as a listed conversation. Pristine pending chats
+        // still evaporate as before.
+        var listed = conversations
+        if let pending = pendingConversation, !isPristine(pending),
+           !listed.contains(where: { $0.id == pending.id }) {
+            listed.append(pending)
+        }
+        let snapshots = listed.map {
+            SavedConversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, projectWorkspace: $0.projectWorkspace, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning, draftAttachments: $0.draftAttachments)
         }
         let key = historyKey
-        if synchronously {
+        let work = {
             if let data = try? JSONEncoder().encode(snapshots) {
                 UserDefaults.standard.set(data, forKey: key)
             }
+        }
+        if synchronously {
+            // Drains any queued async encode first, then writes inline —
+            // one at a time, in call order. An untracked detached write
+            // used to land AFTER the quit flush with a staler snapshot
+            // (last-finisher-wins), silently regressing history. Blocking
+            // briefly here costs one encode, the same work this path
+            // already does.
+            historyWriteQueue.sync(execute: work)
         } else {
-            Task.detached(priority: .utility) {
-                if let data = try? JSONEncoder().encode(snapshots) {
-                    UserDefaults.standard.set(data, forKey: key)
-                }
-            }
+            historyWriteQueue.async(execute: work)
         }
     }
 
@@ -3117,16 +3164,41 @@ final class AppModel {
     /// directly — there's nothing to attach it to yet at this point.
     private func restoreHistory() -> String? {
         guard let data = UserDefaults.standard.data(forKey: historyKey) else { return nil }
-        guard let snapshots = try? JSONDecoder().decode([SavedConversation].self, from: data) else {
+        if let snapshots = try? JSONDecoder().decode([SavedConversation].self, from: data) {
+            restoreConversations(from: snapshots)
+            return nil
+        }
+        // One corrupt row used to discard the entire history. Salvage
+        // per-conversation instead: decode each element on its own and
+        // keep what's readable. The original blob is still stashed for
+        // forensics either way.
+        guard let raw = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
             UserDefaults.standard.set(data, forKey: historyBackupKey)
             return "Saved conversations could not be read; a backup was kept."
         }
+        var salvaged: [SavedConversation] = []
+        for element in raw {
+            guard JSONSerialization.isValidJSONObject(element),
+                  let elementData = try? JSONSerialization.data(withJSONObject: element),
+                  let snapshot = try? JSONDecoder().decode(SavedConversation.self, from: elementData) else { continue }
+            salvaged.append(snapshot)
+        }
+        UserDefaults.standard.set(data, forKey: historyBackupKey)
+        guard !salvaged.isEmpty else {
+            return "Saved conversations could not be read; a backup was kept."
+        }
+        restoreConversations(from: salvaged)
+        return "Recovered \(salvaged.count) of \(raw.count) saved conversations; the unreadable file was kept as a backup."
+    }
+
+    private func restoreConversations(from snapshots: [SavedConversation]) {
         conversations = snapshots.map {
-            Conversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, projectWorkspace: $0.projectWorkspace, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning)
+            let conversation = Conversation(id: $0.id, title: $0.title, messages: $0.messages, providerID: $0.providerID, model: $0.model, createdAt: $0.createdAt, updatedAt: $0.updatedAt, draftText: $0.draftText, titleIsCustom: $0.titleIsCustom, isPinned: $0.isPinned, activeSkillPaths: $0.activeSkillPaths, projectWorkspace: $0.projectWorkspace, isPlanning: $0.isPlanning, didOfferPlanning: $0.didOfferPlanning)
+            conversation.draftAttachments = $0.draftAttachments
+            return conversation
         }
         reconcileInterruptedMessages()
         activeConversationID = conversations.first?.id
-        return nil
     }
 
     /// No generation `Task` can survive a relaunch, so a message still

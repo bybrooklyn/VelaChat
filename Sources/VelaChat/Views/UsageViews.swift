@@ -57,8 +57,17 @@ struct UsageGaugeButton: View {
 struct UsagePopover: View {
     @Environment(AppModel.self) private var appModel
     @State private var todayUsage: UsageAggregate?
+    @State private var weekDailyAverage: DailyAverage?
     @State private var isLoadingLocalUsage = false
     var onOpenUsageAndLimits: (() -> Void)?
+
+    /// This week's per-day average for the selected provider — the baseline
+    /// today's burn is paced against. Pure value, computed from a second
+    /// ledger query alongside today's.
+    struct DailyAverage: Equatable {
+        var requestsPerDay: Double
+        var tokensPerDay: Double?
+    }
 
     init(onOpenUsageAndLimits: (() -> Void)? = nil) {
         self.onOpenUsageAndLimits = onOpenUsageAndLimits
@@ -98,10 +107,24 @@ struct UsagePopover: View {
             if let provider = appModel.selectedProvider {
                 appModel.refreshQuota(for: provider, force: true)
                 isLoadingLocalUsage = true
-                let report = try? await UsageLedger.shared.query(
+                async let today = UsageLedger.shared.query(
                     UsageQuery(period: .today, providerID: provider.id)
                 )
-                todayUsage = report?.aggregate
+                async let week = UsageLedger.shared.query(
+                    UsageQuery(period: .sevenDays, providerID: provider.id)
+                )
+                todayUsage = (try? await today)?.aggregate
+                if let report = try? await week {
+                    let aggregate = report.aggregate
+                    let tokens = (aggregate.inputTokens.value ?? 0) + (aggregate.outputTokens.value ?? 0)
+                    let hasTokens = aggregate.inputTokens.value != nil || aggregate.outputTokens.value != nil
+                    weekDailyAverage = DailyAverage(
+                        requestsPerDay: Double(aggregate.requestCount) / 7,
+                        tokensPerDay: hasTokens ? Double(tokens) / 7 : nil
+                    )
+                } else {
+                    weekDailyAverage = nil
+                }
                 isLoadingLocalUsage = false
             }
         }
@@ -163,6 +186,11 @@ struct UsagePopover: View {
                     Text(todayUsageLabel(usage))
                         .font(.caption)
                         .foregroundStyle(Theme.secondaryText)
+                    if let pace = paceLabel(today: usage) {
+                        Text(pace)
+                            .font(.caption2)
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
                     if let cost = usage.cost.amountUSD {
                         let partial = usage.cost.coverage.indeterminateRequests > 0
                             || usage.cost.coverage.unreportedRequests > 0
@@ -243,5 +271,20 @@ struct UsagePopover: View {
             : (usage.inputTokens.value ?? 0) + (usage.outputTokens.value ?? 0)
         let tokenLabel = tokens.map { appModel.formattedTokenCount($0) + " tokens" } ?? "usage unreported"
         return "\(usage.requestCount) request\(usage.requestCount == 1 ? "" : "s") · \(tokenLabel)"
+    }
+
+    /// Today's burn paced against this week's daily average, tracker-style:
+    /// only speaks up when the day is notably heavy or quiet.
+    private func paceLabel(today: UsageAggregate) -> String? {
+        guard let average = weekDailyAverage,
+              average.requestsPerDay > 0,
+              today.requestCount > 0 else { return nil }
+        let ratio = Double(today.requestCount) / average.requestsPerDay
+        switch ratio {
+        case 2...: return String(format: "≈ %.1f× your daily average — heavy day", ratio)
+        case 1.2...: return String(format: "≈ %.1f× your daily average", ratio)
+        case ...0.5: return "Quiet day so far — ≈ \(Int((ratio * 100).rounded()))% of average"
+        default: return nil
+        }
     }
 }
