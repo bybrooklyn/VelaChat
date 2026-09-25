@@ -134,3 +134,19 @@ wiring — the mistakes below are easy to repeat blind.
   like the bundled build can.
 - `just smoke` — builds the release bundle and opens it.
 - `swift test` — CI only (see above).
+
+## Build toolchain (no Xcode on this machine)
+
+- The CLT's **current** SDK declares SwiftUI's `@State` et al. as macros
+  whose `SwiftUIMacros` plugin Apple doesn't ship in CLT — so a plain
+  `swift build` fails on every SwiftUI file (including vendored/remote
+  packages), on clean main exactly like anywhere else. It is a toolchain
+  gap, not a code bug; do not "fix" app code for it.
+- `just build` / `just app` (`Scripts/build-app.sh`) pass
+  `--sdk …/MacOSX26.5.sdk` automatically when that SDK exists and
+  Xcode doesn't — 26.5 still declares those wrappers without macros.
+  `VELACHAT_SDK` overrides the choice. CI (full Xcode) is unaffected:
+  it calls `swift build` directly with its default SDK.
+- If Apple drops the old SDKs from a future CLT install, local builds
+  break again the same way — check
+  `/Library/Developer/CommandLineTools/SDKs/` first.

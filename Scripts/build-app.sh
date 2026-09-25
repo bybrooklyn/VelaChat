@@ -22,8 +22,17 @@ if [[ "${1:-}" == "--release" ]]; then
   CONFIG="release"
 fi
 
+# Same CLT workaround as the justfile: allow VELACHAT_SDK to override,
+# else prefer the macro-free 26.5 SDK on Xcode-less machines.
+SDK_PATH="${VELACHAT_SDK:-}"
+if [[ -z "$SDK_PATH" && -d "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" && ! -d "/Applications/Xcode.app" ]]; then
+  SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
+fi
+SDK_ARGS=()
+[[ -n "$SDK_PATH" ]] && SDK_ARGS=(--sdk "$SDK_PATH")
+
 echo "▶ Building VelaChat ($CONFIG)…"
-swift build -c "$CONFIG" --package-path "$ROOT"
+swift build -c "$CONFIG" "${SDK_ARGS[@]}" --package-path "$ROOT"
 
 BIN="$ROOT/.build/$CONFIG/VelaChat"
 APP="$ROOT/build/VelaChat.app"

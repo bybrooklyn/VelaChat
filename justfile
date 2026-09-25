@@ -1,19 +1,25 @@
 # VelaChat — task runner
 set shell := ["bash", "-c"]
 
+# CLT-only machines (no Xcode) ship no SwiftUIMacros plugin for the
+# current SDK, so every SwiftUI file fails to compile there. The macOS
+# 26.5 CLT SDK still declares @State et al. without macros — use it when
+# present and Xcode isn't. Full-Xcode machines (CI) use their default.
+sdk_flag := `if [ -d "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" ] && [ ! -d "/Applications/Xcode.app" ]; then echo "--sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"; fi`
+
 default: build
 
 build:
-    swift build
+    swift build {{sdk_flag}}
 
 check:
-    swift build
+    swift build {{sdk_flag}}
 
 build-release:
-    swift build -c release
+    swift build -c release {{sdk_flag}}
 
 run:
-    swift run VelaChat
+    swift run VelaChat {{sdk_flag}}
 
 setup-signing:
     ./Scripts/setup-signing.sh
