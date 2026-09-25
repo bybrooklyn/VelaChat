@@ -1,4 +1,5 @@
 import XCTest
+@testable import VelaChat
 @testable import VelaCore
 
 /// The context window drives three things at once: the ring, the pre-send
@@ -42,6 +43,8 @@ final class ContextWindowTableTests: XCTestCase {
             ("gpt-oss:20b", 131_072),
             ("grok-4", 256_000),
             ("command-r-plus", 128_000),
+            ("phi-4", 16_384),
+            ("microsoft/phi-4-mini-instruct", 128_000),
         ]
         for (id, expected) in cases {
             XCTAssertEqual(ContextWindowTable.contextLength(for: id), expected, "id: \(id)")
@@ -86,6 +89,7 @@ final class ContextWindowTableTests: XCTestCase {
         XCTAssertEqual(ContextWindowTable.contextLength(for: "llama-3.1-8b"), 131_072, "must not fall through to llama-3's 8192")
         XCTAssertEqual(ContextWindowTable.contextLength(for: "mistral-large"), 131_072, "must not fall through to mistral's 32768")
         XCTAssertEqual(ContextWindowTable.contextLength(for: "deepseek-v4-pro"), 1_000_000, "must not fall through to deepseek-v3's 65536")
+        XCTAssertEqual(ContextWindowTable.contextLength(for: "phi-4-mini-instruct"), 128_000, "must not fall through to phi-4's 16384")
     }
 }
 
@@ -224,5 +228,166 @@ final class ContextWindowLearningTests: XCTestCase {
             ContextWindowLearning.contextLength(fromErrorText: "This model's maximum context length is 128,000 tokens."),
             128_000
         )
+    }
+}
+
+final class ContextLimitEvidenceTests: XCTestCase {
+
+    private let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+
+    private func scope(endpoint: String = "https://example.test/v1", model: String = "vendor/model") -> ModelEvidenceScope {
+        ModelEvidenceScope(
+            providerProfileID: profileID,
+            endpointFingerprint: ModelEvidenceScope.fingerprint(endpoint: endpoint),
+            requestedModel: model,
+            effectiveModel: model
+        )
+    }
+
+    func testAuthorityOrderAndConflictsAreRetained() throws {
+        let target = scope()
+        let evidence = [
+            ContextLimitEvidence(value: 8_192, source: .curatedFamily, scope: target, exactModelMatch: false),
+            ContextLimitEvidence(value: 32_000, source: .bundledSnapshot, scope: target),
+            ContextLimitEvidence(value: 64_000, source: .modelsDevCache, scope: target),
+            ContextLimitEvidence(value: 96_000, source: .modelsDevLive, scope: target),
+            ContextLimitEvidence(value: 128_000, source: .providerCatalog, scope: target),
+            ContextLimitEvidence(value: 48_000, source: .runtimeConfiguration, scope: target),
+            ContextLimitEvidence(value: 40_000, source: .runtimeReport, scope: target),
+            ContextLimitEvidence(value: 36_000, source: .manualOverride, scope: target),
+        ]
+
+        let resolution = try XCTUnwrap(ModelLimitEvidenceResolver.resolveContext(evidence, for: target))
+        XCTAssertEqual(resolution.primary.value, 36_000)
+        XCTAssertEqual(resolution.primary.source, .manualOverride)
+        XCTAssertEqual(Set(resolution.conflicts.map(\.value)), Set(evidence.dropLast().map(\.value)))
+    }
+
+    func testEndpointAndRoutedModelChangesInvalidateEvidence() {
+        let original = scope(endpoint: "https://one.example/v1", model: "openai/gpt-5:online")
+        let evidence = ContextLimitEvidence(value: 64_000, source: .runtimeReport, scope: original)
+
+        XCTAssertNotNil(ModelLimitEvidenceResolver.resolveContext([evidence], for: original))
+        XCTAssertNil(ModelLimitEvidenceResolver.resolveContext(
+            [evidence],
+            for: scope(endpoint: "https://two.example/v1", model: "openai/gpt-5:online")
+        ))
+        XCTAssertNil(ModelLimitEvidenceResolver.resolveContext(
+            [evidence],
+            for: scope(endpoint: "https://one.example/v1", model: "openai/gpt-5")
+        ))
+    }
+
+    func testExactMetadataBeatsFamilyEvidenceAtSameAuthority() throws {
+        let target = scope()
+        let family = ContextLimitEvidence(
+            value: 8_192,
+            source: .bundledSnapshot,
+            scope: target,
+            exactModelMatch: false
+        )
+        let exact = ContextLimitEvidence(
+            value: 131_072,
+            source: .bundledSnapshot,
+            scope: target,
+            exactModelMatch: true
+        )
+        let resolved = try XCTUnwrap(ModelLimitEvidenceResolver.resolveContext([family, exact], for: target))
+        XCTAssertEqual(resolved.primary, exact)
+    }
+
+    func testRemoteModelCodablePreservesEvidenceAndCompatibilityAccessors() throws {
+        let target = scope()
+        let model = RemoteModel(
+            id: "vendor/model",
+            contextLimitEvidence: [
+                ContextLimitEvidence(value: 8_192, source: .curatedFamily, scope: target, exactModelMatch: false),
+                ContextLimitEvidence(value: 96_000, source: .modelsDevLive, scope: target),
+            ],
+            outputLimitEvidence: [
+                OutputLimitEvidence(value: 16_384, source: .modelsDevLive, scope: target),
+            ]
+        )
+        XCTAssertEqual(model.contextLength, 96_000)
+        XCTAssertEqual(model.maxOutputTokens, 16_384)
+
+        let decoded = try JSONDecoder().decode(RemoteModel.self, from: JSONEncoder().encode(model))
+        XCTAssertEqual(decoded.contextLimitEvidence, model.contextLimitEvidence)
+        XCTAssertEqual(decoded.contextResolution?.primary.source, .modelsDevLive)
+        XCTAssertEqual(decoded.contextLength, 96_000)
+    }
+
+    func testModelsDevExactMetadataBeatsCuratedButNotProviderCatalog() throws {
+        let registryJSON = #"{"openai":{"models":{"gpt-4o":{"id":"gpt-4o","limit":{"context":77777,"output":12345},"cost":{"input":1.25,"output":5.0,"cache_read":0.2,"cache_write":1.5,"tiers":[{"input":2.5,"output":8.0,"cache_read":0.4,"cache_write":3.0,"tier":{"type":"context","size":50000}}]}}}}}"#
+        try ModelsDevRegistry.loadForTesting(Data(registryJSON.utf8), source: .modelsDevLive)
+        let target = scope(model: "gpt-4o")
+
+        let fallbackOnly = RemoteModel(
+            id: "gpt-4o",
+            contextLimitEvidence: [
+                ContextLimitEvidence(value: 128_000, source: .curatedFamily, scope: target, exactModelMatch: false),
+            ]
+        )
+        let enrichedFallback = try XCTUnwrap(ModelsDevRegistry.enrich(
+            [fallbackOnly], kind: .openAI, baseURL: "https://api.openai.com/v1"
+        ).first)
+        XCTAssertEqual(enrichedFallback.contextLength, 77_777)
+        XCTAssertEqual(enrichedFallback.contextResolution?.primary.source, .modelsDevLive)
+
+        let providerReported = RemoteModel(
+            id: "gpt-4o",
+            contextLength: 64_000,
+            contextLimitEvidence: fallbackOnly.contextLimitEvidence,
+            evidenceScope: target,
+            scalarEvidenceSource: .providerCatalog
+        )
+        let enrichedProvider = try XCTUnwrap(ModelsDevRegistry.enrich(
+            [providerReported], kind: .openAI, baseURL: "https://api.openai.com/v1"
+        ).first)
+        XCTAssertEqual(enrichedProvider.contextLength, 64_000)
+        XCTAssertTrue(enrichedProvider.contextResolution?.conflicts.contains { $0.value == 77_777 } == true)
+        XCTAssertEqual(enrichedProvider.maxOutputTokens, 12_345)
+        let price = try XCTUnwrap(enrichedProvider.pricingEvidence.first { $0.source == .modelsDevLive })
+        XCTAssertEqual(price.cacheReadPerMillion, 0.2)
+        XCTAssertEqual(price.cacheWritePerMillion, 1.5)
+        XCTAssertEqual(price.longContextInputPerMillion, 2.5)
+        XCTAssertEqual(price.longContextOutputPerMillion, 8.0)
+        XCTAssertEqual(price.longContextThresholdTokens, 50_000)
+    }
+
+    func testContextBudgetReservesOutputAndShowsOverageWithoutClamping() {
+        let budget = ContextBudget(
+            contextLimit: 100_000,
+            requestedOutputTokens: 20_000,
+            safetyMarginTokens: 5_000,
+            inputTokens: 80_000
+        )
+        XCTAssertEqual(budget.usableInputTokens, 75_000)
+        XCTAssertEqual(budget.remainingInputTokens, -5_000)
+        XCTAssertGreaterThan(budget.utilization, 1)
+        XCTAssertTrue(budget.shouldCompact())
+        XCTAssertTrue(budget.cannotFit)
+    }
+
+    @MainActor func testOnlineRouteInheritsBaseModelCapacityInRoutedScope() throws {
+        let base = ModelEvidenceScope(
+            providerProfileID: UUID(),
+            endpointFingerprint: "endpoint",
+            requestedModel: "openai/gpt-5",
+            effectiveModel: "openai/gpt-5"
+        )
+        let routed = ModelEvidenceScope(
+            providerProfileID: base.providerProfileID,
+            endpointFingerprint: base.endpointFingerprint,
+            requestedModel: "openai/gpt-5",
+            effectiveModel: "openai/gpt-5:online"
+        )
+        let evidence = ContextLimitEvidence(value: 400_000, source: .providerCatalog, scope: base)
+        XCTAssertNil(ModelLimitEvidenceResolver.resolveContext([evidence], for: routed))
+
+        let inherited = AppModel.contextEvidence([evidence], inheritingOnlineRoute: routed)
+        let resolved = try XCTUnwrap(ModelLimitEvidenceResolver.resolveContext(inherited, for: routed))
+        XCTAssertEqual(resolved.primary.value, 400_000)
+        XCTAssertEqual(resolved.primary.scope.effectiveModel, "openai/gpt-5:online")
     }
 }

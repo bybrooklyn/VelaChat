@@ -338,9 +338,43 @@ final class ProviderStore {
             profiles[index].endpoint = endpoint
             invalidateCatalog(for: id)
         }
-        if let model { profiles[index].model = model }
+        if let model, profiles[index].model != model {
+            profiles[index].model = model
+            refreshSingleModel(id: id, model: model)
+        }
         if let name { profiles[index].name = name }
         saveProfiles()
+    }
+
+    /// Resolves one hand-typed model ID through OpenRouter's single-model
+    /// lookup and merges it into the cached catalog, so a model the bulk
+    /// fetch never contained still gets real limits and pricing instead of
+    /// the family-guess fallback. Skips IDs the catalog already has and
+    /// non-OpenRouter providers (no equivalent per-model endpoint exists
+    /// elsewhere — verified before assuming).
+    func refreshSingleModel(id: UUID, model: String) {
+        guard let profile = profile(id: id), profile.kind == .openRouter else { return }
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              modelsByID[id]?.contains(where: { $0.id.lowercased() == trimmed.lowercased() }) != true else { return }
+        Task { [weak self] in
+            guard let self, let profile = self.profile(id: id) else { return }
+            guard let fetched = try? await CompatibleChatClient.shared.fetchModel(
+                profile: profile, credential: self.credential(for: profile), modelID: trimmed
+            ) else { return }
+            guard self.profile(id: id) != nil else { return }
+            let enriched = ModelsDevRegistry.enrich([fetched], kind: profile.kind, baseURL: profile.endpoint)
+            let merged = enriched.first ?? fetched
+            var models = self.modelsByID[id] ?? []
+            if let index = models.firstIndex(where: { $0.id.lowercased() == merged.id.lowercased() }) {
+                models[index] = merged
+            } else {
+                models.append(merged)
+            }
+            self.modelsByID[id] = models
+            self.catalogCache[id] = CachedModelCatalog(models: models, fetchedAt: Date())
+            self.persistCatalogs()
+        }
     }
 
     /// Creates without selecting — adding an endpoint you haven't finished
@@ -410,13 +444,68 @@ final class ProviderStore {
         return modelsByID[id]?.first(where: { $0.id == requestedModel })
     }
 
+    /// Merges deployment evidence emitted by a real response (Claude Code's
+    /// modelUsage, Ollama runtime allocation, routed canonical model, etc.)
+    /// into the cached catalog without flattening lower-priority conflicts.
+    func mergeRuntimeMetadata(_ metadata: RuntimeModelMetadata, providerID: UUID) {
+        var models = modelsByID[providerID] ?? []
+        let index = models.firstIndex(where: { $0.id == metadata.requestedModel })
+            ?? metadata.effectiveModel.flatMap { effective in models.firstIndex(where: { $0.id == effective }) }
+        let existing = index.map { models[$0] } ?? RemoteModel(id: metadata.requestedModel)
+        var contexts = existing.contextLimitEvidence
+        for item in metadata.contextLimitEvidence where !contexts.contains(where: { $0.id == item.id }) {
+            contexts.append(item)
+        }
+        var outputs = existing.outputLimitEvidence
+        for item in metadata.outputLimitEvidence where !outputs.contains(where: { $0.id == item.id }) {
+            outputs.append(item)
+        }
+        let merged = RemoteModel(
+            id: existing.id,
+            ownedBy: existing.ownedBy,
+            name: existing.name,
+            description: existing.description,
+            parameterSize: existing.parameterSize,
+            sizeBytes: existing.sizeBytes,
+            quantizationLevel: existing.quantizationLevel,
+            isCloudHosted: existing.isCloudHosted,
+            supportsReasoning: existing.supportsReasoning,
+            supportsVision: existing.supportsVision,
+            supportsTools: existing.supportsTools,
+            supportedEfforts: existing.supportedEfforts,
+            isLocal: existing.isLocal,
+            contextLimitEvidence: contexts,
+            outputLimitEvidence: outputs,
+            pricingEvidence: existing.pricingEvidence
+        )
+        if let index { models[index] = merged } else { models.append(merged) }
+        modelsByID[providerID] = models
+        catalogCache[providerID] = CachedModelCatalog(models: models, fetchedAt: Date())
+        persistCatalogs()
+    }
+
     private func contextOverrideKey(providerID: UUID, model: String) -> String {
+        let endpoint = profile(id: providerID)?.endpoint ?? ""
+        let fingerprint = ModelEvidenceScope.fingerprint(endpoint: endpoint) ?? "no-endpoint"
+        return "\(providerID.uuidString)|\(fingerprint)|\(model.lowercased())"
+    }
+
+    private func legacyContextOverrideKey(providerID: UUID, model: String) -> String {
         "\(providerID.uuidString)|\(model)"
     }
 
     func contextWindowOverride(providerID: UUID, model: String) -> Int? {
         guard !model.isEmpty else { return nil }
-        return contextWindowOverrides[contextOverrideKey(providerID: providerID, model: model)]
+        let key = contextOverrideKey(providerID: providerID, model: model)
+        if let value = contextWindowOverrides[key] { return value }
+        // One-time, lossless migration: an old unscoped value is attributed
+        // to the endpoint currently stored on that provider, then removed so
+        // a later endpoint edit cannot inherit it.
+        let legacyKey = legacyContextOverrideKey(providerID: providerID, model: model)
+        guard let legacy = contextWindowOverrides[legacyKey] else { return nil }
+        contextWindowOverrides[key] = legacy
+        contextWindowOverrides.removeValue(forKey: legacyKey)
+        return legacy
     }
 
     /// Pass `nil` to clear a correction and fall back to auto-detection again.
@@ -432,7 +521,13 @@ final class ProviderStore {
 
     func learnedContextWindow(providerID: UUID, model: String) -> Int? {
         guard !model.isEmpty else { return nil }
-        return learnedContextWindows[contextOverrideKey(providerID: providerID, model: model)]
+        let key = contextOverrideKey(providerID: providerID, model: model)
+        if let value = learnedContextWindows[key] { return value }
+        let legacyKey = legacyContextOverrideKey(providerID: providerID, model: model)
+        guard let legacy = learnedContextWindows[legacyKey] else { return nil }
+        learnedContextWindows[key] = legacy
+        learnedContextWindows.removeValue(forKey: legacyKey)
+        return legacy
     }
 
     /// Records a window the endpoint reported in an error.
@@ -660,6 +755,32 @@ final class ProviderStore {
     func refreshQuotaHeaders(for id: UUID, apply: @MainActor @escaping (QuotaSnapshot) -> Void) async {
         guard let profile = profile(id: id), !profile.kind.isLocal else { return }
         if profile.kind.requiresKey, !isConfigured(profile) { return }
+        // Claude subscription usage comes from Anthropic's OAuth usage
+        // endpoint (the data behind `claude /usage`), read with the CLI's
+        // own token for stats only — the bridge deliberately holds no
+        // credential for inference, so headers were never an option here.
+        if profile.kind == .claudeCode {
+            guard let snapshot = await ClaudeUsageProbe.snapshot() else { return }
+            apply(snapshot)
+            return
+        }
+        // OpenRouter is the one key provider with a real read-only usage
+        // endpoint: key credits are authoritative, headers are not sent.
+        if profile.kind == .openRouter {
+            let credential = credential(for: profile)
+            async let credit = CompatibleChatClient.shared.fetchOpenRouterKeyCredit(profile: profile, credential: credential)
+            async let headers = CompatibleChatClient.shared.probeQuotaHeaders(profile: profile, credential: credential)
+            let headerSnapshot = await headers
+            let keyCredit = await credit
+            guard headerSnapshot != nil || keyCredit != nil else { return }
+            var snapshot = headerSnapshot ?? QuotaSnapshot()
+            if let keyCredit {
+                snapshot.creditUsed = keyCredit.usedCredits
+                snapshot.creditLimit = keyCredit.limitCredits
+            }
+            apply(snapshot)
+            return
+        }
         guard let snapshot = await CompatibleChatClient.shared.probeQuotaHeaders(
             profile: profile,
             credential: credential(for: profile)

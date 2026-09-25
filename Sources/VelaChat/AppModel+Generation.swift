@@ -13,7 +13,18 @@ import UserNotifications
 /// other stored properties in AppModel.swift.
 @MainActor
 extension AppModel {
-    func send(_ rawText: String, replacingReplyWith priorReply: ChatMessage?, attachments: [Attachment] = [], restoring: (conversation: Conversation, messages: [ChatMessage])? = nil, clearDraftText: Bool = true) {
+    /// Validate and freeze a send before anything suspends. Returning `true`
+    /// means the app accepted ownership of the send (including a queued model
+    /// discovery); callers such as Quick Composer may clear their local field.
+    @discardableResult
+    func send(
+        _ rawText: String,
+        replacingReplyWith priorReply: ChatMessage?,
+        attachments: [Attachment] = [],
+        restoring: (conversation: Conversation, messages: [ChatMessage])? = nil,
+        clearDraftText: Bool = true,
+        clearDraftAttachments: Bool = true
+    ) -> Bool {
         // Edit/regenerate/retry remove messages before calling here, so every
         // early bail must put them back — otherwise a missing provider or a
         // failed discovery silently destroys the user's messages.
@@ -24,50 +35,111 @@ extension AppModel {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else {
             restoreOnBail()
-            return
+            return false
+        }
+        // Capture the origin before discovery. The old path looked up
+        // `activeConversation` only after awaiting discovery, redirecting a
+        // send into whichever chat the user clicked in the meantime.
+        let conversation = restoring?.conversation ?? activeConversation ?? newConversation()
+        guard (attachmentLoadCountByConversation[conversation.id] ?? 0) == 0 else {
+            restoreOnBail()
+            postNotice("Wait for the selected attachment to finish loading before sending.", to: conversation)
+            return false
         }
         guard let profile = providers.selected else {
             restoreOnBail()
-            postNotice("Choose a provider in Settings first.")
+            postNotice("Choose a provider in Settings first.", to: conversation)
             section = .settings
-            return
+            return false
         }
-        if !providers.hasDiscoveredModels(for: profile.id) {
-            guard !pendingDiscoverySends.contains(profile.id) else {
-                restoreOnBail()
-                return
-            }
-            pendingDiscoverySends.insert(profile.id)
-            statusMessage = "Finding a model…"
-            Task { [weak self] in
-                guard let self else { return }
-                defer { self.pendingDiscoverySends.remove(profile.id) }
-                _ = await self.providers.ensureReady(id: profile.id)
-                if case .failed(let message) = self.providers.status(for: profile.id) {
-                    self.statusMessage = nil
-                    restoreOnBail()
-                    self.postNotice(message)
-                    return
-                }
-                self.statusMessage = nil
-                self.send(text, replacingReplyWith: priorReply, attachments: attachments, restoring: restoring)
-            }
-            return
-        }
-        let conversation = activeConversation ?? newConversation()
-        guard !conversation.isGenerating else {
+        guard !conversation.isGenerating,
+              generationIdentityByConversation[conversation.id] == nil else {
             restoreOnBail()
             postNotice("Already generating a reply.", to: conversation)
-            return
+            return false
         }
-        // First real use: the chat earns its sidebar row now, springing in.
+
+        let usesAutomaticModel = (conversation.providerID != profile.id || conversation.model.isEmpty)
+            && profile.model.isEmpty
+        let requestedModel: String
+        if conversation.providerID == profile.id, !conversation.model.isEmpty {
+            requestedModel = conversation.model
+        } else {
+            requestedModel = providers.effectiveModel(for: profile)
+        }
+        let nativeSearch = isWebSearchEnabled ? profile.kind.nativeWebSearch : .none
+        let wireModel = (nativeSearch == .onlineSuffix && !requestedModel.hasSuffix(":online"))
+            ? requestedModel + ":online"
+            : requestedModel
+        let clearingPolicy: SendIntent.DraftClearingPolicy
+        switch (clearDraftText, clearDraftAttachments) {
+        case (true, true): clearingPolicy = .textAndAttachments
+        case (false, true): clearingPolicy = .attachmentsOnly
+        default: clearingPolicy = .none
+        }
+        let identity = GenerationIdentity(conversationID: conversation.id)
+        let intent = SendIntent(
+            identity: identity,
+            provider: profile,
+            endpoint: profile.endpoint,
+            requestedModel: requestedModel,
+            wireModel: wireModel,
+            usesAutomaticModel: usesAutomaticModel,
+            text: text,
+            attachments: attachments,
+            webSearchEnabled: isWebSearchEnabled,
+            usesNativeSearch: !isNativeSearchNone(nativeSearch),
+            searchEndpoint: searchEndpoint.trimmingCharacters(in: .whitespacesAndNewlines),
+            draftClearingPolicy: clearingPolicy,
+            draftTextSnapshot: conversation.draftText,
+            draftAttachmentIDs: Set(attachments.map(\.id))
+        )
+
+        // Acceptance begins now, before discovery: the row spinner and Stop
+        // control must cover preparation as well as streaming.
         ensureListed(conversation)
+        generationIdentityByConversation[conversation.id] = identity
+        if let restoring { generationRestorationByIdentity[identity.id] = restoring.messages }
+        conversation.isGenerating = true
+        conversation.generationProviderName = profile.name
+
+        if !providers.hasDiscoveredModels(for: profile.id) {
+            setGenerationStatus("Finding a model…", for: identity)
+            conversation.generationTask = Task { [weak self, weak conversation] in
+                guard let self, let conversation else { return }
+                _ = await self.providers.ensureReady(id: profile.id)
+                guard self.isCurrent(identity), !Task.isCancelled else { return }
+                if case .failed(let message) = self.providers.status(for: profile.id) {
+                    self.cancelPreparedSend(intent, conversation: conversation, restore: true)
+                    self.postNotice(message, to: conversation)
+                    return
+                }
+                self.setGenerationStatus(nil, for: identity)
+                let discoveredModel = self.providers.profile(id: profile.id).map { self.providers.effectiveModel(for: $0) }
+                    ?? intent.requestedModel
+                let resolvedIntent = intent.resolvingAutomaticModel(discoveredModel)
+                self.performSend(resolvedIntent, conversation: conversation, replacingReplyWith: priorReply)
+            }
+            return true
+        }
+        performSend(intent, conversation: conversation, replacingReplyWith: priorReply)
+        return true
+    }
+
+    private func performSend(_ intent: SendIntent, conversation: Conversation, replacingReplyWith priorReply: ChatMessage?) {
+        guard isCurrent(intent.identity), conversation.isGenerating else { return }
+        // From here onward the transcript owns the new turn; early-history
+        // rollback is no longer appropriate, even if the provider later fails.
+        generationRestorationByIdentity[intent.identity.id] = nil
+        let text = intent.text
+        let attachments = intent.attachments
+        let profile = intent.provider
         if conversation.providerID != profile.id {
             conversation.providerID = profile.id
-            conversation.model = profile.model
+            conversation.model = intent.requestedModel
         }
-        if conversation.model.isEmpty {
-            conversation.model = providers.effectiveModel(for: profile)
+        if conversation.model.isEmpty || conversation.model != intent.requestedModel {
+            conversation.model = intent.requestedModel
         }
         // Redaction happens here, once, before anything can leave: the
         // title generator, the request payload, and the stored transcript
@@ -118,7 +190,15 @@ extension AppModel {
         // Stamped now, not read live off `selectedProvider` when displayed —
         // otherwise switching providers mid-conversation retroactively
         // relabeled every earlier reply with whatever's newly selected.
-        var assistant = ChatMessage(role: "assistant", content: "", isStreaming: true, providerName: profile.name, modelID: conversation.model)
+        var assistant = ChatMessage(
+            role: "assistant",
+            content: "",
+            isStreaming: true,
+            providerName: profile.name,
+            providerID: profile.id,
+            providerKind: profile.kind,
+            modelID: conversation.model
+        )
         if let priorReply {
             assistant.alternates = [priorReply] + priorReply.alternates
         }
@@ -128,24 +208,21 @@ extension AppModel {
         conversation.isGenerating = true
         conversation.currentGenerationID = assistantID
         noteSendStarted(assistantID)
-        if clearDraftText {
-            conversation.draftText = ""
-        }
-        conversation.draftAttachments = []
+        intent.consumeAcceptedDraft(from: conversation)
         conversation.generationProviderName = profile.name
         saveHistory()
 
         var requestMessages = requestHistory(for: conversation)
-        let model = conversation.model.isEmpty ? providers.effectiveModel(for: profile) : conversation.model
+        let initialHistoryMessageIDs = Set(requestMessages.map(\.id))
+        let model = intent.requestedModel
         let credential = providers.credential(for: profile)
         let thinking = availableThinkingLevels.contains(thinkingLevel) ? thinkingLevel : .auto
         let modelInfo = providers.modelInfo(for: profile.id, model: model)
-        let trimmedSearchEndpoint = searchEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSearchEndpoint = intent.searchEndpoint
         // Providers that search natively (Perplexity, OpenRouter's `:online`)
         // do it inside the request itself — VelaChat's own SearXNG pass is
         // only the fallback for providers with no built-in search.
-        let nativeSearch = isWebSearchEnabled ? profile.kind.nativeWebSearch : .none
-        let usesNativeSearch = !isNativeSearchNone(nativeSearch)
+        let usesNativeSearch = intent.usesNativeSearch
         // Catalog entry when there is one, ID-based inference otherwise —
         // an uncataloged compatible endpoint or a manual model override used
         // to silently lose all tools because `modelInfo` came back nil.
@@ -179,7 +256,7 @@ extension AppModel {
             if isConversationSearchEnabled {
                 tools.append(ToolCatalog.searchConversations)
             }
-            if isWebSearchEnabled, !usesNativeSearch, !trimmedSearchEndpoint.isEmpty {
+            if intent.webSearchEnabled, !usesNativeSearch, !trimmedSearchEndpoint.isEmpty {
                 tools.append(ToolCatalog.webSearch)
             }
             tools.append(ToolCatalog.fetchURL)
@@ -327,7 +404,12 @@ extension AppModel {
             let folderPath = conversation.projectWorkspace?.path ?? conversation.workspaceRoot.path
             toolContext.approveWrite = { [weak self] relativePath in
                 guard let self else { return false }
-                return await self.approveWorkspaceWrite(relativePath: relativePath, folderPath: folderPath, conversationID: conversation.id)
+                return await self.approveWorkspaceWrite(
+                    relativePath: relativePath,
+                    folderPath: folderPath,
+                    conversationID: conversation.id,
+                    generationIdentity: intent.identity
+                )
             }
         }
         if profile.kind == .claudeCode {
@@ -338,7 +420,8 @@ extension AppModel {
                     toolName: toolName,
                     summary: summary,
                     input: input,
-                    conversationID: conversationID
+                    conversationID: conversationID,
+                    generationIdentity: intent.identity
                 )
             }
         }
@@ -346,7 +429,13 @@ extension AppModel {
             let folderPath = conversation.projectWorkspace?.path ?? conversation.workspaceRoot.path
             toolContext.approveGitWrite = { [weak self] summary, sensitive in
                 guard let self else { return false }
-                return await self.approveGitOperation(summary: summary, folderPath: folderPath, sensitive: sensitive, conversationID: conversation.id)
+                return await self.approveGitOperation(
+                    summary: summary,
+                    folderPath: folderPath,
+                    sensitive: sensitive,
+                    conversationID: conversation.id,
+                    generationIdentity: intent.identity
+                )
             }
         }
         toolContext.attachmentTexts = attachmentTexts
@@ -397,7 +486,7 @@ extension AppModel {
             let workspaceRoot = conversation.workspaceRoot
             let conversationID = conversation.id
             toolContext.runCommand = { [weak self] command in
-                await self?.executeCommand(command, in: workspaceRoot, conversationID: conversationID)
+                await self?.executeCommand(command, in: workspaceRoot, conversationID: conversationID, generationIdentity: intent.identity)
                     ?? "Error: the app is shutting down."
             }
         }
@@ -411,7 +500,12 @@ extension AppModel {
                 let tasks = rawTasks.prefix(3).map { Subagents.Task(name: $0.name, prompt: $0.prompt) }
                 if await self.isSubagentApprovalRequired {
                     let summary = tasks.map { $0.name.isEmpty ? "a task" : $0.name }.joined(separator: ", ")
-                    let approved = await self.confirmSubagents(count: tasks.count, summary: summary, conversationID: conversationID)
+                    let approved = await self.confirmSubagents(
+                        count: tasks.count,
+                        summary: summary,
+                        conversationID: conversationID,
+                        generationIdentity: intent.identity
+                    )
                     guard approved else {
                         return "The user declined to run subagents. Do the work yourself, or ask them how to proceed."
                     }
@@ -422,7 +516,11 @@ extension AppModel {
                     credential: credential,
                     model: subagentModel,
                     tools: subagentTools,
-                    toolContext: baseContext
+                    toolContext: baseContext,
+                    recordUsage: { [weak self] usage in
+                        guard let self else { return }
+                        _ = await self.recordRequestUsage(usage)
+                    }
                 )
             }
         }
@@ -456,7 +554,7 @@ extension AppModel {
         }
         let askConversationID = conversation.id
         toolContext.askUser = { [weak self] payloadJSON in
-            await self?.askUser(payloadJSON, conversationID: askConversationID)
+            await self?.askUser(payloadJSON, conversationID: askConversationID, generationIdentity: intent.identity)
                 ?? "Error: the app is shutting down."
         }
         if isClipboardToolEnabled {
@@ -475,11 +573,11 @@ extension AppModel {
         }
         // Providers/models without real tool-calling support keep the old
         // pre-fetch behavior exactly as before — nothing regresses for them.
-        let shouldPrefetchSearch = isWebSearchEnabled
+        let shouldPrefetchSearch = intent.webSearchEnabled
             && !usesNativeSearch
             && !trimmedSearchEndpoint.isEmpty
             && !modelSupportsTools
-        let wireModel = (nativeSearch == .onlineSuffix && !model.hasSuffix(":online")) ? model + ":online" : model
+        let wireModel = intent.wireModel
 
         conversation.generationTask = Task { [weak self, weak conversation] in
             guard let conversation else { return }
@@ -493,10 +591,10 @@ extension AppModel {
                 if hasEnabledServers {
                     // Cold servers spawn here — say so instead of letting
                     // the reply just sit silent for a few seconds.
-                    self.statusMessage = "Starting MCP servers…"
+                    self.setGenerationStatus("Starting MCP servers…", for: intent.identity)
                 }
                 let mcpDefinitions = await self.mcp.definitionsForSend()
-                if hasEnabledServers { self.statusMessage = nil }
+                if hasEnabledServers { self.setGenerationStatus(nil, for: intent.identity) }
                 tools.append(contentsOf: mcpDefinitions)
             }
             var promptContext = SystemPrompt.Context(
@@ -534,13 +632,13 @@ extension AppModel {
                 // been told what tables exist, which is the difference
                 // between one query and three guesses.
                 if !dataSources.isEmpty {
-                    self.statusMessage = "Loading attached data…"
+                    self.setGenerationStatus("Loading attached data…", for: intent.identity)
                     promptContext.dataSchema = await self.analysisSessions.schemaText(
                         for: conversation.id,
                         sources: dataSources,
                         bytes: dataBytes
                     )
-                    self.statusMessage = nil
+                    self.setGenerationStatus(nil, for: intent.identity)
                 }
             }
             // Past conversations that look relevant to what was just
@@ -618,14 +716,92 @@ extension AppModel {
                     // A failed search shouldn't block the reply — proceed without results.
                 }
             }
+            let requestedOutputTokens = self?.requestedOutputBudget(
+                provider: profile,
+                modelInfo: modelInfo,
+                thinking: thinking
+            ) ?? 0
+            var preparedRequest = PreparedRequest(
+                profile: profile,
+                requestedModel: model,
+                wireModel: wireModel,
+                thinking: thinking,
+                modelInfo: modelInfo,
+                messages: finalMessages,
+                tools: tools,
+                requestedOutputTokens: requestedOutputTokens,
+                purpose: .chat
+            )
             do {
-                if profile.kind == .appleIntelligence {
-                    try await AppleIntelligence.streamChat(messages: finalMessages) { [weak self, weak conversation] delta in
-                        Task { @MainActor [weak self, weak conversation] in
-                            guard let self, let conversation else { return }
-                            self.enqueue(.text(delta), for: assistantID, conversation: conversation)
-                        }
+                if let self, profile.kind != .appleIntelligence {
+                    let compacted = try await self.preflightContext(
+                        preparedRequest,
+                        profile: profile,
+                        credential: credential,
+                        conversation: conversation,
+                        identity: intent.identity,
+                        allowCompaction: true
+                    )
+                    if compacted {
+                        let insertionIndex = finalMessages.firstIndex { initialHistoryMessageIDs.contains($0.id) }
+                            ?? finalMessages.count
+                        finalMessages.removeAll { initialHistoryMessageIDs.contains($0.id) }
+                        finalMessages.insert(
+                            contentsOf: self.requestHistory(for: conversation),
+                            at: min(insertionIndex, finalMessages.count)
+                        )
+                        preparedRequest = PreparedRequest(
+                            profile: profile,
+                            requestedModel: model,
+                            wireModel: wireModel,
+                            thinking: thinking,
+                            modelInfo: modelInfo,
+                            messages: finalMessages,
+                            tools: tools,
+                            requestedOutputTokens: requestedOutputTokens,
+                            purpose: .chat
+                        )
+                        _ = try await self.preflightContext(
+                            preparedRequest,
+                            profile: profile,
+                            credential: credential,
+                            conversation: conversation,
+                            identity: intent.identity,
+                            allowCompaction: false
+                        )
                     }
+                }
+                if profile.kind == .appleIntelligence {
+                    // On-device turns report no token counts, but the turn
+                    // still happened: one metrics-free row keeps them in
+                    // turn counts instead of invisible to usage entirely.
+                    let turnStartedAt = Date()
+                    do {
+                        try await AppleIntelligence.streamChat(messages: finalMessages) { [weak self, weak conversation] delta in
+                            Task { @MainActor [weak self, weak conversation] in
+                                guard let self, let conversation else { return }
+                                self.enqueue(.text(delta), for: assistantID, conversation: conversation)
+                            }
+                        }
+                    } catch {
+                        recordRequestUsage(RequestUsage(
+                            providerID: conversation.providerID,
+                            requestedModelID: model,
+                            effectiveModelID: model,
+                            purpose: .chat,
+                            outcome: error is CancellationError ? .cancelled : .failed,
+                            latencyMilliseconds: Int(Date().timeIntervalSince(turnStartedAt) * 1_000)
+                        ))
+                        throw error
+                    }
+                    recordRequestUsage(RequestUsage(
+                        providerID: conversation.providerID,
+                        requestedModelID: model,
+                        effectiveModelID: model,
+                        purpose: .chat,
+                        outcome: .succeeded,
+                        latencyMilliseconds: Int(Date().timeIntervalSince(turnStartedAt) * 1_000)
+                    ))
                 } else {
                     // Two nested recoveries around the stream:
                     // - inner (resilience): offline sends wait for the
@@ -679,14 +855,23 @@ extension AppModel {
                                         tools: tools
                                     )
                                 }
+                                if continueCount > 0 {
+                                    preparedRequest = PreparedRequest(
+                                        profile: profile,
+                                        requestedModel: model,
+                                        wireModel: wireModel,
+                                        thinking: thinking,
+                                        modelInfo: modelInfo,
+                                        messages: finalMessages,
+                                        tools: tools,
+                                        requestedOutputTokens: requestedOutputTokens,
+                                        purpose: .autoContinue
+                                    )
+                                }
                                 let events = CompatibleChatClient.shared.streamChatEvents(
                                     profile: profile,
                                     credential: credential,
-                                    model: wireModel,
-                                    thinking: thinking,
-                                    modelInfo: modelInfo,
-                                    messages: finalMessages,
-                                    tools: tools,
+                                    preparedRequest: preparedRequest,
                                     toolContext: tools.isEmpty ? nil : toolContext,
                                     conversationKey: conversation.id
                                 )
@@ -777,11 +962,59 @@ extension AppModel {
                 self?.finishGeneration(for: conversation, assistantID: assistantID)
                 self?.generateTitleIfNeeded(for: conversation, profile: profile, model: model, credential: credential)
             } catch is CancellationError {
-                self?.finishGeneration(for: conversation, assistantID: assistantID)
+                self?.finishCancelledGeneration(for: conversation, assistantID: assistantID)
             } catch {
-                self?.failGeneration(error.localizedDescription, for: conversation, assistantID: assistantID)
+                self?.failGeneration(error.localizedDescription, for: conversation, assistantID: assistantID, learnedModel: wireModel)
             }
         }
+    }
+
+    private func cancelPreparedSend(_ intent: SendIntent, conversation: Conversation, restore: Bool) {
+        guard isCurrent(intent.identity) else { return }
+        if restore, let messages = generationRestorationByIdentity[intent.identity.id] {
+            conversation.messages = messages
+        }
+        generationRestorationByIdentity[intent.identity.id] = nil
+        generationStatusByIdentity[intent.identity] = nil
+        generationIdentityByConversation[conversation.id] = nil
+        contextPreflightByConversation[conversation.id] = nil
+        contextPreflightErrorByConversation[conversation.id] = nil
+        contextPreflightDraftSignatureByConversation[conversation.id] = nil
+        contextBudgetByConversation[conversation.id] = nil
+        cancelPendingInteractions(conversationID: conversation.id)
+        conversation.generationTask = nil
+        conversation.currentGenerationID = nil
+        conversation.isGenerating = false
+        saveHistory()
+    }
+
+    private func finishCancelledGeneration(for conversation: Conversation, assistantID: UUID) {
+        // Manual Stop settles synchronously before the cancelled task can run
+        // again on the main actor. This path is the safety net for any future
+        // cancellation source that does not do so itself.
+        guard conversation.currentGenerationID == assistantID else { return }
+        discardRevealBacklog(for: assistantID)
+        if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
+            conversation.messages[index].isStreaming = false
+            conversation.messages[index].reconcileRunningActivities()
+            recordUsage(for: conversation, assistantID: assistantID)
+        }
+        settleGenerationIdentity(for: conversation)
+        conversation.currentGenerationID = nil
+        conversation.generationTask = nil
+        conversation.isGenerating = false
+        saveHistory()
+    }
+
+    private func settleGenerationIdentity(for conversation: Conversation) {
+        guard let identity = generationIdentityByConversation.removeValue(forKey: conversation.id) else { return }
+        generationStatusByIdentity[identity] = nil
+        generationRestorationByIdentity[identity.id] = nil
+        contextPreflightByConversation[conversation.id] = nil
+        contextPreflightErrorByConversation[conversation.id] = nil
+        contextPreflightDraftSignatureByConversation[conversation.id] = nil
+        contextBudgetByConversation[conversation.id] = nil
+        cancelPendingInteractions(conversationID: conversation.id)
     }
 
     /// The §6 write gate's host side: one card per write in an attached
@@ -789,19 +1022,24 @@ extension AppModel {
     /// Session-scoped on purpose — a relaunch re-asks, exactly like
     /// `allowAllCommands`.
     @MainActor
-    func approveWorkspaceWrite(relativePath: String, folderPath: String, conversationID: UUID) async -> Bool {
+    func approveWorkspaceWrite(relativePath: String, folderPath: String, conversationID: UUID, generationIdentity: GenerationIdentity? = nil) async -> Bool {
+        if let generationIdentity, !isCurrent(generationIdentity) { return false }
         if workspaceWriteApprovals.contains(folderPath) { return true }
+        var approvalID: UUID?
         let decision: CommandApproval.Decision = await withOneShotResume { resume in
-            pendingApproval = CommandApproval(
+            let approval = CommandApproval(
                 conversationID: conversationID,
+                generationIdentity: generationIdentity,
                 command: relativePath,
                 directory: URL(fileURLWithPath: folderPath, isDirectory: true),
                 reason: "The model wants to modify a file in your attached folder.",
                 isFileWrite: true,
                 decide: resume
             )
+            approvalID = approval.id
+            installPendingApproval(approval)
         }
-        pendingApproval = nil
+        if let approvalID { removePendingApproval(id: approvalID, conversationID: conversationID) }
         switch decision {
         case .approveOnce:
             return true
@@ -826,16 +1064,27 @@ extension AppModel {
     /// A malformed payload comes back as a normal tool error rather than
     /// throwing: the model can then re-ask correctly instead of the whole
     /// reply dying on a bad question.
-    func askUser(_ payloadJSON: String, conversationID: UUID) async -> String {
+    func askUser(_ payloadJSON: String, conversationID: UUID, generationIdentity: GenerationIdentity? = nil) async -> String {
         guard let data = payloadJSON.data(using: .utf8),
               let payload = try? JSONDecoder().decode(AskUserQuestionPayload.self, from: data),
               !payload.questions.isEmpty else {
             return "Error: the questions payload was malformed. Re-send it with 1-4 questions, each with at least 2 options."
         }
-        let answer: String? = await withOneShotResume { resume in
-            pendingQuestion = PendingQuestion(conversationID: conversationID, payload: payload, respond: resume)
+        if let generationIdentity, !isCurrent(generationIdentity) {
+            return "The generation was cancelled before the question could be shown."
         }
-        pendingQuestion = nil
+        var questionID: UUID?
+        let answer: String? = await withOneShotResume { resume in
+            let question = PendingQuestion(
+                conversationID: conversationID,
+                generationIdentity: generationIdentity,
+                payload: payload,
+                respond: resume
+            )
+            questionID = question.id
+            installPendingQuestion(question)
+        }
+        if let questionID { removePendingQuestion(id: questionID, conversationID: conversationID) }
         guard let answer, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "The user dismissed the question without answering. Continue with your best judgement and say which assumption you made."
         }
@@ -844,18 +1093,23 @@ extension AppModel {
 
     /// Subagent fan-out confirmation — same pause-and-decide shape as a
     /// command approval, since it also spends real requests.
-    func confirmSubagents(count: Int, summary: String, conversationID: UUID) async -> Bool {
+    func confirmSubagents(count: Int, summary: String, conversationID: UUID, generationIdentity: GenerationIdentity? = nil) async -> Bool {
+        if let generationIdentity, !isCurrent(generationIdentity) { return false }
+        var approvalID: UUID?
         let decision: CommandApproval.Decision = await withOneShotResume { resume in
-            pendingApproval = CommandApproval(
+            let approval = CommandApproval(
                 conversationID: conversationID,
+                generationIdentity: generationIdentity,
                 command: "Run \(count) subagent\(count == 1 ? "" : "s") in parallel: \(summary)",
-                directory: activeConversation?.workspaceRoot ?? SandboxManager.directory(for: conversationID),
+                directory: conversation(withID: conversationID)?.workspaceRoot ?? SandboxManager.directory(for: conversationID),
                 reason: "Each subagent is a separate request to your provider, and they run at the same time.",
                 isSubagentRequest: true,
                 decide: resume
             )
+            approvalID = approval.id
+            installPendingApproval(approval)
         }
-        pendingApproval = nil
+        if let approvalID { removePendingApproval(id: approvalID, conversationID: conversationID) }
         if case .deny = decision { return false }
         return true
     }
@@ -942,27 +1196,42 @@ extension AppModel {
 
     func stopGeneration(for conversation: Conversation? = nil) {
         guard let conversation = conversation ?? activeConversation else { return }
-        // An `ask_user` call suspends on a continuation that only the card
-        // resumes. Cancelling the task does not touch it, so a Stop pressed
-        // while a question is on screen would strand that continuation
-        // forever — and leak the card. Resolve it as unanswered first.
-        if let question = pendingQuestion, question.conversationID == conversation.id {
-            question.respond(nil)
-            pendingQuestion = nil
-        }
+        let identity = generationIdentityByConversation[conversation.id]
+        let streamingIndex = conversation.messages.lastIndex(where: { $0.isStreaming })
+        // Checked continuations do not observe Task cancellation. Deny/dismiss
+        // every interaction for this conversation before cancelling the task.
+        cancelPendingInteractions(conversationID: conversation.id)
         conversation.generationTask?.cancel()
         conversation.generationTask = nil
-        if let index = conversation.messages.lastIndex(where: { $0.isStreaming }) {
+        if let index = streamingIndex {
             let assistantID = conversation.messages[index].id
-            flushReveal(for: assistantID, conversation: conversation)
+            // Keep exactly what is already visible. Flushing the paced queue
+            // here made Stop appear to generate a final burst of hidden text.
+            discardRevealBacklog(for: assistantID)
             conversation.messages[index].isStreaming = false
             // Tools that were mid-flight when the user hit Stop must not
             // shimmer forever — mark them interrupted.
             conversation.messages[index].reconcileRunningActivities()
             // A stopped reply still consumed tokens; count what we saw.
             recordUsage(for: conversation, assistantID: assistantID)
+        } else if let identity,
+                  let messages = generationRestorationByIdentity[identity.id] {
+            // Stop during model discovery/preparation rolls back a historical
+            // edit/regenerate that had not committed its replacement yet.
+            conversation.messages = messages
         }
+        if let identity {
+            generationRestorationByIdentity[identity.id] = nil
+            generationStatusByIdentity[identity] = nil
+        }
+        generationIdentityByConversation[conversation.id] = nil
+        contextPreflightByConversation[conversation.id] = nil
+        contextPreflightErrorByConversation[conversation.id] = nil
+        contextPreflightDraftSignatureByConversation[conversation.id] = nil
+        contextBudgetByConversation[conversation.id] = nil
+        conversation.currentGenerationID = nil
         conversation.isGenerating = false
+        conversation.updatedAt = Date()
         saveHistory()
     }
 
@@ -979,7 +1248,7 @@ extension AppModel {
         // retry duplicates the prompt instead of resending it.
         let snapshot = conversation.messages
         conversation.messages.removeSubrange(lastUserIndex...)
-        send(lastUser.content, replacingReplyWith: nil, restoring: (conversation, snapshot))
+        send(lastUser.content, replacingReplyWith: nil, attachments: lastUser.attachments, restoring: (conversation, snapshot))
     }
 
     private func enqueue(_ op: RevealOp, for assistantID: UUID, conversation: Conversation) {
@@ -1181,6 +1450,15 @@ extension AppModel {
         persistStreamingProgress()
     }
 
+    /// Cancel pacing and throw away only the not-yet-visible buffer. Used by
+    /// Stop; normal completion/failure still flushes or drains as appropriate.
+    private func discardRevealBacklog(for assistantID: UUID) {
+        revealTasks[assistantID]?.cancel()
+        revealTasks[assistantID] = nil
+        revealQueues[assistantID] = nil
+        pendingFinish.remove(assistantID)
+    }
+
     /// Crash-safety for a reply that is still arriving. Partial text is
     /// written to history at most every `Limits.streamingPersistInterval`
     /// seconds, so a hard quit mid-stream keeps what had been received
@@ -1226,6 +1504,30 @@ extension AppModel {
                 completionTokens = completion ?? completionTokens
                 cachedTokens = cached ?? cachedTokens
                 cacheCreation = creation ?? cacheCreation
+            case .requestUsage(let requestUsage):
+                // One canonical row per actual network request. The actor
+                // deduplicates provider IDs; legacy `.usage` below remains
+                // solely the per-message aggregate and must not synthesize a
+                // second ledger row.
+                recordRequestUsage(
+                    requestUsage,
+                    preparedRequest: lastPreparedRequestByConversation[conversation.id]
+                )
+            case .modelMetadata(let metadata):
+                // Stamp the concrete runtime model on the reply immediately.
+                // Provenance-aware context evidence is merged by the context
+                // subsystem; never flatten it into a manual override here.
+                if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
+                    if let effective = metadata.effectiveModel {
+                        conversation.messages[index].modelID = effective
+                    }
+                    let providerID = conversation.messages[index].providerID
+                        ?? metadata.contextLimitEvidence.first?.scope.providerProfileID
+                        ?? metadata.outputLimitEvidence.first?.scope.providerProfileID
+                    if let providerID {
+                        providers.mergeRuntimeMetadata(metadata, providerID: providerID)
+                    }
+                }
             case .finished(let reason):
                 if let reason {
                     // Normalize the providers' truncation vocabulary.
@@ -1244,7 +1546,9 @@ extension AppModel {
                 record.startedAt = Date()
                 enqueue(.activity(record), for: assistantID, conversation: conversation)
             case .quota(let snapshot):
-                if let providerID = conversation.providerID {
+                let providerID = conversation.messages.first(where: { $0.id == assistantID })?.providerID
+                    ?? conversation.providerID
+                if let providerID {
                     quotaByProvider[providerID] = snapshot
                 }
             case .activityFinished(let id, let result, let isError):
@@ -1291,23 +1595,18 @@ extension AppModel {
         completeGeneration(for: conversation, assistantID: assistantID)
     }
 
-    /// One ledger entry per finished reply, from the final persisted
-    /// summary — providers emit .usage several times mid-stream, so the
-    /// per-event path must never feed the ledger directly.
+    /// Finalize the persisted per-message summary and its calibration sample.
+    /// Durable request rows arrive separately via `.requestUsage`.
     private func recordUsage(for conversation: Conversation, assistantID: UUID) {
         // Always taken, never left behind: a reply that ends without usage
         // would otherwise leak its sample for the rest of the session.
         let calibration = calibrationSampleByMessage.removeValue(forKey: assistantID)
-        guard let providerID = conversation.providerID,
-              let message = conversation.messages.first(where: { $0.id == assistantID }),
+        guard let message = conversation.messages.first(where: { $0.id == assistantID }),
               let summary = usageByMessage[assistantID] ?? message.usage else { return }
-        let modelInfo = providers.modelInfo(for: providerID, model: message.modelID ?? conversation.model)
-        usage.record(
-            providerID: providerID,
-            promptTokens: summary.promptTokens,
-            completionTokens: summary.completionTokens,
-            costUSD: summary.costUSD(for: modelInfo, providerKind: providers.profile(id: providerID)?.kind)
-        )
+        // Durable accounting is emitted once per actual provider request as
+        // `.requestUsage` above. Do not also write the old per-reply hourly
+        // bucket here: tool loops/auto-continues would be collapsed and every
+        // ordinary turn would be counted twice after migration.
         // The one place real tokenizer ground truth exists. Everything the
         // request carried, divided by what the provider says that cost.
         if let calibration, let promptTokens = summary.promptTokens {
@@ -1318,6 +1617,122 @@ extension AppModel {
                 promptTokens: promptTokens
             )
         }
+    }
+
+    private func requestedOutputBudget(
+        provider: ProviderProfile,
+        modelInfo: RemoteModel?,
+        thinking: ThinkingLevel
+    ) -> Int {
+        // Anthropic requires max_tokens and counts that reservation against
+        // the context boundary. Other current request paths do not set a
+        // fixed output reservation, so subtracting their model maximum would
+        // manufacture a limit the wire request never asked for.
+        guard provider.kind == .anthropic else { return 0 }
+        let modelLimit = max(1, modelInfo?.maxOutputTokens ?? 8_192)
+        let base = min(modelLimit, 8_192)
+        let thinkingBudget: Int
+        switch thinking {
+        case .auto, .off: thinkingBudget = 0
+        case .low: thinkingBudget = 4_000
+        case .medium: thinkingBudget = 8_000
+        case .high: thinkingBudget = 16_000
+        case .extraHigh, .max: thinkingBudget = 32_000
+        }
+        return min(modelLimit, max(base, thinkingBudget == 0 ? 0 : thinkingBudget + 4_096))
+    }
+
+    private func estimatedInputTokens(for request: PreparedRequest) -> Int {
+        var units = request.messages.reduce(0) { total, message in
+            total + TokenCalibration.units(of: message.contentForRequest)
+        }
+        for tool in request.tools {
+            units += TokenCalibration.units(of: tool.name)
+                + TokenCalibration.units(of: tool.wireDescription)
+                + TokenCalibration.units(of: tool.parametersJSON)
+        }
+        let ratio = charactersPerToken(providerID: request.providerID, model: request.requestedModel)
+        let textAndSchema = TokenCalibration.tokens(units: units, charactersPerToken: ratio)
+        let images = request.messages
+            .flatMap(\.imageAttachments)
+            .reduce(0) { $0 + $1.estimatedTokens }
+        return textAndSchema + images
+    }
+
+    /// Count and budget the exact immutable request immediately before the
+    /// first network send. Unsupported providers retain the calibrated local
+    /// estimate; supported providers use a fingerprint-cached native count.
+    private func preflightContext(
+        _ request: PreparedRequest,
+        profile: ProviderProfile,
+        credential: ProviderCredential,
+        conversation: Conversation,
+        identity: GenerationIdentity,
+        allowCompaction: Bool
+    ) async throws -> Bool {
+        guard isCurrent(identity) else { throw CancellationError() }
+        lastPreparedRequestByConversation[conversation.id] = request
+        var inputTokens = estimatedInputTokens(for: request)
+        if [.openAI, .anthropic, .google].contains(profile.kind) {
+            setGenerationStatus("Checking context…", for: identity)
+            defer { setGenerationStatus(nil, for: identity) }
+            do {
+                let exact = try await ContextPreflightCache.shared.count(
+                    profile: profile,
+                    credential: credential,
+                    request: request
+                )
+                guard isCurrent(identity) else { throw CancellationError() }
+                contextPreflightErrorByConversation[conversation.id] = nil
+                contextPreflightByConversation[conversation.id] = exact
+                contextPreflightDraftSignatureByConversation[conversation.id] = draftContextSignature(conversation)
+                inputTokens = exact.inputTokens
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Token-count endpoints are an accuracy upgrade, not a new
+                // availability dependency. A provider that withholds one
+                // falls back to the calibrated estimate and still sends.
+                contextPreflightByConversation[conversation.id] = nil
+                contextPreflightDraftSignatureByConversation[conversation.id] = nil
+                contextPreflightErrorByConversation[conversation.id] = error.localizedDescription
+            }
+        }
+
+        guard let resolution = resolvedContextLimit(
+            provider: profile,
+            requestedModel: request.requestedModel,
+            wireModel: request.wireModel
+        ) else { return false }
+        let margin = min(16_384, max(2_048, resolution.primary.value / 50))
+        let budget = ContextBudget(
+            resolution: resolution,
+            requestedOutputTokens: request.requestedOutputTokens,
+            safetyMarginTokens: margin,
+            inputTokens: inputTokens
+        )
+        contextBudgetByConversation[conversation.id] = budget
+        contextPreflightDraftSignatureByConversation[conversation.id] = draftContextSignature(conversation)
+        if budget.shouldCompact(), allowCompaction {
+            setGenerationStatus("Compacting conversation…", for: identity)
+            defer { setGenerationStatus(nil, for: identity) }
+            if await compactConversationNow(
+                conversation,
+                profile: profile,
+                isAutomatic: true,
+                allowWhileGenerating: true
+            ) {
+                contextPreflightByConversation[conversation.id] = nil
+                contextPreflightDraftSignatureByConversation[conversation.id] = nil
+                contextBudgetByConversation[conversation.id] = nil
+                return true
+            }
+        }
+        guard !budget.cannotFit else {
+            let over = max(0, -budget.remainingInputTokens)
+            throw APIError.message("The prepared request exceeds the usable input budget by \(formattedTokenCount(over)) tokens. Remove large pinned messages or attachments, then send again.")
+        }
+        return false
     }
 
     /// Banks what a request is about to carry, so the reply's reported
@@ -1340,7 +1755,7 @@ extension AppModel {
         var sentUnits = messages.reduce(0) { $0 + TokenCalibration.units(of: $1.contentForRequest) }
         for tool in tools {
             sentUnits += TokenCalibration.units(of: tool.name)
-                + TokenCalibration.units(of: tool.description)
+                + TokenCalibration.units(of: tool.wireDescription)
                 + TokenCalibration.units(of: tool.parametersJSON)
         }
         let transcriptUnits = transcriptUnits(for: conversation).units
@@ -1361,11 +1776,11 @@ extension AppModel {
     /// Recorded into its own store, never into the user's manual override —
     /// see `ContextWindowResolver` for why that separation is what makes the
     /// precedence expressible at all.
-    private func learnContextWindow(from errorText: String, conversation: Conversation) {
+    private func learnContextWindow(from errorText: String, conversation: Conversation, model: String? = nil) {
         guard let providerID = conversation.providerID,
-              !conversation.model.isEmpty,
+              !(model ?? conversation.model).isEmpty,
               let window = ContextWindowLearning.contextLength(fromErrorText: errorText) else { return }
-        providers.recordLearnedContextWindow(window, providerID: providerID, model: conversation.model)
+        providers.recordLearnedContextWindow(window, providerID: providerID, model: model ?? conversation.model)
     }
 
     private func completeGeneration(for conversation: Conversation, assistantID: UUID) {
@@ -1388,6 +1803,8 @@ extension AppModel {
         if conversation.currentGenerationID == assistantID {
             conversation.isGenerating = false
             conversation.generationTask = nil
+            conversation.currentGenerationID = nil
+            settleGenerationIdentity(for: conversation)
         }
         saveHistory()
         memoryIndexer.indexFinished(conversation: conversation, assistantID: assistantID)
@@ -1422,15 +1839,26 @@ extension AppModel {
         return trimmed
     }
 
-    /// Fires at 95% of the detected context window (explicit user choice —
-    /// compaction should be a late safety net, not an eager trimmer), scaled
-    /// to the window rather than a fixed token count since windows here
-    /// range from small local models to million-token hosted ones. Only
-    /// fires when the window is actually known.
+    /// Proactive idle-time safety net. The send path repeats this calculation
+    /// against the exact fully prepared request and recounts after compaction.
     private func autoCompactIfNeeded(_ conversation: Conversation) {
-        guard let window = contextWindow(for: conversation), window > 0 else { return }
-        let used = tokenEstimate(for: conversation)
-        guard Double(used) / Double(window) >= 0.95 else { return }
+        guard let providerID = conversation.providerID,
+              let profile = providers.profile(id: providerID) else { return }
+        let model = conversation.model.isEmpty ? providers.effectiveModel(for: profile) : conversation.model
+        guard let resolution = resolvedContextLimit(provider: profile, requestedModel: model) else { return }
+        let output = requestedOutputBudget(
+            provider: profile,
+            modelInfo: providers.modelInfo(for: providerID, model: model),
+            thinking: thinkingLevel
+        )
+        let margin = min(16_384, max(2_048, resolution.primary.value / 50))
+        let budget = ContextBudget(
+            resolution: resolution,
+            requestedOutputTokens: output,
+            safetyMarginTokens: margin,
+            inputTokens: tokenEstimate(for: conversation)
+        )
+        guard budget.shouldCompact() else { return }
         compactConversation(conversation, isAutomatic: true)
     }
 
@@ -1441,100 +1869,153 @@ extension AppModel {
     /// inserted into the transcript; the messages it covers are never
     /// touched or hidden, only left out of future request payloads.
     func compactConversation(_ conversation: Conversation, isAutomatic: Bool = false) {
-        guard !compactingConversationIDs.contains(conversation.id) else { return }
-        guard let providerID = conversation.providerID, let profile = providers.profile(id: providerID) else {
-            if !isAutomatic { postNotice("Choose a real provider before compacting.", to: conversation) }
-            return
+        Task { [weak self, weak conversation] in
+            guard let self, let conversation else { return }
+            guard let providerID = conversation.providerID,
+                  let profile = self.providers.profile(id: providerID) else {
+                if !isAutomatic { self.postNotice("Choose a real provider before compacting.", to: conversation) }
+                return
+            }
+            _ = await self.compactConversationNow(
+                conversation,
+                profile: profile,
+                isAutomatic: isAutomatic,
+                allowWhileGenerating: false
+            )
         }
-        guard !conversation.isGenerating else {
+    }
+
+    /// The same compactor is used by the manual button and by pre-send
+    /// budgeting. The async form is what lets preflight wait, rebuild the
+    /// canonical request, recount it, and only then start the provider stream.
+    private func compactConversationNow(
+        _ conversation: Conversation,
+        profile: ProviderProfile,
+        isAutomatic: Bool,
+        allowWhileGenerating: Bool
+    ) async -> Bool {
+        guard !compactingConversationIDs.contains(conversation.id) else { return false }
+        guard allowWhileGenerating || !conversation.isGenerating else {
             if !isAutomatic { postNotice("Already generating a reply.", to: conversation) }
-            return
+            return false
         }
         let startIndex = conversation.lastCompactionIndex.map { $0 + 1 } ?? 0
-        guard startIndex < conversation.messages.count else { return }
-        let priorSummary: String? = conversation.lastCompactionIndex.map { conversation.messages[$0].content }
-        let span = Array(conversation.messages[startIndex...])
-        let realSpan = span.filter { !$0.isSynthetic && !$0.isStreaming && !$0.isPinned }
-        // A handful of the most recent exchanges stay raw even when
-        // compacting, never summarized — nothing that just happened should
-        // get paraphrased away before it's had a chance to actually matter
-        // on a later turn. (Pinned messages are excluded above entirely;
-        // they never get summarized at any age — see `requestHistory`.)
-        let recencyBuffer = 4
-        // Not worth the round trip (or the risk of summarizing away detail
-        // that mattered) for a short thread — automatic compaction in
-        // particular should only ever fire on a conversation that's
-        // genuinely gotten long.
-        guard realSpan.count >= 6 + recencyBuffer else {
-            if !isAutomatic { postNotice("Not enough conversation yet to compact.", to: conversation) }
-            return
+        guard startIndex < conversation.messages.count else { return false }
+        let priorSummary = conversation.lastCompactionIndex.map { conversation.messages[$0].content }
+        let realSpan = conversation.messages[startIndex...]
+            .filter { !$0.isSynthetic && !$0.isStreaming && !$0.isPinned }
+        // Preserve the current turn plus the immediately preceding exchange.
+        // Unlike the old message-count gate, one enormous older message can
+        // now be compacted instead of failing solely because the chat is short.
+        let toSummarize = Array(realSpan.dropLast(min(4, realSpan.count)))
+        guard let lastSummarizedID = toSummarize.last?.id else {
+            if !isAutomatic { postNotice("Nothing old enough to compact; remove a large pin or attachment instead.", to: conversation) }
+            return false
         }
-        let toSummarize = Array(realSpan.dropLast(recencyBuffer))
-        guard let lastSummarizedID = toSummarize.last?.id else { return }
-
-        let transcript = toSummarize.map { "\($0.role.uppercased()): \($0.content)" }.joined(separator: "\n\n")
-        var prompt = """
-        Summarize the conversation below into a structured brief for continuing it later: the user's goals, key decisions made, and the current state of things. Quote exact numbers, file paths, code, error messages, and decisions verbatim rather than paraphrasing them — precise details like these are exactly what gets lost in a summary and exactly what a continuation needs to get right. Write plain prose or bullets, not a transcript. Do not add commentary about the summarization itself. Keep it well under 500 words unless the conversation genuinely can't be preserved usefully in less.
-        """
-        if let priorSummary, !priorSummary.isEmpty {
-            prompt += "\n\nEarlier summary (already covers everything before this point):\n\(priorSummary)"
-        }
-        prompt += "\n\nConversation to summarize:\n\n\(transcript)"
 
         compactingConversationIDs.insert(conversation.id)
-        if conversation.id == activeConversationID { statusMessage = "Compacting conversation…" }
+        if !allowWhileGenerating, conversation.id == activeConversationID {
+            statusMessage = "Compacting conversation…"
+        }
+        defer {
+            compactingConversationIDs.remove(conversation.id)
+            if !allowWhileGenerating, conversation.id == activeConversationID { statusMessage = nil }
+        }
+
         let model = conversation.model.isEmpty ? providers.effectiveModel(for: profile) : conversation.model
         let credential = providers.credential(for: profile)
 
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.compactingConversationIDs.remove(conversation.id) }
-            var summaryText = ""
-            do {
-                let promptWordCount = prompt.split(separator: " ").count
-                if self.canUseAppleIntelligence, promptWordCount < AppleIntelligence.contextBudgetWords {
-                    // On-device: free, instant-ish, and the transcript
-                    // never leaves the Mac just to be summarized.
-                    summaryText = try await AppleIntelligence.complete(prompt: prompt)
-                } else if profile.kind == .appleIntelligence {
-                    throw AppleIntelligence.Unavailable(reason: AppleIntelligence.unavailabilityReason ?? "The conversation is too long for the on-device model.")
-                } else {
-                    let events = CompatibleChatClient.shared.streamChatEvents(
-                        profile: profile,
-                        credential: credential,
-                        model: model,
-                        thinking: .auto,
-                        messages: [ChatMessage(role: "user", content: prompt)]
-                    )
-                    for try await event in events {
-                        if case .delta(let content, _) = event { summaryText += content }
-                    }
+        func summarize(_ source: String, instruction: String) async throws -> String {
+            let prompt = "\(instruction)\n\n\(source)"
+            if canUseAppleIntelligence,
+               prompt.split(separator: " ").count < AppleIntelligence.contextBudgetWords {
+                return try await AppleIntelligence.complete(prompt: prompt)
+            }
+            if profile.kind == .appleIntelligence {
+                throw AppleIntelligence.Unavailable(
+                    reason: AppleIntelligence.unavailabilityReason ?? "The conversation is too long for the on-device model."
+                )
+            }
+            var output = ""
+            let events = CompatibleChatClient.shared.streamChatEvents(
+                profile: profile,
+                credential: credential,
+                model: model,
+                thinking: .auto,
+                messages: [ChatMessage(role: "user", content: prompt)],
+                purpose: .compaction
+            )
+            for try await event in events {
+                switch event {
+                case .delta(let content, _): output += content
+                case .requestUsage(let usage): recordRequestUsage(usage)
+                case .quota(let quota): quotaByProvider[profile.id] = quota
+                default: break
                 }
-            } catch {
-                if conversation.id == self.activeConversationID { self.statusMessage = nil }
-                if !isAutomatic { self.postNotice("Couldn't compact this conversation: \(error.localizedDescription)", to: conversation) }
-                return
             }
-            if conversation.id == self.activeConversationID { self.statusMessage = nil }
-            let cleaned = summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !cleaned.isEmpty else {
-                if !isAutomatic { self.postNotice("The model didn't return a usable summary.", to: conversation) }
-                return
+            return output
+        }
+
+        let instruction = """
+        Summarize this conversation span into a structured brief for continuing it later: goals, exact decisions, current state, numbers, paths, code, and errors. Preserve precise details. Use plain prose or bullets, not a transcript or commentary about summarizing. Keep it concise.
+        """
+        let renderedMessages = toSummarize.map { "\($0.role.uppercased()): \($0.content)" }
+        var chunks: [String] = []
+        var current = ""
+        let compactingContext = resolvedContextLimit(provider: profile, requestedModel: model)?.primary.value ?? 30_000
+        let chunkLimit = max(4_000, min(60_000, compactingContext * 2))
+        for rendered in renderedMessages {
+            if !current.isEmpty, current.utf8.count + rendered.utf8.count + 2 > chunkLimit {
+                chunks.append(current)
+                current = ""
             }
-            // The marker lands right after the last message the summary
-            // actually covers — not the end of the whole span — so the
-            // recency buffer (and any pinned messages) stay correctly on
-            // the "not summarized" side of the boundary.
-            guard let insertAfterIndex = conversation.messages.firstIndex(where: { $0.id == lastSummarizedID }) else {
-                // The message the summary was anchored to was deleted while
-                // this was in flight — the summary itself is still real
-                // work the user is waiting on, so say so rather than
-                // letting "Compacting…" just silently vanish.
-                if !isAutomatic { self.postNotice("Compaction finished, but the conversation changed too much while it ran to safely insert the summary. Try again.", to: conversation) }
-                return
+            if rendered.utf8.count <= chunkLimit {
+                current += (current.isEmpty ? "" : "\n\n") + rendered
+            } else {
+                if !current.isEmpty { chunks.append(current); current = "" }
+                var remainder = rendered[...]
+                while !remainder.isEmpty {
+                    let end = remainder.index(remainder.startIndex, offsetBy: min(chunkLimit, remainder.count))
+                    chunks.append(String(remainder[..<end]))
+                    remainder = remainder[end...]
+                }
+            }
+        }
+        if !current.isEmpty { chunks.append(current) }
+
+        do {
+            var partials: [String] = []
+            for chunk in chunks {
+                let partial = try await summarize(chunk, instruction: instruction)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !partial.isEmpty else { throw APIError.message("The model returned an empty compaction summary.") }
+                partials.append(partial)
+            }
+            var combined = partials.joined(separator: "\n\n")
+            if let priorSummary, !priorSummary.isEmpty {
+                combined = "Earlier summary:\n\(priorSummary)\n\nNew span summaries:\n\(combined)"
+            }
+            let cleaned: String
+            if partials.count > 1 || priorSummary != nil {
+                cleaned = try await summarize(
+                    combined,
+                    instruction: "Merge these summaries into one precise continuation brief without dropping exact details."
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                cleaned = combined
+            }
+            guard !cleaned.isEmpty,
+                  let insertAfterIndex = conversation.messages.firstIndex(where: { $0.id == lastSummarizedID }) else {
+                throw APIError.message("The conversation changed before compaction could be inserted safely.")
             }
             conversation.messages.insert(ChatMessage(role: "compaction", content: cleaned), at: insertAfterIndex + 1)
-            self.saveHistory()
+            saveHistory()
+            return true
+        } catch {
+            if !isAutomatic {
+                postNotice("Couldn't compact this conversation: \(error.localizedDescription)", to: conversation)
+            }
+            return false
         }
     }
 
@@ -1555,7 +2036,7 @@ extension AppModel {
         UNUserNotificationCenter.current().add(request)
     }
 
-    private func failGeneration(_ message: String, for conversation: Conversation?, assistantID: UUID) {
+    private func failGeneration(_ message: String, for conversation: Conversation?, assistantID: UUID, learnedModel: String? = nil) {
         guard let conversation else { return }
         flushReveal(for: assistantID, conversation: conversation)
         // The failed assistant message itself carries `.error` and already
@@ -1568,12 +2049,14 @@ extension AppModel {
             conversation.messages[index].error = message
         }
         recordUsage(for: conversation, assistantID: assistantID)
-        learnContextWindow(from: message, conversation: conversation)
+        learnContextWindow(from: message, conversation: conversation, model: learnedModel)
         conversation.updatedAt = Date()
         // See the matching comment in `finishGeneration` — same race guard.
         if conversation.currentGenerationID == assistantID {
             conversation.isGenerating = false
             conversation.generationTask = nil
+            conversation.currentGenerationID = nil
+            settleGenerationIdentity(for: conversation)
         }
         saveHistory()
     }

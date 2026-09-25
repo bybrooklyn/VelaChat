@@ -24,6 +24,15 @@ final class RemoteLogoLoader {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
+    func reset() {
+        images.removeAll()
+        failedHosts.removeAll()
+        inFlight.removeAll()
+        if let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for file in files { try? FileManager.default.removeItem(at: file) }
+        }
+    }
+
     /// Loads from memory/disk or kicks a single network fetch for the host.
     /// Idempotent and cheap to call from `.task` on every appearance.
     func ensure(host: String) async {

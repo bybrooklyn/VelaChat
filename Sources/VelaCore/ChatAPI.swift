@@ -17,6 +17,8 @@ public final class CompatibleChatClient: @unchecked Sendable {
 
     private let session: URLSession
     private let decoder = JSONDecoder()
+    private let streamUsageCapabilityLock = NSLock()
+    private var streamUsageCapabilityByEndpoint: [String: Bool] = [:]
 
     public init() {
         let configuration = URLSessionConfiguration.default
@@ -72,6 +74,29 @@ public final class CompatibleChatClient: @unchecked Sendable {
         return QuotaSnapshot(headers: http.allHeaderFields)
     }
 
+    /// OpenRouter key credits — the one key-based provider with a real
+    /// read-only usage endpoint. `GET /api/v1/auth/key` returns
+    /// `{data: {label, usage, limit}}` in credits (dollars); `limit` is
+    /// null when the key has no cap. Everything is optional: anything
+    /// unrecognized yields nil rather than a wrong number.
+    public func fetchOpenRouterKeyCredit(
+        profile: ProviderProfile,
+        credential: ProviderCredential
+    ) async -> OpenRouterKeyCredit? {
+        guard profile.kind == .openRouter else { return nil }
+        guard let token = credential.token, !token.isEmpty else { return nil }
+        guard let url = try? endpointURL(profile: profile, path: "auth/key") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        addHeaders(to: &request, profile: profile, credential: credential)
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let payload = try? decoder.decode(OpenRouterKeyResponse.self, from: data),
+              let info = payload.data, let usage = info.usage else { return nil }
+        return OpenRouterKeyCredit(usedCredits: usage, limitCredits: info.limit, label: info.label)
+    }
+
     public func fetchModels(profile: ProviderProfile, credential: ProviderCredential) async throws -> [RemoteModel] {
         if profile.kind == .codex && credential.isCodexOAuth {
             return ModelCatalog.curated(for: .codex)
@@ -94,6 +119,7 @@ public final class CompatibleChatClient: @unchecked Sendable {
             let (data, response) = try await session.data(for: request)
             try Self.check(response: response, data: data)
             let payload = try decoder.decode(OllamaTagsResponse.self, from: data)
+            let allocatedContexts = (try? await fetchOllamaRunningContexts(profile: profile)) ?? [:]
             // `/api/tags` alone only gives quantization/size — real
             // capability and context-length data lives behind a per-model
             // `/api/show` call, so the catalog is enriched with one of those
@@ -107,13 +133,32 @@ public final class CompatibleChatClient: @unchecked Sendable {
                         let isCloud = item.name.lowercased().hasSuffix(":cloud")
                         let show = try? await self.fetchOllamaShow(profile: profile, model: item.name, family: item.details?.family)
                         let capabilities = show?.capabilities ?? []
+                        let scope = ModelEvidenceScope(profile: profile, requestedModel: item.name, effectiveModel: item.name)
+                        var contextEvidence: [ContextLimitEvidence] = []
+                        if let capacity = show?.contextLength, capacity > 0 {
+                            contextEvidence.append(ContextLimitEvidence(
+                                value: capacity,
+                                source: .providerCatalog,
+                                scope: scope,
+                                detail: "Ollama /api/show model capacity"
+                            ))
+                        }
+                        if let allocated = allocatedContexts[item.name.lowercased()], allocated > 0 {
+                            contextEvidence.append(ContextLimitEvidence(
+                                value: allocated,
+                                source: .runtimeConfiguration,
+                                scope: scope,
+                                detail: "Ollama /api/ps allocated context",
+                                observedAt: Date()
+                            ))
+                        }
+                        contextEvidence.append(contentsOf: Self.curatedContextEvidence(modelID: item.name, scope: scope))
                         let vision = capabilities.isEmpty
                             ? item.details?.families?.contains(where: { $0.lowercased().contains("clip") || $0.lowercased().contains("vision") })
                             : capabilities.contains("vision")
                         return RemoteModel(
                             id: item.name,
                             name: item.name,
-                            contextLength: show?.contextLength,
                             parameterSize: item.details?.parameterSize,
                             sizeBytes: item.size,
                             quantizationLevel: item.details?.quantizationLevel,
@@ -121,7 +166,8 @@ public final class CompatibleChatClient: @unchecked Sendable {
                             supportsReasoning: capabilities.isEmpty ? nil : capabilities.contains("thinking"),
                             supportsVision: vision,
                             supportsTools: capabilities.isEmpty ? nil : capabilities.contains("tools"),
-                            isLocal: true
+                            isLocal: true,
+                            contextLimitEvidence: contextEvidence
                         )
                     }
                 }
@@ -136,6 +182,15 @@ public final class CompatibleChatClient: @unchecked Sendable {
         // own request path rather than being forced through the generic one.
         if profile.kind == .anthropic {
             return try await fetchAnthropicModels(profile: profile, credential: credential)
+        }
+
+        // Google's OpenAI-compatible catalog omits the limits published by
+        // the native models.list API. Prefer that exact native metadata on the
+        // official host, while retaining the compatible path for gateways.
+        if profile.kind == .google,
+           let native = try? await fetchGeminiModels(profile: profile, credential: credential),
+           !native.isEmpty {
+            return native
         }
 
         let url = try endpointURL(profile: profile, path: "models")
@@ -155,48 +210,330 @@ public final class CompatibleChatClient: @unchecked Sendable {
         let items = profile.kind == .blockrun
             ? payload.data.filter { $0.billingMode?.lowercased() == "free" }
             : payload.data
-        return items.map { item in
-            let supported = item.supportedParameters ?? []
-            let normalized = supported.map { $0.lowercased() }
-            let categories = (item.categories ?? []).map { $0.lowercased() }
-            let architectureModalities = item.architecture?.inputModalities ?? []
-            let advertisedEfforts = item.reasoning?.supportedEfforts ?? []
-            let reasoning = normalized.contains(where: { $0.contains("reasoning") }) || !advertisedEfforts.isEmpty || categories.contains("reasoning")
-            let vision = architectureModalities.contains(where: { $0.lowercased().contains("image") }) || categories.contains("vision")
-            let tools = normalized.contains(where: { $0 == "tools" || $0.contains("tool_choice") }) || categories.contains("tools")
-            let deepSeekModel = profile.kind == .deepSeek && item.id.lowercased().contains("deepseek-v4")
-            // Two real, verified pricing shapes: blockrun already publishes
-            // $/1M tokens as numbers; OpenRouter publishes $/token as
-            // strings, so it needs converting to the same $/1M unit.
-            // Neither is guessed for any other provider.
-            let (inputPrice, outputPrice): (Double?, Double?) = {
-                guard let pricing = item.pricing else { return (nil, nil) }
-                if profile.kind == .blockrun {
-                    return (pricing.input, pricing.output)
-                }
-                let promptPerToken = pricing.prompt.flatMap(Double.init)
-                let completionPerToken = pricing.completion.flatMap(Double.init)
-                return (promptPerToken.map { $0 * 1_000_000 }, completionPerToken.map { $0 * 1_000_000 })
-            }()
-            return RemoteModel(
-                id: item.id,
-                ownedBy: item.ownedBy,
-                name: item.name,
-                description: item.description,
-                contextLength: item.contextLength ?? item.contextWindow ?? ModelCatalog.curatedContextLength(for: item.id),
-                maxOutputTokens: item.topProvider?.maxCompletionTokens ?? item.maxOutput ?? (deepSeekModel ? 384_000 : nil),
-                supportsReasoning: reasoning ? true : nil,
-                supportsVision: vision ? true : nil,
-                supportsTools: tools ? true : nil,
-                supportedEfforts: advertisedEfforts.isEmpty ? supportedReasoningEfforts(from: normalized) : advertisedEfforts,
-                inputPricePerMillion: inputPrice,
-                outputPricePerMillion: outputPrice
+        return items.map { Self.remoteModel(from: $0, profile: profile) }
+    }
+
+    /// OpenRouter single-model lookup. Verified live against the real API:
+    /// `GET /api/v1/model/:slug` returns `{data: <the same Item shape as
+    /// the /models list>}`, with aliases resolving server-side. Other
+    /// providers expose no equivalent per-model endpoint — callers gate on
+    /// `.openRouter` rather than probing every compatible host.
+    public func fetchModel(profile: ProviderProfile, credential: ProviderCredential, modelID: String) async throws -> RemoteModel {
+        let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw APIError.message("Enter a model ID first.") }
+        let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? trimmed
+        let url = try endpointURL(profile: profile, path: "model/\(encoded)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = Self.discoveryTimeout(for: profile.kind)
+        addHeaders(to: &request, profile: profile, credential: credential)
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response: response, data: data)
+        let payload = try decoder.decode(SingleModelResponse.self, from: data)
+        return Self.remoteModel(from: payload.data, profile: profile)
+    }
+
+    /// The shared Item → RemoteModel mapping for both the bulk catalog
+    /// fetch and the single-model lookup above. Internal (not private) so
+    /// the catalog tests can pin the top_provider precedence directly.
+    static func remoteModel(from item: ModelListResponse.Item, profile: ProviderProfile) -> RemoteModel {
+        let supported = item.supportedParameters ?? []
+        let normalized = supported.map { $0.lowercased() }
+        let categories = (item.categories ?? []).map { $0.lowercased() }
+        let architectureModalities = item.architecture?.inputModalities ?? []
+        let advertisedEfforts = item.reasoning?.supportedEfforts ?? []
+        let reasoning = normalized.contains(where: { $0.contains("reasoning") }) || !advertisedEfforts.isEmpty || categories.contains("reasoning")
+        let vision = architectureModalities.contains(where: { $0.lowercased().contains("image") }) || categories.contains("vision")
+        let tools = normalized.contains(where: { $0 == "tools" || $0.contains("tool_choice") }) || categories.contains("tools")
+        let deepSeekModel = profile.kind == .deepSeek && item.id.lowercased().contains("deepseek-v4")
+        // Two real, verified pricing shapes: blockrun already publishes
+        // $/1M tokens as numbers; OpenRouter publishes $/token as
+        // strings, so it needs converting to the same $/1M unit.
+        // Neither is guessed for any other provider.
+        let (inputPrice, outputPrice): (Double?, Double?) = {
+            guard let pricing = item.pricing else { return (nil, nil) }
+            if profile.kind == .blockrun {
+                return (pricing.input, pricing.output)
+            }
+            let promptPerToken = pricing.prompt.flatMap(Double.init)
+            let completionPerToken = pricing.completion.flatMap(Double.init)
+            return (promptPerToken.map { $0 * 1_000_000 }, completionPerToken.map { $0 * 1_000_000 })
+        }()
+        let scope = ModelEvidenceScope(profile: profile, requestedModel: item.id, effectiveModel: item.id)
+        let providerContext = item.topProvider?.contextLength
+            ?? item.contextLength
+            ?? item.contextWindow
+            ?? item.inputTokenLimit
+        let providerOutput = item.topProvider?.maxCompletionTokens
+            ?? item.maxOutput
+            ?? item.outputTokenLimit
+        var outputEvidence: [OutputLimitEvidence] = []
+        if providerOutput == nil, deepSeekModel {
+            outputEvidence.append(OutputLimitEvidence(
+                value: 384_000,
+                source: .bundledSnapshot,
+                scope: scope,
+                detail: "VelaChat bundled DeepSeek metadata"
+            ))
+        }
+        let curatedContext = Self.curatedContextEvidence(modelID: item.id, scope: scope)
+        return RemoteModel(
+            id: item.id,
+            ownedBy: item.ownedBy,
+            name: item.name,
+            description: item.description,
+            contextLength: providerContext,
+            maxOutputTokens: providerOutput,
+            supportsReasoning: reasoning ? true : nil,
+            supportsVision: vision ? true : nil,
+            supportsTools: tools ? true : nil,
+            supportedEfforts: advertisedEfforts.isEmpty ? supportedReasoningEfforts(from: normalized) : advertisedEfforts,
+            inputPricePerMillion: inputPrice,
+            outputPricePerMillion: outputPrice,
+            contextLimitEvidence: curatedContext,
+            outputLimitEvidence: outputEvidence,
+            evidenceScope: scope,
+            scalarEvidenceSource: .providerCatalog,
+            scalarEvidenceDetail: profile.kind == .openRouter
+                ? "OpenRouter model catalog / top_provider"
+                : "\(profile.kind.rawValue) model catalog"
+        )
+    }
+
+    /// Exact, provider-native input token counting for providers that expose
+    /// it. The caller is responsible for caching by its prepared-request
+    /// fingerprint; this method always performs one live count.
+    public func countInputTokens(
+        profile: ProviderProfile,
+        credential: ProviderCredential,
+        model: String,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition] = []
+    ) async throws -> ProviderInputTokenCount {
+        try Self.requireCredential(profile: profile, credential: credential)
+        switch profile.kind {
+        case .openAI:
+            return try await countOpenAIInputTokens(
+                profile: profile,
+                credential: credential,
+                model: model,
+                messages: messages,
+                tools: tools
+            )
+        case .anthropic:
+            return try await countAnthropicInputTokens(
+                profile: profile,
+                credential: credential,
+                model: model,
+                messages: messages,
+                tools: tools
+            )
+        case .google:
+            return try await countGeminiInputTokens(
+                profile: profile,
+                credential: credential,
+                model: model,
+                messages: messages,
+                tools: tools
+            )
+        default:
+            throw APIError.message("\(profile.kind.rawValue) does not expose a supported exact token-count endpoint.")
+        }
+    }
+
+    public func countInputTokens(
+        profile: ProviderProfile,
+        credential: ProviderCredential,
+        preparedRequest: PreparedRequest
+    ) async throws -> ProviderInputTokenCount {
+        guard preparedRequest.providerID == profile.id,
+              preparedRequest.endpointFingerprint == ModelEvidenceScope.fingerprint(endpoint: profile.endpoint) else {
+            throw APIError.message("The prepared request belongs to a different provider endpoint.")
+        }
+        return try await countInputTokens(
+            profile: profile,
+            credential: credential,
+            model: preparedRequest.wireModel,
+            messages: preparedRequest.messages,
+            tools: preparedRequest.tools
+        )
+    }
+
+    private func countOpenAIInputTokens(
+        profile: ProviderProfile,
+        credential: ProviderCredential,
+        model: String,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition]
+    ) async throws -> ProviderInputTokenCount {
+        let url = try endpointURL(profile: profile, path: "responses/input_tokens")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        addHeaders(to: &request, profile: profile, credential: credential)
+        request.httpBody = try Self.openAIInputTokenCountBody(model: model, messages: messages, tools: tools)
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response: response, data: data)
+        let payload = try decoder.decode(OpenAIInputTokenCountResponse.self, from: data)
+        return ProviderInputTokenCount(inputTokens: payload.inputTokens, provider: .openAI, requestedModel: model)
+    }
+
+    static func openAIInputTokenCountBody(
+        model: String,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition]
+    ) throws -> Data {
+        let input: [[String: Any]] = messages.map { message in
+            var content: [[String: Any]] = []
+            if !message.contentForRequest.isEmpty || message.imageAttachments.isEmpty {
+                content.append(["type": "input_text", "text": message.contentForRequest])
+            }
+            content.append(contentsOf: message.imageAttachments.map {
+                ["type": "input_image", "image_url": $0.dataURL, "detail": "auto"]
+            })
+            return ["type": "message", "role": message.role, "content": content]
+        }
+        var body: [String: Any] = ["model": model, "input": input]
+        if !tools.isEmpty { body["tools"] = tools.map(Self.responsesToolWireObject) }
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    private func countAnthropicInputTokens(
+        profile: ProviderProfile,
+        credential: ProviderCredential,
+        model: String,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition]
+    ) async throws -> ProviderInputTokenCount {
+        guard let url = Self.anthropicURL(profile: profile, path: "/messages/count_tokens") else {
+            throw APIError.message("Invalid Anthropic endpoint")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        addHeaders(to: &request, profile: profile, credential: credential)
+        request.httpBody = try Self.anthropicInputTokenCountBody(model: model, messages: messages, tools: tools)
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response: response, data: data)
+        let payload = try decoder.decode(AnthropicInputTokenCountResponse.self, from: data)
+        return ProviderInputTokenCount(inputTokens: payload.inputTokens, provider: .anthropic, requestedModel: model)
+    }
+
+    static func anthropicInputTokenCountBody(
+        model: String,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition]
+    ) throws -> Data {
+        let systemText = messages.filter { $0.role == "system" }.map(\.content).joined(separator: "\n\n")
+        let turns = messages.filter { $0.role != "system" }.map {
+            AnthropicMessage(
+                role: $0.role,
+                text: $0.contentForRequest,
+                images: $0.imageAttachments.map { .init(mimeType: $0.mimeType, base64: $0.data.base64EncodedString()) }
             )
         }
+        let turnsData = try JSONEncoder().encode(turns)
+        guard var turnsJSON = try JSONSerialization.jsonObject(with: turnsData) as? [[String: Any]] else {
+            throw APIError.message("Could not build the Anthropic token-count request.")
+        }
+        AnthropicPromptCache.markLatestTurn(&turnsJSON)
+        var body: [String: Any] = ["model": model, "messages": turnsJSON]
+        if !systemText.isEmpty {
+            body["system"] = [["type": "text", "text": systemText, "cache_control": ["type": "ephemeral"]]]
+        }
+        if !tools.isEmpty { body["tools"] = tools.map(Self.anthropicToolWireObject) }
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    private func countGeminiInputTokens(
+        profile: ProviderProfile,
+        credential: ProviderCredential,
+        model: String,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition]
+    ) async throws -> ProviderInputTokenCount {
+        guard let endpoint = URL(string: profile.endpoint),
+              endpoint.host?.lowercased() == "generativelanguage.googleapis.com",
+              var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            throw APIError.message("Gemini exact token counting requires the official Gemini endpoint.")
+        }
+        let leafModel = model.split(separator: "/").last.map(String.init) ?? model
+        components.path = "/v1beta/models/\(leafModel):countTokens"
+        components.query = nil
+        guard let url = components.url else { throw APIError.message("Invalid Gemini token-count endpoint") }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = credential.token, !token.isEmpty { request.setValue(token, forHTTPHeaderField: "x-goog-api-key") }
+        request.httpBody = try Self.geminiInputTokenCountBody(model: leafModel, messages: messages, tools: tools)
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response: response, data: data)
+        let payload = try decoder.decode(GeminiInputTokenCountResponse.self, from: data)
+        return ProviderInputTokenCount(inputTokens: payload.totalTokens, provider: .google, requestedModel: model)
+    }
+
+    static func geminiInputTokenCountBody(
+        model: String,
+        messages: [ChatMessage],
+        tools: [ToolCatalog.Definition]
+    ) throws -> Data {
+        let systemText = messages.filter { $0.role == "system" }.map(\.content).joined(separator: "\n\n")
+        let contents: [[String: Any]] = messages.filter { $0.role != "system" }.map { message in
+            var parts: [[String: Any]] = []
+            if !message.contentForRequest.isEmpty { parts.append(["text": message.contentForRequest]) }
+            parts.append(contentsOf: message.imageAttachments.map {
+                ["inlineData": ["mimeType": $0.mimeType, "data": $0.data.base64EncodedString()]]
+            })
+            return ["role": message.role == "assistant" ? "model" : "user", "parts": parts]
+        }
+        // The model is encoded in the REST path (`models/{id}:countTokens`),
+        // not inside GenerateContentRequest.
+        var generationRequest: [String: Any] = ["contents": contents]
+        if !systemText.isEmpty { generationRequest["systemInstruction"] = ["parts": [["text": systemText]]] }
+        if !tools.isEmpty {
+            generationRequest["tools"] = [["functionDeclarations": tools.map(Self.geminiToolWireObject)]]
+        }
+        return try JSONSerialization.data(withJSONObject: ["generateContentRequest": generationRequest])
     }
 
     private struct OllamaShowRequest: Encodable {
         let model: String
+    }
+
+    private static func curatedContextEvidence(modelID: String, scope: ModelEvidenceScope) -> [ContextLimitEvidence] {
+        guard let value = ContextWindowTable.contextLength(for: modelID) else { return [] }
+        return [ContextLimitEvidence(
+            value: value,
+            source: .curatedFamily,
+            scope: scope,
+            exactModelMatch: false,
+            detail: "VelaChat documented family fallback"
+        )]
+    }
+
+    /// Runtime allocations from `/api/ps`, keyed by every exact model name
+    /// Ollama provides. This is intentionally separate from `/api/show`'s
+    /// maximum model capacity: the allocated `context_length` is the limit a
+    /// request can actually use right now.
+    private func fetchOllamaRunningContexts(profile: ProviderProfile) async throws -> [String: Int] {
+        let base = try baseURL(for: profile.endpoint)
+        let url = base.deletingLastPathComponent().appendingPathComponent("api/ps")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response: response, data: data)
+        let payload = try decoder.decode(OllamaProcessesResponse.self, from: data)
+        var result: [String: Int] = [:]
+        for item in payload.models {
+            guard let value = item.contextLength, value > 0 else { continue }
+            if let name = item.name, !name.isEmpty { result[name.lowercased()] = value }
+            if let model = item.model, !model.isEmpty { result[model.lowercased()] = value }
+        }
+        return result
     }
 
     /// `/api/show`'s `model_info` uses architecture-prefixed dynamic keys
@@ -290,27 +627,56 @@ public final class CompatibleChatClient: @unchecked Sendable {
         tools: [ToolCatalog.Definition] = [],
         toolContext: ToolCatalog.ExecutionContext? = nil,
         conversationKey: UUID? = nil,
+        purpose: UsagePurpose = .chat,
+        requestedOutputTokens: Int? = nil,
+        telemetryRequestedModel: String? = nil,
         onEvent: @escaping @Sendable (ChatStreamEvent) -> Void
     ) async throws {
         try Self.requireCredential(profile: profile, credential: credential)
+        let usageRequestedModel = telemetryRequestedModel ?? model
 
         if profile.kind == .codex && credential.isCodexOAuth {
-            try await streamCodex(model: model, credential: credential, thinking: thinking, messages: messages, tools: tools, toolContext: toolContext, onEvent: onEvent)
+            try await streamCodex(profile: profile, model: model, credential: credential, thinking: thinking, messages: messages, tools: tools, toolContext: toolContext, purpose: purpose, onEvent: onEvent)
             return
         }
 
         if profile.kind == .claudeCode {
-            try await streamClaudeCode(model: model, messages: messages, toolContext: toolContext, onEvent: onEvent)
+            try await streamClaudeCode(profile: profile, model: model, messages: messages, toolContext: toolContext, purpose: purpose, onEvent: onEvent)
             return
         }
 
         if profile.kind == .chatGPT {
-            try await ChatGPTWebChat.stream(conversationKey: conversationKey, model: model, thinking: thinking, messages: messages, onEvent: onEvent)
+            // The web conduit reports no token counts, but the turn still
+            // happened: emit one metrics-free row so ChatGPT chats appear
+            // in turn counts instead of vanishing from usage entirely.
+            // Nil metrics mean "unreported", never zero (see RequestUsage).
+            let startedAt = Date()
+            do {
+                try await ChatGPTWebChat.stream(conversationKey: conversationKey, model: model, thinking: thinking, messages: messages, onEvent: onEvent)
+            } catch {
+                onEvent(.requestUsage(RequestUsage(
+                    providerID: profile.id,
+                    requestedModelID: model,
+                    effectiveModelID: model,
+                    purpose: purpose,
+                    outcome: Task.isCancelled ? .cancelled : .failed,
+                    latencyMilliseconds: Int(Date().timeIntervalSince(startedAt) * 1_000)
+                )))
+                throw error
+            }
+            onEvent(.requestUsage(RequestUsage(
+                providerID: profile.id,
+                requestedModelID: model,
+                effectiveModelID: model,
+                purpose: purpose,
+                outcome: .succeeded,
+                latencyMilliseconds: Int(Date().timeIntervalSince(startedAt) * 1_000)
+            )))
             return
         }
 
         if profile.kind == .anthropic {
-            try await streamAnthropic(profile: profile, model: model, credential: credential, thinking: thinking, modelInfo: modelInfo, messages: messages, tools: tools, toolContext: toolContext, onEvent: onEvent)
+            try await streamAnthropic(profile: profile, model: model, credential: credential, thinking: thinking, modelInfo: modelInfo, messages: messages, tools: tools, toolContext: toolContext, purpose: purpose, requestedOutputTokens: requestedOutputTokens, onEvent: onEvent)
             return
         }
 
@@ -363,6 +729,7 @@ public final class CompatibleChatClient: @unchecked Sendable {
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             addHeaders(to: &request, profile: profile, credential: credential)
 
+            let includeStreamingUsage = shouldIncludeStreamingUsage(for: profile)
             let body = ChatCompletionBody(
                 model: model,
                 messages: wireMessages,
@@ -372,13 +739,48 @@ public final class CompatibleChatClient: @unchecked Sendable {
                 reasoning: settings.reasoning,
                 thinking: settings.thinking,
                 think: settings.think,
-                keepAlive: profile.kind == .ollama ? "10m" : nil
+                keepAlive: profile.kind == .ollama ? "10m" : nil,
+                streamOptions: includeStreamingUsage ? StreamOptions(includeUsage: true) : nil
             )
             request.httpBody = try Self.encodeWithTools(body, tools: (round < maxRounds - 1 && !toolsDisabled) ? tools : [])
 
-            let (bytes, response) = try await session.bytes(for: request)
-            try await Self.checkStream(response: response, bytes: bytes)
+            let requestUsageID = UUID()
+            let requestStartedAt = Date()
+            var didEmitRequestUsage = false
+            var latestRoundUsage: StreamChunk.Usage?
+            var effectiveModel = model
+            var requestQuota: QuotaSnapshot?
+            defer {
+                if !didEmitRequestUsage {
+                    onEvent(.requestUsage(Self.compatibleRequestUsage(
+                        id: requestUsageID,
+                        profile: profile,
+                        requestedModel: usageRequestedModel,
+                        effectiveModel: effectiveModel,
+                        purpose: round == 0 ? purpose : .toolRound,
+                        outcome: Task.isCancelled ? .cancelled : .failed,
+                        usage: latestRoundUsage,
+                        latencyMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                        quota: requestQuota
+                    )))
+                }
+            }
+            let (bytes, response, retriedWithoutUsage) = try await openChatCompletionStream(
+                request: request,
+                profile: profile,
+                includedUsage: includeStreamingUsage
+            )
+            if retriedWithoutUsage {
+                onEvent(.requestUsage(RequestUsage(
+                    providerID: profile.id,
+                    requestedModelID: usageRequestedModel,
+                    effectiveModelID: model,
+                    purpose: round == 0 ? purpose : .toolRound,
+                    outcome: .failed
+                )))
+            }
             if let http = response as? HTTPURLResponse, let quota = QuotaSnapshot(headers: http.allHeaderFields) {
+                requestQuota = quota
                 onEvent(.quota(quota))
             }
 
@@ -406,6 +808,10 @@ public final class CompatibleChatClient: @unchecked Sendable {
                     continue
                 }
                 consecutiveParseFailures = 0
+                if let reportedModel = chunk.model, !reportedModel.isEmpty { effectiveModel = reportedModel }
+                if let usage = chunk.usage {
+                    latestRoundUsage = latestRoundUsage.map { $0.merging(usage) } ?? usage
+                }
                 guard let choice = chunk.choices.first else {
                     if let usage = chunk.usage {
                         let totals = usageTotals.observe(prompt: usage.promptTokens, completion: usage.completionTokens, cached: usage.cachedTokens)
@@ -435,6 +841,25 @@ public final class CompatibleChatClient: @unchecked Sendable {
                     let totals = usageTotals.observe(prompt: usage.promptTokens, completion: usage.completionTokens, cached: usage.cachedTokens)
                     onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached, cacheCreation: totals.cacheCreation))
                 }
+            }
+
+            onEvent(.requestUsage(Self.compatibleRequestUsage(
+                id: requestUsageID,
+                profile: profile,
+                requestedModel: usageRequestedModel,
+                effectiveModel: effectiveModel,
+                purpose: round == 0 ? purpose : .toolRound,
+                outcome: refusalForThisRound.isEmpty ? .succeeded : .refused,
+                usage: latestRoundUsage,
+                latencyMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                quota: requestQuota
+            )))
+            didEmitRequestUsage = true
+            if effectiveModel.caseInsensitiveCompare(model) != .orderedSame {
+                onEvent(.modelMetadata(RuntimeModelMetadata(
+                    requestedModel: usageRequestedModel,
+                    effectiveModel: effectiveModel
+                )))
             }
 
             guard sawToolCalls, !pendingToolCalls.isEmpty, let toolContext, round < maxRounds - 1, !toolsDisabled else {
@@ -515,16 +940,27 @@ public final class CompatibleChatClient: @unchecked Sendable {
         let encoded = try JSONEncoder().encode(body)
         guard !tools.isEmpty else { return encoded }
         guard var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else { return encoded }
-        object["tools"] = tools.map { tool -> [String: Any] in
-            let parameters = (try? JSONSerialization.jsonObject(with: Data(tool.parametersJSON.utf8))) as? [String: Any] ?? [:]
-            return [
-                "type": "function",
-                "name": tool.name,
-                "description": tool.wireDescription,
-                "parameters": parameters
-            ]
-        }
+        object["tools"] = tools.map(responsesToolWireObject)
         return try JSONSerialization.data(withJSONObject: object)
+    }
+
+    private static func responsesToolWireObject(_ tool: ToolCatalog.Definition) -> [String: Any] {
+        let parameters = (try? JSONSerialization.jsonObject(with: Data(tool.parametersJSON.utf8))) as? [String: Any] ?? [:]
+        return [
+            "type": "function",
+            "name": tool.name,
+            "description": tool.wireDescription,
+            "parameters": parameters
+        ]
+    }
+
+    private static func geminiToolWireObject(_ tool: ToolCatalog.Definition) -> [String: Any] {
+        let parameters = (try? JSONSerialization.jsonObject(with: Data(tool.parametersJSON.utf8))) as? [String: Any] ?? [:]
+        return [
+            "name": tool.name,
+            "description": tool.wireDescription,
+            "parameters": parameters
+        ]
     }
 
     private static func toolWireObject(_ tool: ToolCatalog.Definition) -> [String: Any] {
@@ -548,7 +984,10 @@ public final class CompatibleChatClient: @unchecked Sendable {
         messages: [ChatMessage],
         tools: [ToolCatalog.Definition] = [],
         toolContext: ToolCatalog.ExecutionContext? = nil,
-        conversationKey: UUID? = nil
+        conversationKey: UUID? = nil,
+        purpose: UsagePurpose = .chat,
+        requestedOutputTokens: Int? = nil,
+        telemetryRequestedModel: String? = nil
     ) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -562,7 +1001,10 @@ public final class CompatibleChatClient: @unchecked Sendable {
                         messages: messages,
                         tools: tools,
                         toolContext: toolContext,
-                        conversationKey: conversationKey
+                        conversationKey: conversationKey,
+                        purpose: purpose,
+                        requestedOutputTokens: requestedOutputTokens,
+                        telemetryRequestedModel: telemetryRequestedModel
                     ) { event in
                         continuation.yield(event)
                     }
@@ -573,6 +1015,29 @@ public final class CompatibleChatClient: @unchecked Sendable {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    public func streamChatEvents(
+        profile: ProviderProfile,
+        credential: ProviderCredential,
+        preparedRequest: PreparedRequest,
+        toolContext: ToolCatalog.ExecutionContext? = nil,
+        conversationKey: UUID? = nil
+    ) -> AsyncThrowingStream<ChatStreamEvent, Error> {
+        streamChatEvents(
+            profile: profile,
+            credential: credential,
+            model: preparedRequest.wireModel,
+            thinking: preparedRequest.thinking,
+            modelInfo: preparedRequest.modelInfo,
+            messages: preparedRequest.messages,
+            tools: preparedRequest.tools,
+            toolContext: toolContext,
+            conversationKey: conversationKey,
+            purpose: preparedRequest.purpose,
+            requestedOutputTokens: preparedRequest.requestedOutputTokens,
+            telemetryRequestedModel: preparedRequest.requestedModel
+        )
     }
 
     public func sendNonStreaming(
@@ -595,7 +1060,8 @@ public final class CompatibleChatClient: @unchecked Sendable {
             reasoning: nil,
             thinking: nil,
             think: nil,
-            keepAlive: profile.kind == .ollama ? "10m" : nil
+            keepAlive: profile.kind == .ollama ? "10m" : nil,
+            streamOptions: nil
         ))
         let (data, response) = try await session.data(for: request)
         try Self.check(response: response, data: data)
@@ -608,6 +1074,63 @@ public final class CompatibleChatClient: @unchecked Sendable {
     private func endpointURL(profile: ProviderProfile, path: String) throws -> URL {
         let base = try baseURL(for: profile.endpoint)
         return base.appendingPathComponent(path)
+    }
+
+    private func shouldIncludeStreamingUsage(for profile: ProviderProfile) -> Bool {
+        guard let key = ModelEvidenceScope.fingerprint(endpoint: profile.endpoint) else { return true }
+        streamUsageCapabilityLock.lock()
+        defer { streamUsageCapabilityLock.unlock() }
+        return streamUsageCapabilityByEndpoint[key] ?? true
+    }
+
+    private func rememberStreamingUsageSupport(_ supported: Bool, for profile: ProviderProfile) {
+        guard let key = ModelEvidenceScope.fingerprint(endpoint: profile.endpoint) else { return }
+        streamUsageCapabilityLock.lock()
+        streamUsageCapabilityByEndpoint[key] = supported
+        streamUsageCapabilityLock.unlock()
+    }
+
+    /// Starts a chat-completions stream and performs the one safe compatibility
+    /// retry allowed for arbitrary gateways: if the server rejects
+    /// `stream_options.include_usage` before streaming starts, resend the same
+    /// body without that option and remember the endpoint capability. No retry
+    /// happens after a successful status, so generated content is never doubled.
+    private func openChatCompletionStream(
+        request: URLRequest,
+        profile: ProviderProfile,
+        includedUsage: Bool
+    ) async throws -> (bytes: URLSession.AsyncBytes, response: URLResponse, retriedWithoutUsage: Bool) {
+        let (bytes, response) = try await session.bytes(for: request)
+        if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+            if includedUsage { rememberStreamingUsageSupport(true, for: profile) }
+            return (bytes, response, false)
+        }
+
+        var errorData = Data()
+        for try await byte in bytes {
+            errorData.append(byte)
+            if errorData.count >= 8_192 { break }
+        }
+        let errorText = String(data: errorData, encoding: .utf8)?.lowercased() ?? ""
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let optionNamed = errorText.contains("stream_options") || errorText.contains("include_usage")
+        let schemaRejected = errorText.contains("unknown") || errorText.contains("unsupported") ||
+            errorText.contains("unrecognized") || errorText.contains("extra") || errorText.contains("not permitted")
+        if includedUsage, [400, 404, 422].contains(status), optionNamed, schemaRejected {
+            rememberStreamingUsageSupport(false, for: profile)
+            var retry = request
+            if let body = request.httpBody,
+               var object = try JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                object.removeValue(forKey: "stream_options")
+                retry.httpBody = try JSONSerialization.data(withJSONObject: object)
+            }
+            let (retryBytes, retryResponse) = try await session.bytes(for: retry)
+            try await Self.checkStream(response: retryResponse, bytes: retryBytes)
+            return (retryBytes, retryResponse, true)
+        }
+
+        try Self.check(response: response, data: errorData)
+        throw APIError.message("The provider rejected the streaming request.")
     }
 
     private func baseURL(for value: String) throws -> URL {
@@ -677,14 +1200,15 @@ public final class CompatibleChatClient: @unchecked Sendable {
             return RequestSettings(reasoningEffort: nil, reasoning: nil, thinking: nil, think: value)
         // Codex and Anthropic each have their own dedicated request path with
         // their own thinking/reasoning shape, so this generic mapping is
-        // never consulted for them. Perplexity and Preview don't take a
-        // reasoning parameter at all.
+        // never consulted for them. Perplexity doesn't take a reasoning
+        // parameter at all. (Preview was a third member of this list until
+        // the offline provider kind was retired.)
         case .codex, .perplexity, .anthropic:
             return RequestSettings(reasoningEffort: nil, reasoning: nil, thinking: nil, think: nil)
         }
     }
 
-    private func supportedReasoningEfforts(from parameters: [String]) -> [String] {
+    private static func supportedReasoningEfforts(from parameters: [String]) -> [String] {
         guard parameters.contains(where: { $0.contains("reasoning") }) else { return [] }
         // Most catalogs advertise the reasoning object but not its enum. The
         // UI then uses the provider's standard effort ladder.
@@ -713,13 +1237,147 @@ public final class CompatibleChatClient: @unchecked Sendable {
         request.setValue("VelaChat/1.0", forHTTPHeaderField: "User-Agent")
     }
 
+    private static func usageQuota(from snapshot: QuotaSnapshot?) -> UsageQuotaEvidence? {
+        guard let snapshot else { return nil }
+        return UsageQuotaEvidence(
+            provenance: .responseHeaders,
+            observedAt: snapshot.capturedAt,
+            requestsRemaining: snapshot.requestsRemaining,
+            requestsLimit: snapshot.requestsLimit,
+            tokensRemaining: snapshot.tokensRemaining,
+            tokensLimit: snapshot.tokensLimit,
+            resetAt: snapshot.resetAt
+        )
+    }
+
+    /// OpenAI-style `prompt_tokens` already includes cache-hit/cache-write
+    /// input. Keep that canonical logical total intact and preserve the cache
+    /// lanes alongside it for cost/coverage analysis; callers must not add the
+    /// cache lanes to `inputTokens` again.
+    private static func compatibleRequestUsage(
+        id: UUID,
+        profile: ProviderProfile,
+        requestedModel: String,
+        effectiveModel: String?,
+        purpose: UsagePurpose,
+        outcome: UsageOutcome,
+        usage: StreamChunk.Usage?,
+        latencyMilliseconds: Int,
+        quota: QuotaSnapshot?
+    ) -> RequestUsage {
+        let hasMetrics = usage.map {
+            $0.promptTokens != nil || $0.completionTokens != nil ||
+                $0.cachedTokens != nil || $0.completionTokensDetails?.reasoningTokens != nil ||
+                $0.promptTokensDetails?.cacheWriteTokens != nil
+        } ?? false
+        return RequestUsage(
+            id: id,
+            providerID: profile.id,
+            requestedModelID: requestedModel,
+            effectiveModelID: effectiveModel ?? requestedModel,
+            purpose: purpose,
+            outcome: outcome,
+            inputTokens: LogicalInputUsage.tokens(
+                reportedInput: usage?.promptTokens,
+                cacheRead: usage?.cachedTokens,
+                cacheWrite: usage?.promptTokensDetails?.cacheWriteTokens,
+                reportedInputIncludesCache: true
+            ),
+            outputTokens: usage?.completionTokens,
+            reasoningTokens: usage?.completionTokensDetails?.reasoningTokens,
+            cacheReadTokens: usage?.cachedTokens,
+            cacheWrite5mTokens: usage?.promptTokensDetails?.cacheWriteTokens,
+            latencyMilliseconds: latencyMilliseconds,
+            metricProvenance: hasMetrics ? .providerReported : nil,
+            cost: usage?.cost.map(CostEvidence.providerReported),
+            quota: usageQuota(from: quota)
+        )
+    }
+
+    private static func codexRequestUsage(
+        id: UUID,
+        profile: ProviderProfile,
+        requestedModel: String,
+        effectiveModel: String?,
+        purpose: UsagePurpose,
+        outcome: UsageOutcome,
+        usage: CodexResponseEvent.Response.Usage?,
+        latencyMilliseconds: Int,
+        quota: QuotaSnapshot?
+    ) -> RequestUsage {
+        let hasMetrics = usage.map {
+            $0.inputTokens != nil || $0.outputTokens != nil ||
+                $0.inputTokensDetails?.cachedTokens != nil ||
+                $0.outputTokensDetails?.reasoningTokens != nil
+        } ?? false
+        return RequestUsage(
+            id: id,
+            providerID: profile.id,
+            requestedModelID: requestedModel,
+            effectiveModelID: effectiveModel ?? requestedModel,
+            purpose: purpose,
+            outcome: outcome,
+            inputTokens: LogicalInputUsage.tokens(
+                reportedInput: usage?.inputTokens,
+                cacheRead: usage?.inputTokensDetails?.cachedTokens,
+                cacheWrite: nil,
+                reportedInputIncludesCache: true
+            ),
+            outputTokens: usage?.outputTokens,
+            reasoningTokens: usage?.outputTokensDetails?.reasoningTokens,
+            cacheReadTokens: usage?.inputTokensDetails?.cachedTokens,
+            latencyMilliseconds: latencyMilliseconds,
+            metricProvenance: hasMetrics ? .providerReported : nil,
+            quota: usageQuota(from: quota)
+        )
+    }
+
+    private static func anthropicRequestUsage(
+        id: UUID,
+        profile: ProviderProfile,
+        requestedModel: String,
+        effectiveModel: String?,
+        purpose: UsagePurpose,
+        outcome: UsageOutcome,
+        usage: AnthropicStreamEvent.Usage?,
+        latencyMilliseconds: Int,
+        quota: QuotaSnapshot?
+    ) -> RequestUsage {
+        let creation = usage?.creationTokens
+        let logicalInput = LogicalInputUsage.tokens(
+            reportedInput: usage?.inputTokens,
+            cacheRead: usage?.cacheReadInputTokens,
+            cacheWrite: creation?.total,
+            reportedInputIncludesCache: false
+        )
+        let hasMetrics = logicalInput != nil || usage?.outputTokens != nil
+        return RequestUsage(
+            id: id,
+            providerID: profile.id,
+            requestedModelID: requestedModel,
+            effectiveModelID: effectiveModel ?? requestedModel,
+            purpose: purpose,
+            outcome: outcome,
+            inputTokens: logicalInput,
+            outputTokens: usage?.outputTokens,
+            cacheReadTokens: usage?.cacheReadInputTokens,
+            cacheWrite5mTokens: creation?.ephemeral5m,
+            cacheWrite1hTokens: creation?.ephemeral1h,
+            latencyMilliseconds: latencyMilliseconds,
+            metricProvenance: hasMetrics ? .providerReported : nil,
+            quota: usageQuota(from: quota)
+        )
+    }
+
     private func streamCodex(
+        profile: ProviderProfile,
         model: String,
         credential: ProviderCredential,
         thinking: ThinkingLevel,
         messages: [ChatMessage],
         tools: [ToolCatalog.Definition] = [],
         toolContext: ToolCatalog.ExecutionContext? = nil,
+        purpose: UsagePurpose,
         onEvent: @escaping @Sendable (ChatStreamEvent) -> Void
     ) async throws {
         guard let url = URL(string: "https://chatgpt.com/backend-api/codex/responses") else {
@@ -783,9 +1441,31 @@ public final class CompatibleChatClient: @unchecked Sendable {
                 tools: (round < maxRounds - 1 && !toolsDisabled) ? tools : []
             )
 
+            let requestUsageID = UUID()
+            let requestStartedAt = Date()
+            var didEmitRequestUsage = false
+            var latestRequestUsage: CodexResponseEvent.Response.Usage?
+            var effectiveModel = model
+            var requestQuota: QuotaSnapshot?
+            defer {
+                if !didEmitRequestUsage {
+                    onEvent(.requestUsage(Self.codexRequestUsage(
+                        id: requestUsageID,
+                        profile: profile,
+                        requestedModel: model,
+                        effectiveModel: effectiveModel,
+                        purpose: round == 0 ? purpose : .toolRound,
+                        outcome: Task.isCancelled ? .cancelled : .failed,
+                        usage: latestRequestUsage,
+                        latencyMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                        quota: requestQuota
+                    )))
+                }
+            }
             let (bytes, response) = try await session.bytes(for: request)
             try await Self.checkStream(response: response, bytes: bytes)
             if let http = response as? HTTPURLResponse, let quota = QuotaSnapshot(headers: http.allHeaderFields) {
+                requestQuota = quota
                 onEvent(.quota(quota))
             }
             var consecutiveParseFailures = 0
@@ -835,13 +1515,34 @@ public final class CompatibleChatClient: @unchecked Sendable {
                         if let callID = item.callId, !callID.isEmpty { pendingCalls[index].callID = callID }
                     }
                 case "response.completed":
+                    if let reportedModel = event.response?.model, !reportedModel.isEmpty { effectiveModel = reportedModel }
                     if let usage = event.response?.usage {
-                        let totals = usageTotals.observe(prompt: usage.inputTokens, completion: usage.outputTokens, cached: nil)
+                        latestRequestUsage = usage
+                        let totals = usageTotals.observe(prompt: usage.inputTokens, completion: usage.outputTokens, cached: usage.inputTokensDetails?.cachedTokens)
                         onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached, cacheCreation: totals.cacheCreation))
                     }
                 default:
                     continue
                 }
+            }
+
+            onEvent(.requestUsage(Self.codexRequestUsage(
+                id: requestUsageID,
+                profile: profile,
+                requestedModel: model,
+                effectiveModel: effectiveModel,
+                purpose: round == 0 ? purpose : .toolRound,
+                outcome: .succeeded,
+                usage: latestRequestUsage,
+                latencyMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                quota: requestQuota
+            )))
+            didEmitRequestUsage = true
+            if effectiveModel.caseInsensitiveCompare(model) != .orderedSame {
+                onEvent(.modelMetadata(RuntimeModelMetadata(
+                    requestedModel: model,
+                    effectiveModel: effectiveModel
+                )))
             }
 
             guard !pendingCalls.isEmpty, let toolContext, round < maxRounds - 1, !toolsDisabled else {
@@ -902,7 +1603,56 @@ public final class CompatibleChatClient: @unchecked Sendable {
         let (data, response) = try await session.data(for: request)
         try Self.check(response: response, data: data)
         let payload = try decoder.decode(AnthropicModelListResponse.self, from: data)
-        return payload.data.map { RemoteModel(id: $0.id, name: $0.displayName) }
+        return payload.data.map { item in
+            let scope = ModelEvidenceScope(profile: profile, requestedModel: item.id, effectiveModel: item.id)
+            return RemoteModel(
+                id: item.id,
+                name: item.displayName,
+                contextLength: item.contextWindow ?? item.inputTokenLimit,
+                maxOutputTokens: item.maxOutputTokens ?? item.outputTokenLimit,
+                contextLimitEvidence: Self.curatedContextEvidence(modelID: item.id, scope: scope),
+                evidenceScope: scope,
+                scalarEvidenceSource: .providerCatalog,
+                scalarEvidenceDetail: "Anthropic models catalog"
+            )
+        }
+    }
+
+    private func fetchGeminiModels(profile: ProviderProfile, credential: ProviderCredential) async throws -> [RemoteModel] {
+        guard let endpoint = URL(string: profile.endpoint),
+              endpoint.host?.lowercased() == "generativelanguage.googleapis.com",
+              var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            throw APIError.message("Gemini native metadata is unavailable for this gateway.")
+        }
+        components.path = "/v1beta/models"
+        components.queryItems = [URLQueryItem(name: "pageSize", value: "1000")]
+        guard let url = components.url else { throw APIError.message("Invalid Gemini endpoint") }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = Self.discoveryTimeout(for: profile.kind)
+        if let token = credential.token, !token.isEmpty {
+            request.setValue(token, forHTTPHeaderField: "x-goog-api-key")
+        }
+        request.setValue("VelaChat/1.0", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response: response, data: data)
+        let payload = try decoder.decode(GeminiModelListResponse.self, from: data)
+        return payload.models.compactMap { item in
+            guard item.supportedGenerationMethods?.contains("generateContent") != false else { return nil }
+            let id = item.name.split(separator: "/").last.map(String.init) ?? item.name
+            let scope = ModelEvidenceScope(profile: profile, requestedModel: id, effectiveModel: id)
+            return RemoteModel(
+                id: id,
+                name: item.displayName,
+                description: item.description,
+                contextLength: item.inputTokenLimit,
+                maxOutputTokens: item.outputTokenLimit,
+                contextLimitEvidence: Self.curatedContextEvidence(modelID: id, scope: scope),
+                evidenceScope: scope,
+                scalarEvidenceSource: .providerCatalog,
+                scalarEvidenceDetail: "Gemini models.list input/output token limits"
+            )
+        }
     }
 
     /// Anthropic's Messages API: a real, separate integration rather than
@@ -923,6 +1673,8 @@ public final class CompatibleChatClient: @unchecked Sendable {
         messages: [ChatMessage],
         tools: [ToolCatalog.Definition] = [],
         toolContext: ToolCatalog.ExecutionContext? = nil,
+        purpose: UsagePurpose,
+        requestedOutputTokens: Int?,
         onEvent: @escaping @Sendable (ChatStreamEvent) -> Void
     ) async throws {
         guard let url = Self.anthropicURL(profile: profile, path: "/messages") else {
@@ -947,8 +1699,11 @@ public final class CompatibleChatClient: @unchecked Sendable {
             }
 
         let anthropicThinking = Self.anthropicThinking(for: thinking, modelInfo: modelInfo)
-        let baseMaxTokens = modelInfo?.maxOutputTokens ?? 8_192
-        let maxTokens = anthropicThinking.map { max(baseMaxTokens, $0.budgetTokens + 4_096) } ?? baseMaxTokens
+        let modelOutputLimit = max(1, modelInfo?.maxOutputTokens ?? 8_192)
+        let baseMaxTokens = min(modelOutputLimit, max(1, requestedOutputTokens ?? min(modelOutputLimit, 8_192)))
+        let maxTokens = anthropicThinking.map {
+            min(modelOutputLimit, max(baseMaxTokens, $0.budgetTokens + 4_096))
+        } ?? baseMaxTokens
 
         // Turns become plain JSON dictionaries from here on. Once tool-call
         // replay messages enter the picture, their shape (`tool_use`/
@@ -1022,9 +1777,31 @@ public final class CompatibleChatClient: @unchecked Sendable {
             if !tools.isEmpty, round < maxRounds - 1 { bodyJSON["tools"] = tools.map(Self.anthropicToolWireObject) }
             request.httpBody = try JSONSerialization.data(withJSONObject: bodyJSON)
 
+            let requestUsageID = UUID()
+            let requestStartedAt = Date()
+            var didEmitRequestUsage = false
+            var latestRequestUsage: AnthropicStreamEvent.Usage?
+            var effectiveModel = model
+            var requestQuota: QuotaSnapshot?
+            defer {
+                if !didEmitRequestUsage {
+                    onEvent(.requestUsage(Self.anthropicRequestUsage(
+                        id: requestUsageID,
+                        profile: profile,
+                        requestedModel: model,
+                        effectiveModel: effectiveModel,
+                        purpose: round == 0 ? purpose : .toolRound,
+                        outcome: Task.isCancelled ? .cancelled : .failed,
+                        usage: latestRequestUsage,
+                        latencyMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                        quota: requestQuota
+                    )))
+                }
+            }
             let (bytes, response) = try await session.bytes(for: request)
             try await Self.checkStream(response: response, bytes: bytes)
             if let http = response as? HTTPURLResponse, let quota = QuotaSnapshot(headers: http.allHeaderFields) {
+                requestQuota = quota
                 onEvent(.quota(quota))
             }
 
@@ -1064,12 +1841,15 @@ public final class CompatibleChatClient: @unchecked Sendable {
                         toolBlocks[index]?.json += partial
                     }
                 case "message_start":
+                    if let reportedModel = event.message?.model, !reportedModel.isEmpty { effectiveModel = reportedModel }
                     if let usage = event.message?.usage {
+                        latestRequestUsage = latestRequestUsage.map { $0.merging(usage) } ?? usage
                         let totals = usageTotals.observe(prompt: usage.inputTokens, completion: usage.outputTokens, cached: usage.cacheReadInputTokens, cacheCreation: usage.creationTokens)
                         onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached, cacheCreation: totals.cacheCreation))
                     }
                 case "message_delta":
                     if let usage = event.usage {
+                        latestRequestUsage = latestRequestUsage.map { $0.merging(usage) } ?? usage
                         let totals = usageTotals.observe(prompt: nil, completion: usage.outputTokens, cached: usage.cacheReadInputTokens, cacheCreation: usage.creationTokens)
                         onEvent(.usage(prompt: totals.prompt, completion: totals.completion, cachedTokens: totals.cached, cacheCreation: totals.cacheCreation))
                     }
@@ -1078,6 +1858,25 @@ public final class CompatibleChatClient: @unchecked Sendable {
                 default:
                     continue
                 }
+            }
+
+            onEvent(.requestUsage(Self.anthropicRequestUsage(
+                id: requestUsageID,
+                profile: profile,
+                requestedModel: model,
+                effectiveModel: effectiveModel,
+                purpose: round == 0 ? purpose : .toolRound,
+                outcome: .succeeded,
+                usage: latestRequestUsage,
+                latencyMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                quota: requestQuota
+            )))
+            didEmitRequestUsage = true
+            if effectiveModel.caseInsensitiveCompare(model) != .orderedSame {
+                onEvent(.modelMetadata(RuntimeModelMetadata(
+                    requestedModel: model,
+                    effectiveModel: effectiveModel
+                )))
             }
 
             guard !toolBlocks.isEmpty, let toolContext, round < maxRounds - 1, !toolsDisabled else {
@@ -1220,6 +2019,20 @@ public final class CompatibleChatClient: @unchecked Sendable {
 
 // MARK: - Wire models
 
+private struct OpenAIInputTokenCountResponse: Decodable {
+    let inputTokens: Int
+    enum CodingKeys: String, CodingKey { case inputTokens = "input_tokens" }
+}
+
+private struct AnthropicInputTokenCountResponse: Decodable {
+    let inputTokens: Int
+    enum CodingKeys: String, CodingKey { case inputTokens = "input_tokens" }
+}
+
+private struct GeminiInputTokenCountResponse: Decodable {
+    let totalTokens: Int
+}
+
 /// A plain string `content` when there are no images (every request looked
 /// like this before attachments existed, and still does for the vast
 /// majority) — otherwise the standard OpenAI vision content-part array:
@@ -1300,11 +2113,13 @@ private struct ChatCompletionBody: Encodable {
     let thinking: DeepSeekThinking?
     let think: OllamaThink?
     let keepAlive: String?
+    let streamOptions: StreamOptions?
 
     enum CodingKeys: String, CodingKey {
         case model, messages, stream, temperature, reasoning, thinking, think
         case reasoningEffort = "reasoning_effort"
         case keepAlive = "keep_alive"
+        case streamOptions = "stream_options"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1318,7 +2133,13 @@ private struct ChatCompletionBody: Encodable {
         if let thinking { try container.encode(thinking, forKey: .thinking) }
         if let think { try container.encode(think, forKey: .think) }
         if let keepAlive { try container.encode(keepAlive, forKey: .keepAlive) }
+        if let streamOptions { try container.encode(streamOptions, forKey: .streamOptions) }
     }
+}
+
+private struct StreamOptions: Encodable {
+    let includeUsage: Bool
+    enum CodingKeys: String, CodingKey { case includeUsage = "include_usage" }
 }
 
 private struct ReasoningOptions: Encodable {
@@ -1342,7 +2163,9 @@ private enum OllamaThink: Encodable {
     }
 }
 
-private struct ModelListResponse: Decodable {
+/// OpenRouter `/models` payload. Internal (not private) so the catalog
+/// tests can decode fixtures against the real structs.
+struct ModelListResponse: Decodable {
     struct Architecture: Decodable {
         let inputModalities: [String]?
         enum CodingKeys: String, CodingKey {
@@ -1351,8 +2174,10 @@ private struct ModelListResponse: Decodable {
     }
 
     struct TopProvider: Decodable {
+        let contextLength: Int?
         let maxCompletionTokens: Int?
         enum CodingKeys: String, CodingKey {
+            case contextLength = "context_length"
             case maxCompletionTokens = "max_completion_tokens"
         }
     }
@@ -1374,6 +2199,9 @@ private struct ModelListResponse: Decodable {
         /// OpenRouter's `context_length` — same meaning, different key.
         let contextWindow: Int?
         let maxOutput: Int?
+        /// Native Gemini metadata uses camelCase for these two fields.
+        let inputTokenLimit: Int?
+        let outputTokenLimit: Int?
         /// blockrun.ai tags each model with plain categories
         /// (`"reasoning"`, `"vision"`, `"coding"`) instead of the
         /// `supported_parameters`/`architecture` signals other catalogs use.
@@ -1401,6 +2229,7 @@ private struct ModelListResponse: Decodable {
             case contextLength = "context_length"
             case contextWindow = "context_window"
             case maxOutput = "max_output"
+            case inputTokenLimit, outputTokenLimit
             case topProvider = "top_provider"
             case supportedParameters = "supported_parameters"
             case billingMode = "billing_mode"
@@ -1413,6 +2242,23 @@ private struct ModelListResponse: Decodable {
         let output: Double?
     }
     let data: [Item]
+}
+
+/// OpenRouter single-model lookup (`GET /api/v1/model/:slug`): the same
+/// Item shape as the bulk list, wrapped in a `data` object.
+struct SingleModelResponse: Decodable {
+    let data: ModelListResponse.Item
+}
+
+/// OpenRouter key info (`GET /api/v1/auth/key`): `{data: {label, usage,
+/// limit}}`, usage/limit in credits. Internal for fixture tests.
+struct OpenRouterKeyResponse: Decodable {
+    struct KeyInfo: Decodable {
+        let label: String?
+        let usage: Double?
+        let limit: Double?
+    }
+    let data: KeyInfo?
 }
 
 private struct OllamaTagsResponse: Decodable {
@@ -1433,6 +2279,31 @@ private struct OllamaTagsResponse: Decodable {
         let name: String
         let size: Int64?
         let details: Details?
+    }
+    let models: [Item]
+}
+
+private struct OllamaProcessesResponse: Decodable {
+    struct Item: Decodable {
+        let name: String?
+        let model: String?
+        let contextLength: Int?
+        enum CodingKeys: String, CodingKey {
+            case name, model
+            case contextLength = "context_length"
+        }
+    }
+    let models: [Item]
+}
+
+private struct GeminiModelListResponse: Decodable {
+    struct Item: Decodable {
+        let name: String
+        let displayName: String?
+        let description: String?
+        let inputTokenLimit: Int?
+        let outputTokenLimit: Int?
+        let supportedGenerationMethods: [String]?
     }
     let models: [Item]
 }
@@ -1489,25 +2360,52 @@ private struct StreamChunk: Decodable {
         /// reporting — nested under `prompt_tokens_details`.
         struct PromptTokensDetails: Decodable {
             let cachedTokens: Int?
-            enum CodingKeys: String, CodingKey { case cachedTokens = "cached_tokens" }
+            let cacheWriteTokens: Int?
+            enum CodingKeys: String, CodingKey {
+                case cachedTokens = "cached_tokens"
+                case cacheWriteTokens = "cache_write_tokens"
+            }
+        }
+        struct CompletionTokensDetails: Decodable {
+            let reasoningTokens: Int?
+            enum CodingKeys: String, CodingKey { case reasoningTokens = "reasoning_tokens" }
         }
         let promptTokens: Int?
         let completionTokens: Int?
         let promptTokensDetails: PromptTokensDetails?
+        let completionTokensDetails: CompletionTokensDetails?
         /// DeepSeek reports its own (also automatic) disk-based cache the
         /// same way, but as a flat field with a different name rather than
         /// OpenAI's nested shape.
         let promptCacheHitTokens: Int?
+        /// OpenRouter includes provider-computed request cost in usage when
+        /// available. Other compatible providers simply omit it.
+        let cost: Double?
         enum CodingKeys: String, CodingKey {
             case promptTokens = "prompt_tokens"
             case completionTokens = "completion_tokens"
             case promptTokensDetails = "prompt_tokens_details"
+            case completionTokensDetails = "completion_tokens_details"
             case promptCacheHitTokens = "prompt_cache_hit_tokens"
+            case cost
         }
         var cachedTokens: Int? { promptTokensDetails?.cachedTokens ?? promptCacheHitTokens }
+
+        func merging(_ newer: Usage) -> Usage {
+            Usage(
+                promptTokens: newer.promptTokens ?? promptTokens,
+                completionTokens: newer.completionTokens ?? completionTokens,
+                promptTokensDetails: newer.promptTokensDetails ?? promptTokensDetails,
+                completionTokensDetails: newer.completionTokensDetails ?? completionTokensDetails,
+                promptCacheHitTokens: newer.promptCacheHitTokens ?? promptCacheHitTokens,
+                cost: newer.cost ?? cost
+            )
+        }
     }
     let choices: [Choice]
     let usage: Usage?
+    let id: String?
+    let model: String?
 }
 
 private struct CodexResponsesBody: Encodable {
@@ -1604,14 +2502,28 @@ private struct CodexInputContent: Encodable {
 private struct CodexResponseEvent: Decodable {
     struct Response: Decodable {
         struct Usage: Decodable {
+            struct InputDetails: Decodable {
+                let cachedTokens: Int?
+                enum CodingKeys: String, CodingKey { case cachedTokens = "cached_tokens" }
+            }
+            struct OutputDetails: Decodable {
+                let reasoningTokens: Int?
+                enum CodingKeys: String, CodingKey { case reasoningTokens = "reasoning_tokens" }
+            }
             let inputTokens: Int?
             let outputTokens: Int?
+            let inputTokensDetails: InputDetails?
+            let outputTokensDetails: OutputDetails?
             enum CodingKeys: String, CodingKey {
                 case inputTokens = "input_tokens"
                 case outputTokens = "output_tokens"
+                case inputTokensDetails = "input_tokens_details"
+                case outputTokensDetails = "output_tokens_details"
             }
         }
         let usage: Usage?
+        let model: String?
+        let id: String?
     }
     /// A streamed output item — only `function_call` items are read.
     struct Item: Decodable {
@@ -1703,9 +2615,17 @@ private struct AnthropicModelListResponse: Decodable {
     struct Item: Decodable {
         let id: String
         let displayName: String?
+        let contextWindow: Int?
+        let inputTokenLimit: Int?
+        let maxOutputTokens: Int?
+        let outputTokenLimit: Int?
         enum CodingKeys: String, CodingKey {
             case id
             case displayName = "display_name"
+            case contextWindow = "context_window"
+            case inputTokenLimit = "input_token_limit"
+            case maxOutputTokens = "max_output_tokens"
+            case outputTokenLimit = "output_token_limit"
         }
     }
     let data: [Item]
@@ -1770,9 +2690,20 @@ private struct AnthropicStreamEvent: Decodable {
             guard let cacheCreationInputTokens else { return nil }
             return CacheCreationTokens(ephemeral5m: cacheCreationInputTokens, ephemeral1h: nil)
         }
+
+        func merging(_ newer: Usage) -> Usage {
+            Usage(
+                inputTokens: newer.inputTokens ?? inputTokens,
+                outputTokens: newer.outputTokens ?? outputTokens,
+                cacheReadInputTokens: newer.cacheReadInputTokens ?? cacheReadInputTokens,
+                cacheCreationInputTokens: newer.cacheCreationInputTokens ?? cacheCreationInputTokens,
+                cacheCreation: newer.cacheCreation ?? cacheCreation
+            )
+        }
     }
     struct MessageEnvelope: Decodable {
         let usage: Usage?
+        let model: String?
     }
     struct ErrorBody: Decodable {
         let message: String?

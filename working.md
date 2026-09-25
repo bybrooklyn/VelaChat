@@ -1,5 +1,72 @@
 # VelaChat — working notes
 
+## 2026-09-25 — preview concerns, context detection, usage limits (uncommitted)
+
+Three "preview" threads reconciled, then the context/usage overhauls,
+all on top of the uncommitted quality-context-usage tree.
+
+**Preview.** (1) Artifact panel: `ArtifactWebView` reloaded its HTML on
+every SwiftUI update pass — scroll/scripts/CDN reset constantly. Now
+loads only when HTML or the reload token changes, with a Reload button
+for web kinds (CDN/stale-script recovery) and a 2 MB panel cap
+(`Limits.artifactMaxPanelBytes`) above which workspace files open
+externally instead of hanging the panel. Trust posture documented on
+the wrapper: model-authored JS runs as-is, mermaid.js is the one CDN
+dependency. (2) Retired Preview provider: `SettingsView` comment
+claimed preview-hiding behavior the code no longer implements — fixed;
+`ChatAPI` reasoning comment reworded; `ProviderStore.decodeProfiles`
+note is accurate history, kept. `audit.md` left alone (dated
+snapshot). (3) Pre-send cost preview: already shipped and estimate-
+labeled in code (`~` prefix, "Estimated input only…"); plan copies in
+Downloads not touched.
+
+**Context detection (C1).** OpenRouter `top_provider` figures were
+already consumed; added the missing pieces, each verified live before
+writing structs: `GET /api/v1/model/:slug` single-model lookup
+(`CompatibleChatClient.fetchModel`, shared mapping extracted as
+internal `remoteModel(from:profile:)` for tests), auto-fired by
+`ProviderStore.refreshSingleModel` when a hand-typed OpenRouter model
+isn't in the catalog. Verified live 2026-09-25: lookup returns the
+Item shape; `per_request_limits` is null across all 458 catalog
+entries, so nothing is built on it. Ollama `/api/show`
+`{family}.context_length` parsing confirmed live against the local
+daemon (gemma4: 262144). `num_ctx` cap folding deferred — nothing
+loaded to verify the `ps` shape against. `phi-4-mini → 128K` table fix
+from the last round, now with shadowing regression tests. Error-body
+learning and conflicts disclosure checked and left as-is (patterns are
+conservative + tested; popover already discloses conflicts).
+
+**Usage limits (U1–U3).** Why the gauge felt broken: most key
+providers send no usage endpoint and no headers, so refresh burned a
+catalog fetch for nothing. Now: OpenRouter `auth/key` credits
+(`fetchOpenRouterKeyCredit`, all-optional decode) merged into the
+quota snapshot + gauge row (`$x of $y` or `$x, no cap`); Anthropic
+OAuth `/api/oauth/usage` probe for claudeCode
+(`ClaudeUsageProbe`, flat keys + `limits` array, stats-only use of the
+CLI's own token — never inference), mapped to 5h/weekly windows.
+ChatGPT and on-device turns now emit metrics-free `.requestUsage`
+rows (nil = unreported, never zero) instead of vanishing from turns.
+Statistics cost tiles and the Today row restored the retired `≥`
+partial-coverage qualifier. Fixture tests for both new decodes
+(`OpenRouterCatalogTests`, `ClaudeUsageProbeTests`); network paths
+untouched by tests. Burn-rate pacing display deferred to a UI round.
+
+**Review findings banked, not yet fixed:** history quit-flush race
+(detached write can land after the sync flush), corrupt-history total
+loss with write-only backup, unsent drafts/pending chats unpersisted,
+`AttachmentStore.save` silent failure, Clear-Usage vs startup-migration
+race, unawaited full-reset SQLite wipes, per-reply map leaks
+(`sendStartedAt`, `usageByMessage`, `recallByMessage`,
+`finishReasonByMessage`), migration double-import edges (hour
+boundary, provider rename), stream_options phantom failed row,
+`:online` model-group split, clearHistory leaving memory/analysis
+sessions behind.
+
+Needs human/CI verification: app + test targets need Xcode (CI);
+OAuth/key endpoints need real credentials; single-model lookup needs
+a hand-typed-ID walkthrough; mermaid offline message + Reload button
+need eyes (no Screen Recording here).
+
 ## 2026-08-24 — one activity line per reply, and artifacts you can click
 
 Feedback: the tool rows "just suck", and produced files "aren't clickable

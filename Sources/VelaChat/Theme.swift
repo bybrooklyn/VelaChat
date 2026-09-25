@@ -149,7 +149,11 @@ enum Theme {
     // for a small amount of human warmth.
     static var accent: Color { Color(hex: AccentPreset.current.baseHex) }
     static var accentStrong: Color {
-        AccentPreset.current.handTunedFamily.map { Color(hex: $0.strong) } ?? accent.darkened(by: 0.35)
+        // Alternate accents used to be darkened by 35%, which pushed the
+        // blue/purple/pink fills below readable contrast with the app's dark
+        // foreground. Keep the hand-tuned teal exactly as-is and derive the
+        // other action fills only slightly darker than their swatch.
+        AccentPreset.current.handTunedFamily.map { Color(hex: $0.strong) } ?? accent.darkened(by: 0.18)
     }
     static var accentSoft: Color {
         AccentPreset.current.handTunedFamily.map { Color(hex: $0.soft) } ?? accent.blended(toward: background, amount: 0.9)
@@ -196,6 +200,25 @@ enum Theme {
         static let bubble: CGFloat = 14    // message bubbles
         static let composer: CGFloat = 26  // composer glass panel — heavy, near-pill rounding
     }
+
+    /// One motion vocabulary for the whole app. Views still choose the
+    /// appropriate curve, but duration/cadence no longer drifts by a few
+    /// hundredths of a second per call site.
+    enum Motion {
+        static let quick = Animation.easeOut(duration: 0.12)
+        static let standard = Animation.easeOut(duration: 0.18)
+        static let deliberate = Animation.easeOut(duration: 0.35)
+        static let press = Animation.spring(response: 0.25, dampingFraction: 0.75)
+        static let pulse = Animation.easeInOut(duration: 0.7).repeatForever(autoreverses: true)
+
+        /// `withAnimation` cannot read SwiftUI's environment itself. Call
+        /// sites that perform an explicit state mutation use this helper so
+        /// Reduce Motion has the same authority as it does for animations
+        /// installed through `velaAnimation` below.
+        static func respectingReduceMotion(_ reduceMotion: Bool, _ animation: Animation = standard) -> Animation? {
+            reduceMotion ? nil : animation
+        }
+    }
 }
 
 extension Color {
@@ -241,5 +264,24 @@ extension View {
     /// as one system rather than five independent widths.
     func messageColumn() -> some View {
         frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Installs one of Vela's motion tokens while honoring the system Reduce
+    /// Motion setting. Keeping that policy in a modifier prevents individual
+    /// hover, disclosure, and content-transition call sites from quietly
+    /// opting back into motion.
+    func velaAnimation<Value: Equatable>(_ animation: Animation = Theme.Motion.standard, value: Value) -> some View {
+        modifier(VelaAnimationModifier(animation: animation, value: value))
+    }
+}
+
+private struct VelaAnimationModifier<Value: Equatable>: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let animation: Animation
+    let value: Value
+
+    func body(content: Content) -> some View {
+        content.animation(reduceMotion ? nil : animation, value: value)
     }
 }

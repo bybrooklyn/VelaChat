@@ -9,6 +9,7 @@ struct ChatView: View {
     @Environment(WindowChrome.self) private var chrome
     @State private var lastScrollAt = Date.distantPast
     @State private var isDropTargeted = false
+    @State private var isBottomVisible = true
     @FocusState private var inputFocused: Bool
     @State private var isAttachMenuShown = false
 
@@ -31,6 +32,17 @@ struct ChatView: View {
         )
     }
 
+    /// Any visible growth in the tail message—not only text—must participate
+    /// in scroll follow. Tool results, reasoning, plans, and data cards can all
+    /// extend the transcript without changing `content.count`.
+    private var transcriptFollowRevision: Int {
+        guard let message = appModel.activeConversation?.messages.last else { return 0 }
+        return message.content.utf8.count
+            &+ (message.reasoning?.utf8.count ?? 0)
+            &+ message.segments.count &* 31
+            &+ message.activityRecords.reduce(0) { $0 &+ $1.result.utf8.count &+ ($1.isRunning ? 1 : 0) }
+    }
+
     private let suggestions = [
         "Summarize this idea in three bullets",
         "Help me think through a hard decision",
@@ -42,15 +54,41 @@ struct ChatView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 0) {
-            mainContent
-            if let artifact = artifactPresenter.activeArtifact {
-                Divider()
-                ArtifactPanel(artifact: artifact)
+        GeometryReader { geometry in
+            let canSplitArtifact = geometry.size.width >= 840
+            ZStack(alignment: .trailing) {
+                HStack(spacing: 0) {
+                    mainContent
+                    if canSplitArtifact, let artifact = artifactPresenter.activeArtifact {
+                        Divider()
+                        ArtifactPanel(
+                            artifact: artifact,
+                            maximumWidth: geometry.size.width - 520,
+                            isOverlay: false
+                        )
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+
+                if !canSplitArtifact, let artifact = artifactPresenter.activeArtifact {
+                    Color.black.opacity(0.24)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { artifactPresenter.close() }
+                        .transition(.opacity)
+                        .accessibilityHidden(true)
+                    ArtifactPanel(
+                        artifact: artifact,
+                        maximumWidth: min(720, max(320, geometry.size.width * 0.78)),
+                        isOverlay: true
+                    )
+                    .shadow(color: .black.opacity(0.35), radius: 24, x: -8)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
-        .animation(.easeOut(duration: 0.2), value: artifactPresenter.activeArtifact?.id)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: artifactPresenter.activeArtifact?.id)
     }
 
     private var mainContent: some View {
@@ -113,6 +151,11 @@ struct ChatView: View {
             // toolbar that reads as a stray frosted strip across the top,
             // so the transcript opts out of it explicitly.
             .scrollEdgeEffectHidden(true, for: .top)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.visibleRect.maxY >= geometry.contentSize.height - 64
+            } action: { _, visible in
+                isBottomVisible = visible
+            }
             // …but opting out left nothing at all between scrolled text and
             // the traffic lights: a half-cut line of the reply rendered
             // straight through the window chrome. A short gradient in the
@@ -131,7 +174,7 @@ struct ChatView: View {
                 .allowsHitTesting(false)
             }
             .onChange(of: appModel.activeConversation?.messages.count ?? 0) { _, _ in
-                scrollToLast(proxy)
+                if isBottomVisible { scrollToLast(proxy) }
             }
             .onChange(of: appModel.activeConversationID) { _, _ in
                 // The artifact panel, find bar, and scroll position all
@@ -140,14 +183,16 @@ struct ChatView: View {
                 artifactPresenter.close()
                 appModel.isChatFindShown = false
                 appModel.chatFindHighlightID = nil
+                isBottomVisible = true
                 scrollToLast(proxy, animated: false)
             }
-            .onChange(of: appModel.activeConversation?.messages.last?.content.count ?? 0) { _, _ in
+            .onChange(of: transcriptFollowRevision) { _, _ in
                 let now = Date()
                 // Matches the reveal cadence — 4x slower (the old 0.12s)
                 // let text run off the bottom edge and then jump. Dropping a
                 // tick here is worse than following it: the next accepted
                 // one has twice as far to travel.
+                guard isBottomVisible else { return }
                 guard now.timeIntervalSince(lastScrollAt) > 0.03 else { return }
                 lastScrollAt = now
                 followLast(proxy)
@@ -195,6 +240,23 @@ struct ChatView: View {
                         .padding(.top, chrome.isFullScreen ? 40 : 10)
                 }
             }
+            .overlay(alignment: .bottomTrailing) {
+                if !isBottomVisible {
+                    Button {
+                        isBottomVisible = true
+                        scrollToLast(proxy)
+                    } label: {
+                        Label("Jump to Latest", systemImage: "arrow.down")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(VelaControlButtonStyle(tint: Theme.accent))
+                    .padding(.trailing, 18)
+                    .padding(.bottom, 112)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .accessibilityHint("Scrolls to the newest message and resumes following streamed text")
+                }
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: isBottomVisible)
         }
         .task { inputFocused = true }
     }
@@ -361,7 +423,7 @@ struct ChatView: View {
                     .padding(.vertical, 2)
                     .background(Theme.controlBackground, in: Capsule())
                     .help("Current branch in the attached folder")
-                    .accessibilityLabel("Branch \(branch ?? "")")
+                    .accessibilityLabel("Branch \(branch)")
                 }
                 Spacer(minLength: 0)
             }
@@ -451,11 +513,23 @@ struct ChatView: View {
             // (`postNotice`/`role == "notice"` in `MessageRow`), not a
             // banner here — this is only ever a transient, self-clearing
             // status like "Finding a model…", never a failure.
-            if let status = appModel.statusMessage {
+            if let status = appModel.displayedStatusMessage {
                 HStack(spacing: 6) {
                     ShimmerText(text: status, font: .caption)
                 }
                 .font(.caption)
+                .frame(maxWidth: contentWidth, alignment: .leading)
+                .transition(.opacity)
+            }
+
+            if let attachmentStatus = appModel.displayedAttachmentLoadMessage {
+                HStack(spacing: 7) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(attachmentStatus)
+                        .font(.caption)
+                }
+                .foregroundStyle(Theme.secondaryText)
                 .frame(maxWidth: contentWidth, alignment: .leading)
                 .transition(.opacity)
             }
@@ -630,9 +704,10 @@ struct ChatView: View {
             // whole height the bottom inset offers, which is what made the
             // composer a tall empty slab regardless of the text inside it.
             .fixedSize(horizontal: false, vertical: true)
-            // 34 matches the transcript's own text inset, so the caret and
-            // the messages above it sit on the same left edge.
-            .padding(.horizontal, 34)
+            // The outer 18pt window margin below plus this 16pt internal
+            // breathing room equals the transcript's 34pt text inset. The
+            // previous 34+34 double inset made the composer visibly narrower.
+            .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 12)
             .frame(maxWidth: contentWidth)
@@ -651,16 +726,14 @@ struct ChatView: View {
                 handleDrop(providers)
             }
         }
-        // 34 is the transcript's own text inset, so the composer's outer
-        // edge lines up with the column of messages above it rather than
-        // running 16pt wider than everything else in the pane.
-        .padding(.horizontal, 34)
+        .padding(.horizontal, 18)
         .padding(.top, 10)
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity)
         .background(Theme.background.opacity(0.92))
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: appModel.pendingQuestion?.id)
-        .animation(.easeOut(duration: 0.16), value: appModel.statusMessage != nil)
+        .animation(.easeOut(duration: 0.16), value: appModel.displayedStatusMessage != nil)
+        .animation(.easeOut(duration: 0.16), value: appModel.displayedAttachmentLoadMessage != nil)
         .animation(.easeOut(duration: 0.16), value: appModel.activeConversation?.activeSkillPaths.isEmpty ?? true)
         .animation(.easeOut(duration: 0.16), value: appModel.activeConversation?.isPlanning ?? false)
         .animation(.easeOut(duration: 0.16), value: slashQuery != nil)
@@ -672,7 +745,9 @@ struct ChatView: View {
     private var canSend: Bool {
         let hasText = !input.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasAttachment = !draftAttachments.wrappedValue.isEmpty
-        return (hasText || hasAttachment) && !appModel.isGenerating
+        return (hasText || hasAttachment)
+            && !appModel.isGenerating
+            && !appModel.isLoadingAttachmentsForActiveConversation
     }
 
     private func send() {
@@ -682,27 +757,8 @@ struct ChatView: View {
 
     // MARK: - Attachments
 
-    private func addAttachment(from url: URL) {
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            // A dropped folder means "work in here": it becomes the
-            // conversation's workspace root — file tools, commands, and the
-            // write gate all operate inside it — not a file attachment.
-            // (Cloned repos still land a git summary via their own flow.)
-            appModel.setWorkspaceRoot(url)
-            return
-        }
-        guard let attachment = Attachment.fromFile(url: url) else {
-            appModel.postNotice(Attachment.attachFailureReason(for: url))
-            return
-        }
-        draftAttachments.wrappedValue.append(attachment)
-        if attachment.kind == .image { warnIfNoVisionSupport() }
-    }
-
-    private func warnIfNoVisionSupport() {
-        guard appModel.selectedModelInfo?.supportsVision == false else { return }
-        appModel.postNotice("\(appModel.selectedModel) may not support image input — the image will still be sent, but the model might not be able to see it.")
+    private func addAttachments(from urls: [URL], to conversation: Conversation) {
+        appModel.attachFiles(urls, to: conversation)
     }
 
     private func imageAttachment(data: Data, filename: String) -> Attachment? {
@@ -726,7 +782,8 @@ struct ChatView: View {
         panel.allowsMultipleSelection = true
         panel.prompt = "Attach"
         guard panel.runModal() == .OK else { return }
-        for url in panel.urls { addAttachment(from: url) }
+        let conversation = appModel.activeConversation ?? appModel.newConversation()
+        addAttachments(from: panel.urls, to: conversation)
     }
 
     /// Points this conversation's workspace at a real folder — every file
@@ -740,56 +797,83 @@ struct ChatView: View {
         panel.prompt = "Use as Workspace"
         panel.message = "The assistant can read, write, and run commands inside this folder."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        appModel.setWorkspaceRoot(url)
+        let conversation = appModel.activeConversation ?? appModel.newConversation()
+        appModel.setWorkspaceRoot(url, for: conversation)
     }
 
     /// The plus menu's clipboard path: file URLs attach as files, images as
     /// image attachments — same handlers the composer's paste command uses.
     private func pasteFromClipboard() {
+        let conversation = appModel.activeConversation ?? appModel.newConversation()
         let pasteboard = NSPasteboard.general
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
-            for url in urls { addAttachment(from: url) }
+            addAttachments(from: urls, to: conversation)
             return
         }
         if let image = NSImage(pasteboard: pasteboard),
            let tiff = image.tiffRepresentation,
            let bitmap = NSBitmapImageRep(data: tiff),
            let png = bitmap.representation(using: .png, properties: [:]) {
-            draftAttachments.wrappedValue.append(Attachment(kind: .image, filename: "Pasted Image.png", mimeType: "image/png", data: png))
+            appModel.appendDraftAttachment(
+                Attachment(kind: .image, filename: "Pasted Image.png", mimeType: "image/png", data: png),
+                to: conversation
+            )
             return
         }
-        appModel.postNotice("The clipboard has no file or image to attach.")
+        appModel.postNotice("The clipboard has no file or image to attach.", to: conversation)
     }
 
     private func handlePaste(_ providers: [NSItemProvider]) {
+        let conversation = appModel.activeConversation ?? appModel.newConversation()
         for provider in providers {
             if provider.canLoadObject(ofClass: NSImage.self) {
-                provider.loadObject(ofClass: NSImage.self) { image, _ in
+                provider.loadObject(ofClass: NSImage.self) { image, error in
                     guard let image = image as? NSImage,
                           let tiff = image.tiffRepresentation,
                           let bitmap = NSBitmapImageRep(data: tiff),
-                          let pngData = bitmap.representation(using: .png, properties: [:]) else { return }
+                          let pngData = bitmap.representation(using: .png, properties: [:]) else {
+                        DispatchQueue.main.async {
+                            let detail = error.map { ": \($0.localizedDescription)" } ?? ""
+                            appModel.postNotice("The pasted image couldn't be read\(detail).", to: conversation)
+                        }
+                        return
+                    }
                     DispatchQueue.main.async {
-                        draftAttachments.wrappedValue.append(Attachment(kind: .image, filename: "Pasted Image.png", mimeType: "image/png", data: pngData))
-                        warnIfNoVisionSupport()
+                        appModel.appendDraftAttachment(
+                            Attachment(kind: .image, filename: "Pasted Image.png", mimeType: "image/png", data: pngData),
+                            to: conversation
+                        )
                     }
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                    guard let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                    DispatchQueue.main.async { addAttachment(from: url) }
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, error in
+                    guard let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                        DispatchQueue.main.async {
+                            let detail = error.map { ": \($0.localizedDescription)" } ?? ""
+                            appModel.postNotice("The pasted file couldn't be read\(detail).", to: conversation)
+                        }
+                        return
+                    }
+                    DispatchQueue.main.async { addAttachments(from: [url], to: conversation) }
                 }
             }
         }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        let conversation = appModel.activeConversation ?? appModel.newConversation()
         var handled = false
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
             handled = true
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                guard let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                DispatchQueue.main.async { addAttachment(from: url) }
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, error in
+                guard let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                    DispatchQueue.main.async {
+                        let detail = error.map { ": \($0.localizedDescription)" } ?? ""
+                        appModel.postNotice("The dropped file couldn't be read\(detail).", to: conversation)
+                    }
+                    return
+                }
+                DispatchQueue.main.async { addAttachments(from: [url], to: conversation) }
             }
         }
         return handled
@@ -845,9 +929,12 @@ private struct ArtifactPanel: View {
     @Environment(ArtifactPresenter.self) private var artifactPresenter
     @Environment(AppModel.self) private var appModel
     let artifact: Artifact
+    let maximumWidth: CGFloat
+    let isOverlay: Bool
     @State private var copied = false
     @State private var isEditing = false
     @State private var editText = ""
+    @State private var reloadToken = 0
     @State private var width: CGFloat = {
         let saved = UserDefaults.standard.double(forKey: DefaultsKey.inspectorWidth)
         return saved > 0 ? min(max(saved, 320), 720) : 420
@@ -865,11 +952,13 @@ private struct ArtifactPanel: View {
             Divider()
             content
         }
-        .frame(width: width)
+        .frame(width: min(maximumWidth, max(320, width)))
+        .frame(maxHeight: .infinity)
         .background(Theme.background)
         // Resizable: a slim grab strip on the leading edge.
         .overlay(alignment: .leading) {
-            Color.clear
+            if !isOverlay {
+                Color.clear
                 .frame(width: 8)
                 .contentShape(Rectangle())
                 .onHover { hovering in
@@ -880,17 +969,20 @@ private struct ArtifactPanel: View {
                         .onChanged { value in
                             let start = dragStartWidth ?? width
                             dragStartWidth = start
-                            width = min(max(start - value.translation.width, 320), 720)
+                            width = min(max(start - value.translation.width, 320), min(720, maximumWidth))
                         }
                         .onEnded { _ in
                             dragStartWidth = nil
                             UserDefaults.standard.set(width, forKey: DefaultsKey.inspectorWidth)
                         }
                 )
+            }
         }
         .onChange(of: artifact.id) { _, _ in
             isEditing = false
+            reloadToken = 0
         }
+        .onExitCommand { artifactPresenter.close() }
     }
 
     private var header: some View {
@@ -942,6 +1034,21 @@ private struct ArtifactPanel: View {
             .help(copied ? "Copied" : "Copy source")
             .accessibilityLabel(copied ? "Copied" : "Copy source")
             .animation(.easeOut(duration: 0.12), value: copied)
+            // Web previews depend on script state and (for Mermaid) a CDN
+            // fetch, both of which can go stale or fail without changing
+            // the source — the guard in ArtifactWebView makes this the
+            // only path that re-runs a load for identical HTML.
+            if !artifact.kind.rendersNatively, !isEditing {
+                Button {
+                    reloadToken += 1
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(VelaIconButtonStyle())
+                .foregroundStyle(Theme.tertiaryText)
+                .help("Reload preview")
+                .accessibilityLabel("Reload preview")
+            }
             Button {
                 downloadArtifact()
             } label: {
@@ -993,7 +1100,7 @@ private struct ArtifactPanel: View {
                 .id(artifact.id)
                 .transition(.opacity)
             default:
-                ArtifactWebView(html: artifact.previewHTML)
+                ArtifactWebView(html: artifact.previewHTML, reloadToken: reloadToken)
                     .background(Color.white)
             }
         }

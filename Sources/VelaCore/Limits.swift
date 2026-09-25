@@ -130,6 +130,14 @@ public enum Limits {
     public static let documentMaxCells = 100_000
     public static let documentMaxSlides = 60
 
+    // MARK: - Artifact panel
+
+    /// Bytes of a workspace text file the artifact panel will render
+    /// inline. Past this the file opens in the app that owns its format
+    /// instead: loading tens of megabytes of UTF-8 into a panel TextView
+    /// hangs the UI for content no one can usefully read there anyway.
+    public static let artifactMaxPanelBytes = 2_000_000
+
     // MARK: - Data analysis (§9.2)
 
     /// Rows one `query_data` call returns. The result is read by a model

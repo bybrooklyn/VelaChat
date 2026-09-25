@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import AppKit
 import VelaCore
 
 /// §9.2 — a `query_data` result in the transcript: the rows as a real
@@ -46,13 +47,18 @@ struct DataResultCard: View {
                 table
                 if let chart = outcome.chart {
                     DataResultChart(spec: chart, columns: outcome.columns, rows: outcome.rows)
-                        .frame(height: 200)
+                        .frame(minHeight: 220, idealHeight: 260, maxHeight: 340)
                         .padding(.top, 2)
                 }
                 if let problem = outcome.chartProblem {
                     Label(problem, systemImage: "exclamationmark.triangle")
                         .font(.caption2)
                         .foregroundStyle(Theme.warning)
+                }
+                if outcome.truncated {
+                    Label("Result capped; the table and chart show only the returned rows.", systemImage: "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.tertiaryText)
                 }
             }
         }
@@ -105,14 +111,17 @@ struct DataResultCard: View {
 
     private var table: some View {
         let numeric = numericColumns
-        return ScrollView(.horizontal, showsIndicators: false) {
+        let widths = columnWidths
+        return ScrollView(.horizontal, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 14) {
                     ForEach(Array(outcome.columns.enumerated()), id: \.offset) { index, column in
                         Text(column)
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(Theme.tertiaryText)
-                            .frame(minWidth: 54, alignment: numeric.contains(index) ? .trailing : .leading)
+                            .lineLimit(1)
+                            .frame(width: widths[index], alignment: numeric.contains(index) ? .trailing : .leading)
+                            .help(column)
                     }
                 }
                 .padding(.bottom, 4)
@@ -127,7 +136,17 @@ struct DataResultCard: View {
                                         .font(.system(size: 11, design: numeric.contains(index) ? .monospaced : .default))
                                         .foregroundStyle(value.isNull ? Theme.tertiaryText : Theme.text)
                                         .lineLimit(1)
-                                        .frame(minWidth: 54, alignment: numeric.contains(index) ? .trailing : .leading)
+                                        .textSelection(.enabled)
+                                        .frame(width: widths[index], alignment: numeric.contains(index) ? .trailing : .leading)
+                                        .help(value.isNull ? "Null" : value.displayText)
+                                        .contextMenu {
+                                            if !value.isNull {
+                                                Button("Copy Value") {
+                                                    NSPasteboard.general.clearContents()
+                                                    NSPasteboard.general.setString(value.displayText, forType: .string)
+                                                }
+                                            }
+                                        }
                                 }
                             }
                             .padding(.vertical, 3)
@@ -137,6 +156,23 @@ struct DataResultCard: View {
                 }
                 .frame(maxHeight: outcome.rows.count > collapsedRowCount ? 220 : nil)
             }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Query result table, \(outcome.rows.count) rows and \(outcome.columns.count) columns")
+    }
+
+    /// A bounded, shared width per column keeps headers and cells aligned,
+    /// while still letting a long value reveal itself through selection,
+    /// tooltip, or Copy Value instead of forcing a thousand-point column.
+    private var columnWidths: [CGFloat] {
+        outcome.columns.indices.map { index in
+            let headerLength = outcome.columns[index].count
+            let longestValue = outcome.rows.reduce(0) { longest, row in
+                guard index < row.count else { return longest }
+                return max(longest, row[index].isNull ? 1 : row[index].displayText.count)
+            }
+            let characters = min(max(headerLength, longestValue), 28)
+            return min(max(CGFloat(characters) * 7 + 18, 72), 220)
         }
     }
 }
@@ -217,16 +253,41 @@ struct DataResultChart: View {
         } else if data.allSatisfy({ $0.numeric != nil }) {
             // A numeric x-axis is a real scale (gaps between 1 and 100 look
             // like gaps), not evenly spaced labels.
-            Chart(data) { point in
-                marks(x: .value(xLabel, point.numeric ?? 0), point: point)
+            VStack(alignment: .leading, spacing: 6) {
+                Chart(data) { point in
+                    marks(x: .value(xLabel, point.numeric ?? 0), point: point)
+                }
+                .chartStyling(yLabel: yLabel, hasSeries: spec.series != nil)
+                chartSummary(data)
             }
-            .chartStyling(yLabel: yLabel, hasSeries: spec.series != nil)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilitySummary(data))
         } else {
-            Chart(data) { point in
-                marks(x: .value(xLabel, point.category), point: point)
+            VStack(alignment: .leading, spacing: 6) {
+                Chart(data) { point in
+                    marks(x: .value(xLabel, point.category), point: point)
+                }
+                .chartStyling(yLabel: yLabel, hasSeries: spec.series != nil)
+                chartSummary(data)
             }
-            .chartStyling(yLabel: yLabel, hasSeries: spec.series != nil)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilitySummary(data))
         }
+    }
+
+    private func chartSummary(_ data: [Point]) -> some View {
+        Text(accessibilitySummary(data))
+            .font(.caption2)
+            .foregroundStyle(Theme.tertiaryText)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func accessibilitySummary(_ data: [Point]) -> String {
+        guard let minimum = data.map(\.y).min(), let maximum = data.map(\.y).max() else {
+            return "Chart with no plottable values"
+        }
+        let title = (spec.title?.isEmpty == false ? spec.title : nil) ?? "Data chart"
+        return "\(title). \(data.count) points. \(yLabel) ranges from \(minimum) to \(maximum)."
     }
 
     @ChartContentBuilder

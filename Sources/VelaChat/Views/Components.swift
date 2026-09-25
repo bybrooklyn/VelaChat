@@ -95,13 +95,16 @@ struct ActivityRow<Detail: View>: View {
     @Binding var isExpanded: Bool
     @ViewBuilder var detail: () -> Detail
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 guard isExpandable else { return }
-                withAnimation(.easeOut(duration: 0.18)) { isExpanded.toggle() }
+                withAnimation(Theme.Motion.respectingReduceMotion(reduceMotion)) {
+                    isExpanded.toggle()
+                }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: symbol)
@@ -109,10 +112,10 @@ struct ActivityRow<Detail: View>: View {
                         .foregroundStyle(tint)
                         .frame(width: 18, height: 18)
                         .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        .symbolEffect(.pulse, isActive: isActive)
 
-                    // Active rows shimmer instead of showing a spinner —
-                    // the app-wide "something is happening" treatment.
+                    // One active treatment only: the label shimmers while
+                    // the icon stays stable. Pulsing both was distracting and
+                    // made adjacent status rows look like separate events.
                     if isActive {
                         ShimmerText(text: title, font: .callout)
                             .lineLimit(1)
@@ -134,6 +137,7 @@ struct ActivityRow<Detail: View>: View {
                 }
                 .padding(.vertical, 4)
                 .padding(.horizontal, 6)
+                .frame(minHeight: 28)
                 .background(
                     isHovering && isExpandable ? Theme.surfaceMid : Color.clear,
                     in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
@@ -142,6 +146,7 @@ struct ActivityRow<Detail: View>: View {
             }
             .buttonStyle(.plain)
             .onHover { isHovering = $0 }
+            .velaAnimation(Theme.Motion.quick, value: isHovering)
 
             if isExpanded {
                 detail()
@@ -222,7 +227,7 @@ struct ModelPickerButton: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Theme.tertiaryText)
             }
-            .animation(.easeOut(duration: 0.15), value: appModel.currentModelID)
+            .velaAnimation(value: appModel.currentModelID)
         }
         .buttonStyle(VelaControlButtonStyle(tint: Theme.modelAccent))
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
@@ -252,7 +257,7 @@ struct ThinkingPickerButton: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Theme.tertiaryText)
             }
-            .animation(.easeOut(duration: 0.15), value: appModel.thinkingLevel)
+            .velaAnimation(value: appModel.thinkingLevel)
         }
         .buttonStyle(VelaControlButtonStyle(tint: Theme.reasoningAccent))
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
@@ -270,8 +275,11 @@ struct ContextButton: View {
     /// Fraction of the detected context window in use — `nil` when the
     /// window is unknown (the ring falls back to the dotted glyph).
     private var fraction: Double? {
+        if let budget = appModel.activeContextBudget, budget.usableInputTokens > 0 {
+            return budget.utilization
+        }
         guard let window = appModel.contextWindow, window > 0 else { return nil }
-        return min(1, Double(appModel.contextTokenEstimate) / Double(window))
+        return Double(appModel.contextTokenEstimate) / Double(window)
     }
 
     var body: some View {
@@ -289,9 +297,9 @@ struct ContextButton: View {
                     Circle()
                         .stroke(Theme.controlStroke.opacity(0.8), lineWidth: 2)
                     Circle()
-                        .trim(from: 0, to: max(0.02, fraction))
+                        .trim(from: 0, to: min(1, max(0.02, fraction)))
                         .stroke(
-                            fraction > 0.8 ? Theme.warning : Theme.accent,
+                            fraction > 1 ? Theme.danger : (fraction > 0.8 ? Theme.warning : Theme.accent),
                             style: StrokeStyle(lineWidth: 2, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
@@ -337,7 +345,7 @@ struct WebSearchToggleButton: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .leading)))
                 }
             }
-            .animation(.easeOut(duration: 0.16), value: appModel.isWebSearchEnabled)
+            .velaAnimation(value: appModel.isWebSearchEnabled)
         }
         .buttonStyle(VelaControlButtonStyle(tint: appModel.isWebSearchEnabled ? Theme.accentStrong : Theme.tertiaryText))
         .help(appModel.webSearchDescription)
@@ -350,26 +358,33 @@ struct WebSearchToggleButton: View {
 struct ShimmerText: View {
     let text: String
     var font: Font = .callout
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-            let cycle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8
-            let phase = CGFloat(cycle) * 1.5 - 0.25  // sweep past both edges
+        if reduceMotion {
             Text(text)
                 .font(font)
-                .foregroundStyle(
-                    LinearGradient(
-                        stops: [
-                            .init(color: Theme.tertiaryText, location: 0),
-                            .init(color: Theme.tertiaryText, location: max(0, min(1, phase - 0.22))),
-                            .init(color: Theme.secondaryText, location: max(0, min(1, phase))),
-                            .init(color: Theme.tertiaryText, location: max(0, min(1, phase + 0.22))),
-                            .init(color: Theme.tertiaryText, location: 1)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
+                .foregroundStyle(Theme.secondaryText)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                let cycle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8
+                let phase = CGFloat(cycle) * 1.5 - 0.25  // sweep past both edges
+                Text(text)
+                    .font(font)
+                    .foregroundStyle(
+                        LinearGradient(
+                            stops: [
+                                .init(color: Theme.tertiaryText, location: 0),
+                                .init(color: Theme.tertiaryText, location: max(0, min(1, phase - 0.22))),
+                                .init(color: Theme.secondaryText, location: max(0, min(1, phase))),
+                                .init(color: Theme.tertiaryText, location: max(0, min(1, phase + 0.22))),
+                                .init(color: Theme.tertiaryText, location: 1)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
                     )
-                )
+            }
         }
     }
 }
@@ -383,22 +398,28 @@ extension View {
 }
 
 private struct PulseOpacity: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dimmed = false
 
     func body(content: Content) -> some View {
         content
-            .opacity(dimmed ? 0.35 : 1)
-            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: dimmed)
-            .onAppear { dimmed = true }
+            .opacity(reduceMotion ? 1 : (dimmed ? 0.35 : 1))
+            .animation(reduceMotion ? nil : Theme.Motion.pulse, value: dimmed)
+            .onAppear { if !reduceMotion { dimmed = true } }
+            .onChange(of: reduceMotion) { _, reduced in
+                dimmed = !reduced
+            }
     }
 }
 
 struct VelaControlButtonStyle: ButtonStyle {
     let tint: Color
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(tint)
+            .foregroundStyle(isEnabled ? tint : Theme.tertiaryText)
             .padding(.horizontal, 10)
             // A fixed height, not just vertical padding, so every pill in
             // the composer row lines up exactly with the 30pt circular send
@@ -417,9 +438,9 @@ struct VelaControlButtonStyle: ButtonStyle {
                 Capsule().stroke(Theme.controlStroke.opacity(0.6), lineWidth: 1)
             }
             .contentShape(Capsule())
-            .opacity(configuration.isPressed ? 0.86 : 1)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.75), value: configuration.isPressed)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.86 : 1) : 0.68)
+            .scaleEffect(!reduceMotion && configuration.isPressed ? 0.97 : 1)
+            .animation(reduceMotion ? nil : Theme.Motion.press, value: configuration.isPressed)
     }
 }
 
@@ -429,12 +450,16 @@ struct VelaControlButtonStyle: ButtonStyle {
 /// buttons scattered through message rows/panels/Settings don't feel dead
 /// next to controls that do have this feedback.
 struct VelaIconButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .frame(minWidth: 28, minHeight: 28)
             .contentShape(Rectangle())
-            .opacity(configuration.isPressed ? 0.6 : 1)
-            .scaleEffect(configuration.isPressed ? 0.92 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.75), value: configuration.isPressed)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.56)
+            .scaleEffect(!reduceMotion && configuration.isPressed ? 0.92 : 1)
+            .animation(reduceMotion ? nil : Theme.Motion.press, value: configuration.isPressed)
     }
 }
 
@@ -444,10 +469,21 @@ struct VelaIconButtonStyle: ButtonStyle {
 /// switching providers first and reopening this picker. Preview only
 /// appears when nothing real is configured yet, so a fresh install still
 /// has something to click.
+private struct ModelPalettePair: Identifiable {
+    let profile: ProviderProfile
+    let model: RemoteModel
+
+    // Same persisted shape as ProviderStore's key, written directly here so
+    // this lightweight Identifiable value does not inherit the store's
+    // MainActor isolation merely to format two strings.
+    var id: String { profile.id.uuidString + "|" + model.id }
+}
+
 private struct ModelPaletteView: View {
     @Environment(AppModel.self) private var appModel
     @Binding var isPresented: Bool
     @State private var query = ""
+    @FocusState private var searchFocused: Bool
 
     private var groupProfiles: [ProviderProfile] {
         // Every provider is listed, configured or not — the picker's job
@@ -469,7 +505,16 @@ private struct ModelPaletteView: View {
         // heuristic that already picks the default model on first connect
         // — not alphabetical, which told you nothing about which model was
         // actually worth picking.
-        let source = appModel.providers.models(for: profile.id).sorted { lhs, rhs in
+        // Provider catalogs occasionally repeat an ID. Besides showing a
+        // duplicate row, that made the "current model first" comparator say
+        // both lhs<rhs and rhs<lhs for the repeated current ID. Keep the first
+        // exact occurrence before sorting so SwiftUI identity and ordering
+        // remain deterministic.
+        var seenIDs = Set<String>()
+        let uniqueModels = appModel.providers.models(for: profile.id).filter {
+            seenIDs.insert($0.id).inserted
+        }
+        let source = uniqueModels.sorted { lhs, rhs in
             if isCurrentProvider {
                 if lhs.id == appModel.currentModelID { return true }
                 if rhs.id == appModel.currentModelID { return false }
@@ -503,7 +548,7 @@ private struct ModelPaletteView: View {
     private var pinnedGroups: some View {
         let resolvedFavorites = resolve(keys: Array(appModel.providers.favoriteModelKeys).sorted())
         let resolvedRecents = resolve(keys: appModel.providers.recentModelKeys)
-            .filter { pair in !resolvedFavorites.contains { $0.1.id == pair.1.id && $0.0.id == pair.0.id } }
+            .filter { pair in !resolvedFavorites.contains { $0.id == pair.id } }
         if !resolvedFavorites.isEmpty {
             pinnedGroup(title: "Favorites", symbol: "star.fill", pairs: resolvedFavorites)
         }
@@ -512,17 +557,17 @@ private struct ModelPaletteView: View {
         }
     }
 
-    private func resolve(keys: [String]) -> [(ProviderProfile, RemoteModel)] {
+    private func resolve(keys: [String]) -> [ModelPalettePair] {
         keys.compactMap { key in
             let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
             guard parts.count == 2, let providerID = UUID(uuidString: parts[0]),
                   let profile = groupProfiles.first(where: { $0.id == providerID }),
                   let model = appModel.providers.models(for: providerID).first(where: { $0.id == parts[1] }) else { return nil }
-            return (profile, model)
+            return ModelPalettePair(profile: profile, model: model)
         }
     }
 
-    private func pinnedGroup(title: String, symbol: String, pairs: [(ProviderProfile, RemoteModel)]) -> some View {
+    private func pinnedGroup(title: String, symbol: String, pairs: [ModelPalettePair]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: symbol)
@@ -537,15 +582,15 @@ private struct ModelPaletteView: View {
             .padding(.vertical, 8)
             Divider()
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(pairs, id: \.1.id) { profile, model in
+                ForEach(pairs) { pair in
                     ModelPaletteRow(
-                        model: model,
-                        selected: profile.id == appModel.selectedProvider?.id && model.id == appModel.currentModelID,
+                        model: pair.model,
+                        selected: pair.profile.id == appModel.selectedProvider?.id && pair.model.id == appModel.currentModelID,
                         recommended: false,
-                        providerKind: profile.kind,
-                        providerID: profile.id,
+                        providerKind: pair.profile.kind,
+                        providerID: pair.profile.id,
                         action: {
-                            appModel.selectProviderAndModel(profile, model: model)
+                            appModel.selectProviderAndModel(pair.profile, model: pair.model)
                             isPresented = false
                         }
                     )
@@ -577,7 +622,8 @@ private struct ModelPaletteView: View {
 
             TextField("Search models or providers", text: $query)
                 .textFieldStyle(.plain)
-                .flatFieldStyle()
+                .focused($searchFocused)
+                .flatFieldStyle(isFocused: searchFocused)
                 .padding(.bottom, 10)
 
             Divider()
@@ -615,7 +661,7 @@ private struct ModelPaletteView: View {
                         }
                     }
                     .padding(.top, 10)
-                    .animation(.easeOut(duration: 0.18), value: visibleGroups.map(\.id))
+                    .velaAnimation(value: visibleGroups.map(\.id))
                 }
                 .scrollIndicators(.hidden)
                 .frame(maxHeight: 560)
@@ -645,6 +691,7 @@ private struct ModelPaletteView: View {
         // and de-dupes in-flight requests, so calling it broadly here is
         // safe on every open.
         .task {
+            searchFocused = true
             for profile in groupProfiles {
                 appModel.providers.discoverIfNeeded(id: profile.id)
             }
@@ -738,99 +785,97 @@ private struct ModelPaletteRow: View {
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(alignment: .top, spacing: 10) {
-                ProviderGlyphView(kind: providerKind, size: 18, color: Theme.secondaryText)
-                    .frame(width: 20)
-                    .padding(.top, 2)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(model.displayName)
-                            .font(.body.weight(recommended ? .semibold : .medium))
-                            .lineLimit(1)
-                        if recommended {
-                            Text("Recommended")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(Theme.accentForeground)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1)
-                                .background(Theme.accent, in: Capsule())
+        HStack(alignment: .top, spacing: 4) {
+            Button(action: action) {
+                HStack(alignment: .top, spacing: 10) {
+                    ProviderGlyphView(kind: providerKind, size: 18, color: Theme.secondaryText)
+                        .frame(width: 20)
+                        .padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(model.displayName)
+                                .font(.body.weight(recommended ? .semibold : .medium))
+                                .lineLimit(1)
+                            if recommended {
+                                Text("Recommended")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(Theme.accentForeground)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Theme.accent, in: Capsule())
+                            }
                         }
+                        if let description = model.description, !description.isEmpty {
+                            Text(description)
+                                .font(.caption)
+                                .foregroundStyle(Theme.secondaryText)
+                                .lineLimit(1)
+                        } else {
+                            Text(model.id)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(Theme.secondaryText)
+                                .lineLimit(1)
+                        }
+                        HStack(spacing: 9) {
+                            if let context = model.contextLabel {
+                                Label(context, systemImage: "arrow.left.and.right")
+                            }
+                            if let resource = model.quantizationLevel != nil ? model.resourceLabel : model.sizeLabel {
+                                Label(resource, systemImage: "cube")
+                            }
+                            if model.supportsReasoning {
+                                Label("Think", systemImage: "ellipsis.bubble")
+                                    .foregroundStyle(Theme.reasoningAccent)
+                            }
+                            if model.supportsVision { Label("Vision", systemImage: "eye") }
+                            if model.supportsTools { Label("Tools", systemImage: "wrench.and.screwdriver") }
+                            if let tier = model.priceTier {
+                                Label(tier, systemImage: tier == "Free" ? "gift" : "dollarsign.circle")
+                                    .foregroundStyle(tier == "Free" ? Theme.success : Theme.tertiaryText)
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(Theme.tertiaryText)
+                        .labelStyle(.titleAndIcon)
                     }
-                    // One subtitle line, not three — the description when the
-                    // catalog has one, the raw ID otherwise. The full ID is
-                    // always in the tooltip.
-                    if let description = model.description, !description.isEmpty {
-                        Text(description)
-                            .font(.caption)
-                            .foregroundStyle(Theme.secondaryText)
-                            .lineLimit(1)
-                    } else {
-                        Text(model.id)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(Theme.secondaryText)
-                            .lineLimit(1)
-                    }
-                    HStack(spacing: 9) {
-                        if let context = model.contextLabel {
-                            Label(context, systemImage: "arrow.left.and.right")
-                        }
-                        if let resource = model.quantizationLevel != nil ? model.resourceLabel : model.sizeLabel {
-                            Label(resource, systemImage: "cube")
-                        }
-                        if model.supportsReasoning {
-                            Label("Think", systemImage: "brain")
-                                .foregroundStyle(Theme.reasoningAccent)
-                        }
-                        if model.supportsVision {
-                            Label("Vision", systemImage: "eye")
-                        }
-                        if model.supportsTools {
-                            Label("Tools", systemImage: "wrench.and.screwdriver")
-                        }
-                        if let tier = model.priceTier {
-                            Label(tier, systemImage: tier == "Free" ? "gift" : "dollarsign.circle")
-                                .foregroundStyle(tier == "Free" ? Theme.success : Theme.tertiaryText)
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(Theme.tertiaryText)
-                    .labelStyle(.titleAndIcon)
-                }
-                Spacer(minLength: 6)
-                if let providerID {
-                    let isFavorite = appModel.providers.isFavorite(providerID: providerID, modelID: model.id)
-                    if isFavorite || isHovering {
-                        Button {
-                            appModel.providers.toggleFavorite(providerID: providerID, modelID: model.id)
-                        } label: {
-                            Image(systemName: isFavorite ? "star.fill" : "star")
-                                .font(.system(size: 11))
-                                .foregroundStyle(isFavorite ? Theme.accent : Theme.tertiaryText)
-                        }
-                        .buttonStyle(.plain)
-                        .help(isFavorite ? "Remove from favorites" : "Add to favorites")
-                        .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
+                    Spacer(minLength: 6)
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Theme.accent)
                     }
                 }
-                if selected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Theme.accent)
-                }
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 8)
-            .background(
-                selected ? Theme.accentSoft.opacity(0.82) : (isHovering ? Theme.surfaceMid : Color.clear),
-                in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(model.id)
+            .accessibilityLabel("Select \(model.displayName)")
+
+            if let providerID {
+                let isFavorite = appModel.providers.isFavorite(providerID: providerID, modelID: model.id)
+                Button {
+                    appModel.providers.toggleFavorite(providerID: providerID, modelID: model.id)
+                } label: {
+                    Image(systemName: isFavorite ? "star.fill" : "star")
+                        .font(.system(size: 11))
+                        .foregroundStyle(isFavorite ? Theme.accent : Theme.tertiaryText)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .opacity(isFavorite || isHovering ? 1 : 0.45)
+                .help(isFavorite ? "Remove from favorites" : "Add to favorites")
+                .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .background(
+            selected ? Theme.accentSoft.opacity(0.82) : (isHovering ? Theme.surfaceMid : Color.clear),
+            in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+        )
+        .contentShape(Rectangle())
         .onHover { isHovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: isHovering)
-        .help(model.id)
-        .accessibilityLabel(model.id)
+        .velaAnimation(Theme.Motion.quick, value: isHovering)
     }
 }
 
@@ -933,33 +978,82 @@ private struct ContextInspector: View {
                         .lineLimit(1)
                 }
             }
+            if appModel.isRefreshingContextPreflight {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text("Counting the prepared request…")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                }
+            }
+            if let error = appModel.activeContextPreflightError {
+                Label("Exact count unavailable; using the local estimate. \(error)", systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let window = appModel.contextWindow {
-                let used = min(appModel.contextTokenEstimate, window)
-                let fraction = min(1, max(0, Double(used) / Double(window)))
-                let remainingPercent = Int((1 - fraction) * 100)
+                let used = appModel.contextTokenEstimate
+                let usable = appModel.activeContextBudget?.usableInputTokens ?? window
+                let fraction = usable > 0 ? Double(used) / Double(usable) : 0
+                let remainingPercent = Int(((1 - fraction) * 100).rounded())
                 // Leads with what you're about to spend, Claude-Code-style —
                 // "how much room is left" is the number that actually
                 // matters before you hit Send, not the raw token counts.
-                Text("\(remainingPercent)% left")
+                Text(remainingPercent >= 0 ? "\(remainingPercent)% left" : "\(-remainingPercent)% over")
                     .font(.title3.weight(.semibold))
-                    .foregroundStyle(fraction > 0.8 ? Theme.warning : Theme.text)
-                ProgressView(value: fraction)
-                    .tint(fraction > 0.8 ? Theme.warning : Theme.accent)
+                    .foregroundStyle(fraction > 1 ? Theme.danger : (fraction > 0.8 ? Theme.warning : Theme.text))
+                ProgressView(value: min(max(fraction, 0), 1))
+                    .tint(fraction > 1 ? Theme.danger : (fraction > 0.8 ? Theme.warning : Theme.accent))
                 HStack {
-                    Text("~\(appModel.formattedTokenCount(used)) used")
+                    Text("\(appModel.contextEstimateIsExact ? "" : "~")\(appModel.formattedTokenCount(used)) input")
                     Spacer()
-                    Text("\(appModel.formattedTokenCount(window)) total")
+                    Text("\(appModel.formattedTokenCount(usable)) usable")
                 }
                 .font(.caption)
                 .foregroundStyle(Theme.secondaryText)
+                if let budget = appModel.activeContextBudget {
+                    HStack {
+                        Text("\(appModel.formattedTokenCount(budget.contextLimit)) total")
+                        Spacer()
+                        if budget.requestedOutputTokens > 0 {
+                            Text("\(appModel.formattedTokenCount(budget.requestedOutputTokens)) output reserved")
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiaryText)
+                }
                 // Where the total came from. A figure looked up from a model
                 // name is not the same claim as one the endpoint reported,
                 // and the readout must not present them as if it were.
-                if let source = appModel.contextWindowSource {
+                if let source = appModel.contextEvidenceSource {
                     Text("Limit \(source.label).")
                         .font(.caption2)
                         .foregroundStyle(Theme.tertiaryText)
+                }
+                if !appModel.contextEvidenceConflicts.isEmpty {
+                    DisclosureGroup("Conflicting evidence") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(appModel.contextEvidenceConflicts) { evidence in
+                                HStack {
+                                    Text(evidence.source.label)
+                                    Spacer()
+                                    Text(appModel.formattedTokenCount(evidence.value))
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(Theme.secondaryText)
+                                if let detail = evidence.detail {
+                                    Text(detail)
+                                        .font(.caption2)
+                                        .foregroundStyle(Theme.tertiaryText)
+                                }
+                            }
+                        }
+                        .padding(.top, 4)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Theme.warning)
                 }
             } else {
                 Text("This provider did not publish a context limit, and this model isn't one with a documented one. The endpoint will enforce its own window.")
@@ -1004,22 +1098,25 @@ private struct ContextInspector: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(conversation.isGenerating)
-                Text("Summarizes older messages so they use less context on future turns. Pinned messages and the most recent exchanges are always kept verbatim, never summarized. Nothing is deleted from the transcript — auto-triggers around 85% full too.")
+                Text("Summarizes older messages so they use less context on future turns. Pinned messages and the most recent exchanges stay verbatim. Nothing is deleted from the transcript; automatic preflight compaction starts at 95% of the usable input budget.")
                     .font(.caption2)
                     .foregroundStyle(Theme.tertiaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()
-            Text(appModel.contextEstimateIsCalibrated
-                 ? "The estimate counts the conversation plus this model's measured per-request overhead, at a characters-per-token rate fitted from what this model actually reported. Reasoning tokens can still use additional capacity."
-                 : "The estimate counts the current conversation text at a generic four-characters-per-token rate, until enough replies have been measured to fit a real one. Reasoning tokens and provider-side caching can use additional capacity.")
+            Text(appModel.contextEstimateIsExact
+                 ? "Input was counted by this provider for the exact prepared request, including system context, tools, draft, and attachments."
+                 : (appModel.contextEstimateIsCalibrated
+                    ? "The estimate uses this model's measured bytes-per-token ratio and observed request overhead. A cached exact preflight replaces it before high-risk sends when supported."
+                    : "The estimate uses a generic four-bytes-per-token fallback until provider usage calibrates it. A cached exact preflight replaces it before high-risk sends when supported."))
                 .font(.caption)
                 .foregroundStyle(Theme.tertiaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
         .frame(width: 330)
+        .task { appModel.refreshActiveContextPreflight() }
     }
 
     /// Auto-detection only works when a catalog publishes a context length,
@@ -1102,11 +1199,11 @@ struct CopyButton: View {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 .contentTransition(.symbolEffect(.replace))
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(VelaIconButtonStyle())
         .foregroundStyle(copied ? Theme.success : Theme.tertiaryText)
         .help(copied ? "Copied" : "Copy response")
         .accessibilityLabel(copied ? "Copied" : "Copy response")
-        .animation(.easeOut(duration: 0.12), value: copied)
+        .velaAnimation(Theme.Motion.quick, value: copied)
     }
 }
 

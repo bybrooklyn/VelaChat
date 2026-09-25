@@ -26,12 +26,19 @@ extension View {
     /// applies `.tint(Theme.accent)` at the window root and the ring still
     /// shows system blue) — this is the actual fix, matching the flat
     /// style already used by the sidebar's search field.
-    func flatFieldStyle() -> some View {
-        self
+    func flatFieldStyle(isFocused: Bool = false, isError: Bool = false) -> some View {
+        let stroke = isError ? Theme.danger : (isFocused ? Theme.accent : Theme.controlStroke)
+        let emphasis = isError || isFocused ? 0.9 : 0.6
+        return self
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .background(Theme.surfaceHigh, in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
-            .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+                    .stroke(stroke.opacity(emphasis), lineWidth: isFocused || isError ? 1.4 : 1)
+            }
+            .velaAnimation(Theme.Motion.quick, value: isFocused)
+            .velaAnimation(Theme.Motion.quick, value: isError)
     }
 
     /// Tinted circular chrome — send/context/back/floating-chip buttons.

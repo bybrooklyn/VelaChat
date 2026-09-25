@@ -39,7 +39,11 @@ enum SettingsMetrics {
     /// pane on purpose — long label/value rows stretched to a 1400pt window
     /// leave the value so far from its label the pairing stops reading.
     static let columnWidth = Theme.Layout.settingsColumn
-    static let railWidth = Theme.Layout.settingsRail
+    /// System Settings-style category navigation. It is shown only when the
+    /// remaining detail column can stay at least `minimumDetailWidth` wide.
+    static let categorySidebarWidth: CGFloat = 208
+    static let minimumDetailWidth: CGFloat = 720
+    static let shellWidth: CGFloat = categorySidebarWidth + columnWidth
     static let panelSpacing: CGFloat = 14
     /// Vertical rhythm inside a panel. One value, so a panel of toggles and
     /// a panel of label/value rows breathe identically.
@@ -49,8 +53,7 @@ enum SettingsMetrics {
 // MARK: - Panel
 
 /// A titled card. `symbol` is drawn as a small tinted icon tile beside the
-/// title — the same glyph the jump rail uses for that section, so the rail
-/// and the card it scrolls to are recognisably the same thing.
+/// title, matching the category selector for that pane.
 struct SettingsPanel<Content: View>: View {
     var title: String? = nil
     var symbol: String? = nil
@@ -115,6 +118,8 @@ struct SettingsPanel<Content: View>: View {
 /// without, so "Message width" sat hard against its own popup while
 /// "Density" sat somewhere else entirely.
 struct SettingsLabeledContentStyle: LabeledContentStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             configuration.label
@@ -125,6 +130,7 @@ struct SettingsLabeledContentStyle: LabeledContentStyle {
                 .multilineTextAlignment(.trailing)
         }
         .frame(minHeight: 22)
+        .opacity(isEnabled ? 1 : 0.52)
     }
 }
 
@@ -134,6 +140,8 @@ struct SettingsLabeledContentStyle: LabeledContentStyle {
 /// label text, so a column of toggles had its switches at six different x
 /// positions.
 struct SettingsToggleStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             configuration.label
@@ -145,6 +153,7 @@ struct SettingsToggleStyle: ToggleStyle {
                 .controlSize(.small)
         }
         .frame(minHeight: 22)
+        .opacity(isEnabled ? 1 : 0.52)
     }
 }
 
@@ -216,6 +225,7 @@ struct SettingsDisclosureRow: View {
 /// things in the app with no pointer feedback at all — they read as static
 /// text until you happened to click one.
 struct SettingsRowButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     func makeBody(configuration: Configuration) -> some View {
@@ -227,26 +237,40 @@ struct SettingsRowButtonStyle: ButtonStyle {
                 in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
             )
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
-            .onHover { isHovering = $0 }
+            .opacity(isEnabled ? 1 : 0.45)
+            .onHover { isHovering = isEnabled && $0 }
             .animation(.easeOut(duration: 0.12), value: isHovering)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
-/// The jump rail's rows had no hover state at all, which made a column of
-/// eleven plain grey words look like a legend rather than a control.
-struct JumpRailButtonStyle: ButtonStyle {
+/// Selected, hover, pressed, and disabled states for the persistent category
+/// list. Keeping these states in one style prevents navigation rows from
+/// drifting toward disclosure-row or static-label chrome.
+struct SettingsNavigationButtonStyle: ButtonStyle {
+    let isSelected: Bool
+
+    @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .foregroundStyle(isSelected ? Theme.text : Theme.secondaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 31)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                Theme.surfaceHigh.opacity(isHovering ? 0.45 : 0),
+                isSelected
+                    ? Theme.sidebarSelection.opacity(0.62)
+                    : Theme.surfaceHigh.opacity(isHovering ? 0.45 : 0),
                 in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
             )
-            .opacity(configuration.isPressed ? 0.7 : 1)
-            .onHover { isHovering = $0 }
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.72 : 1) : 0.45)
+            .onHover { isHovering = isEnabled && $0 }
             .animation(.easeOut(duration: 0.12), value: isHovering)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.16), value: isSelected)
     }
 }
 
@@ -259,6 +283,7 @@ struct JumpRailButtonStyle: ButtonStyle {
 /// Snippet". Danger has to be visible before the confirmation sheet, not
 /// only in it.
 struct SettingsDestructiveButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     func makeBody(configuration: Configuration) -> some View {
@@ -276,7 +301,8 @@ struct SettingsDestructiveButtonStyle: ButtonStyle {
                     .stroke(Theme.danger.opacity(0.35), lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
-            .onHover { isHovering = $0 }
+            .opacity(isEnabled ? 1 : 0.42)
+            .onHover { isHovering = isEnabled && $0 }
             .animation(.easeOut(duration: 0.12), value: isHovering)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -303,7 +329,7 @@ struct SettingsPrimaryButtonStyle: ButtonStyle {
             )
             .opacity(isEnabled ? 1 : 0.45)
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
-            .onHover { isHovering = $0 }
+            .onHover { isHovering = isEnabled && $0 }
             .animation(.easeOut(duration: 0.12), value: isHovering)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -314,6 +340,7 @@ struct SettingsPrimaryButtonStyle: ButtonStyle {
 /// `.buttonStyle(.plain)` labels tinted accent, so they had no hit area
 /// beyond their glyphs and no press feedback.
 struct SettingsAddButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     func makeBody(configuration: Configuration) -> some View {
@@ -331,9 +358,136 @@ struct SettingsAddButtonStyle: ButtonStyle {
                     .stroke(Theme.accent.opacity(0.28), lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
-            .onHover { isHovering = $0 }
+            .opacity(isEnabled ? 1 : 0.42)
+            .onHover { isHovering = isEnabled && $0 }
             .animation(.easeOut(duration: 0.12), value: isHovering)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Neutral companion action for Cancel, Test, and other non-committing
+/// controls. It shares the primary/destructive control height and makes the
+/// disabled state explicit instead of relying on whichever native style a
+/// surrounding sheet happens to inherit.
+struct SettingsSecondaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.callout.weight(.medium))
+            .foregroundStyle(Theme.text)
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+            .background(
+                Theme.surfaceHigh.opacity(configuration.isPressed ? 0.9 : (isHovering ? 0.72 : 0.5)),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+                    .stroke(Theme.controlStroke.opacity(0.7), lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+            .opacity(isEnabled ? 1 : 0.42)
+            .onHover { isHovering = isEnabled && $0 }
+            .animation(.easeOut(duration: 0.12), value: isHovering)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Settings inputs opt into one shared single-line field treatment so sheets
+/// and cards do not have to remember both `.plain` and the custom field
+/// background independently.
+private struct SettingsFieldModifier: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .flatFieldStyle()
+            .opacity(isEnabled ? 1 : 0.58)
+    }
+}
+
+/// TextEditor does not participate in `TextFieldStyle`; this gives every
+/// multiline Settings editor the same inset, fill, border, and disabled
+/// treatment as the app's flat single-line fields.
+private struct SettingsMultilineFieldModifier: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        content
+            .scrollContentBackground(.hidden)
+            .padding(6)
+            .background(
+                Theme.surfaceHigh.opacity(isEnabled ? 1 : 0.48),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+            )
+            .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous))
+            .opacity(isEnabled ? 1 : 0.62)
+    }
+}
+
+extension View {
+    func settingsFieldStyle() -> some View {
+        modifier(SettingsFieldModifier())
+    }
+
+    func settingsMultilineFieldStyle() -> some View {
+        modifier(SettingsMultilineFieldModifier())
+    }
+}
+
+enum SettingsMessageTone {
+    case information
+    case success
+    case warning
+    case error
+
+    fileprivate var tint: Color {
+        switch self {
+        case .information: Theme.secondaryText
+        case .success: Theme.success
+        case .warning: Theme.warning
+        case .error: Theme.danger
+        }
+    }
+
+    fileprivate var symbol: String {
+        switch self {
+        case .information: "info.circle"
+        case .success: "checkmark.circle"
+        case .warning: "exclamationmark.triangle"
+        case .error: "xmark.octagon"
+        }
+    }
+}
+
+/// A consistent inline explanation for validation, failure, and not-yet-
+/// available states. The icon and tinted backing keep errors from looking
+/// like ordinary secondary copy.
+struct SettingsInlineMessage: View {
+    let text: String
+    var tone: SettingsMessageTone = .information
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: tone.symbol)
+                .font(.caption.weight(.semibold))
+            Text(text)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(tone.tint)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            tone.tint.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous)
+        )
+        .accessibilityElement(children: .combine)
     }
 }
 

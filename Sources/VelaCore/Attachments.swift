@@ -335,6 +335,13 @@ public enum AttachmentStore {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
     }
 
+    public static func removeAll() {
+        cache.removeAllObjects()
+        if let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for file in files { try? FileManager.default.removeItem(at: file) }
+        }
+    }
+
     /// Deletes blobs no live attachment references any more. Called after
     /// destructive history operations rather than on a timer, so an
     /// orphan can only survive until the next deletion.

@@ -37,7 +37,10 @@ struct UsageGaugeButton: View {
                 appModel.refreshQuota(for: provider)
             }
             .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-                UsagePopover()
+                UsagePopover {
+                    isPresented = false
+                    SettingsNavigator.openUsageAndLimits(in: appModel)
+                }
             }
         }
     }
@@ -53,6 +56,13 @@ struct UsageGaugeButton: View {
 /// - local: no popover at all (the button is hidden).
 struct UsagePopover: View {
     @Environment(AppModel.self) private var appModel
+    @State private var todayUsage: UsageAggregate?
+    @State private var isLoadingLocalUsage = false
+    var onOpenUsageAndLimits: (() -> Void)?
+
+    init(onOpenUsageAndLimits: (() -> Void)? = nil) {
+        self.onOpenUsageAndLimits = onOpenUsageAndLimits
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -71,6 +81,12 @@ struct UsagePopover: View {
                 case .local:
                     EmptyView()
                 }
+                Divider()
+                Button("Open Usage & Limits") {
+                    onOpenUsageAndLimits?()
+                }
+                .buttonStyle(SettingsPrimaryButtonStyle())
+                .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 Text("No provider selected.")
                     .foregroundStyle(Theme.secondaryText)
@@ -78,9 +94,15 @@ struct UsagePopover: View {
         }
         .padding(14)
         .frame(width: 300)
-        .task {
+        .task(id: appModel.selectedProvider?.id) {
             if let provider = appModel.selectedProvider {
                 appModel.refreshQuota(for: provider, force: true)
+                isLoadingLocalUsage = true
+                let report = try? await UsageLedger.shared.query(
+                    UsageQuery(period: .today, providerID: provider.id)
+                )
+                todayUsage = report?.aggregate
+                isLoadingLocalUsage = false
             }
         }
     }
@@ -125,11 +147,33 @@ struct UsagePopover: View {
         if let quota = appModel.quotaByProvider[provider.id] {
             liveQuotaSection(quota)
         }
-        meterRow("Last 5 hours", appModel.usage.rollingFiveHours(providerID: provider.id))
-        meterRow("Today", appModel.usage.today(providerID: provider.id))
-        meterRow("This week", appModel.usage.thisWeek(providerID: provider.id))
-        meterRow("This month", appModel.usage.thisMonth(providerID: provider.id))
-        Text("Counted locally on this Mac. Dollar amounts use provider-published pricing only.")
+        if isLoadingLocalUsage {
+            HStack(spacing: 7) {
+                ProgressView().controlSize(.small)
+                Text("Loading today's local usage…")
+            }
+            .font(.caption)
+            .foregroundStyle(Theme.secondaryText)
+        } else if let usage = todayUsage {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Today")
+                    .font(.callout)
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(todayUsageLabel(usage))
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                    if let cost = usage.cost.amountUSD {
+                        let partial = usage.cost.coverage.indeterminateRequests > 0
+                            || usage.cost.coverage.unreportedRequests > 0
+                        Text(String(format: "\(partial ? "≥ " : "")$%.4f observed", cost))
+                            .font(.caption2)
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
+                }
+            }
+        }
+        Text("Counted from the durable local request ledger. Open Usage & Limits for trends and breakdowns.")
             .font(.caption2)
             .foregroundStyle(Theme.tertiaryText)
     }
@@ -147,6 +191,14 @@ struct UsagePopover: View {
                     Text("\(remaining)/\(limit) requests left")
                 } else if let remaining = quota.tokensRemaining {
                     Text("\(remaining) tokens left")
+                } else if let used = quota.creditUsed {
+                    // OpenRouter key credits: absolute spend always, cap
+                    // only when the key has one set.
+                    if let limit = quota.creditLimit {
+                        Text(String(format: "$%.2f of $%.2f credits used", used, limit))
+                    } else {
+                        Text(String(format: "$%.2f credits used (no key cap set)", used))
+                    }
                 }
                 Spacer(minLength: 0)
                 if let resetAt = quota.resetAt {
@@ -185,24 +237,11 @@ struct UsagePopover: View {
         }
     }
 
-    private func meterRow(_ title: String, _ window: UsageWindow) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title)
-                .font(.callout)
-                .foregroundStyle(Theme.text)
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(window.requests == 0
-                     ? "—"
-                     : "\(window.requests) request\(window.requests == 1 ? "" : "s") · \(window.totalTokens) tokens")
-                    .font(.caption)
-                    .foregroundStyle(Theme.secondaryText)
-                if let cost = window.costLabel {
-                    Text(cost)
-                        .font(.caption2)
-                        .foregroundStyle(Theme.tertiaryText)
-                }
-            }
-        }
+    private func todayUsageLabel(_ usage: UsageAggregate) -> String {
+        let tokens: Int? = usage.inputTokens.value == nil && usage.outputTokens.value == nil
+            ? nil
+            : (usage.inputTokens.value ?? 0) + (usage.outputTokens.value ?? 0)
+        let tokenLabel = tokens.map { appModel.formattedTokenCount($0) + " tokens" } ?? "usage unreported"
+        return "\(usage.requestCount) request\(usage.requestCount == 1 ? "" : "s") · \(tokenLabel)"
     }
 }

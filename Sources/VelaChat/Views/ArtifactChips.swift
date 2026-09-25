@@ -132,9 +132,12 @@ private struct ArtifactChip: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Theme.text)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 180, alignment: .leading)
                 Text(failed ? "couldn't open" : file.typeLabel)
                     .font(.caption2)
                     .foregroundStyle(Theme.tertiaryText)
+                    .lineLimit(1)
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
@@ -144,11 +147,13 @@ private struct ArtifactChip: View {
             )
             .velaBorder(RoundedRectangle(cornerRadius: Theme.Radius.compact, style: .continuous), emphasis: isHovering ? 0.8 : 0.4)
             .contentShape(Rectangle())
+            .frame(maxWidth: 300, alignment: .leading)
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .help("Open \(file.displayName)")
         .accessibilityLabel("Open \(file.displayName), \(file.typeLabel)")
+        .accessibilityHint("Opens text in the artifact panel or documents in their default Mac app")
         .contextMenu {
             Button {
                 guard let root else { return }
@@ -174,12 +179,14 @@ struct FlowLayout: Layout {
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let maxWidth = proposal.width ?? .infinity
+        let childWidth = maxWidth.isFinite ? min(maxWidth, 300) : 300
+        let childProposal = ProposedViewSize(width: childWidth, height: nil)
         var rowWidth: CGFloat = 0
         var rowHeight: CGFloat = 0
         var totalHeight: CGFloat = 0
         var widest: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let size = subview.sizeThatFits(childProposal)
             if rowWidth > 0, rowWidth + spacing + size.width > maxWidth {
                 widest = max(widest, rowWidth)
                 totalHeight += rowHeight + spacing
@@ -200,13 +207,14 @@ struct FlowLayout: Layout {
         var y = bounds.minY
         var rowHeight: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let childProposal = ProposedViewSize(width: min(bounds.width, 300), height: nil)
+            let size = subview.sizeThatFits(childProposal)
             if x > bounds.minX, x + size.width > bounds.maxX {
                 x = bounds.minX
                 y += rowHeight + spacing
                 rowHeight = 0
             }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(width: size.width, height: size.height))
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }

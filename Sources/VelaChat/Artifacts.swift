@@ -163,6 +163,13 @@ final class ArtifactPresenter {
     func openWorkspaceFile(named relativePath: String, in root: URL) -> Bool {
         guard let url = SandboxManager.resolve(relativePath, in: root),
               FileManager.default.fileExists(atPath: url.path) else { return false }
+        // Huge text files open externally rather than stalling the panel:
+        // a 50 MB model-written log is real, and no one reads it in a
+        // side panel anyway.
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue,
+           size > Limits.artifactMaxPanelBytes {
+            return NSWorkspace.shared.open(url)
+        }
         if let text = try? String(contentsOf: url, encoding: .utf8) {
             activeArtifact = Artifact(
                 kind: .from(fileExtension: (relativePath as NSString).pathExtension),
@@ -204,11 +211,21 @@ final class ArtifactPresenter {
     }
 }
 
-/// A minimal `WKWebView` wrapper — no navigation delegate needed since
-/// artifacts never link anywhere themselves, just `loadHTMLString` once
-/// per artifact.
+/// A minimal `WKWebView` wrapper with two deliberate properties:
+///
+/// - The load is skipped when neither the HTML nor the reload token
+///   changed. SwiftUI calls `updateNSView` on any state change anywhere
+///   near the panel, and a bare `loadHTMLString` on every pass reset
+///   scroll position, re-ran scripts, and re-fetched the mermaid CDN.
+/// - There is intentionally no navigation delegate and no content
+///   blocking: artifact HTML is model-authored content the user asked to
+///   preview, rendered as-is. The one network dependency is mermaid.js
+///   from its CDN (see `previewHTML`); everything else is local.
 struct ArtifactWebView: NSViewRepresentable {
     let html: String
+    /// Bumped by the panel's Reload button for CDN failures and stale
+    /// script state. Part of the load identity, not the content.
+    let reloadToken: Int
 
     func makeNSView(context: Context) -> WKWebView {
         let view = WKWebView()
@@ -216,7 +233,17 @@ struct ArtifactWebView: NSViewRepresentable {
         return view
     }
 
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func updateNSView(_ nsView: WKWebView, context: Context) {
+        guard context.coordinator.lastHTML != html || context.coordinator.lastToken != reloadToken else { return }
+        context.coordinator.lastHTML = html
+        context.coordinator.lastToken = reloadToken
         nsView.loadHTMLString(html, baseURL: nil)
+    }
+
+    final class Coordinator {
+        var lastHTML: String?
+        var lastToken: Int = -1
     }
 }

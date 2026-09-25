@@ -1,5 +1,319 @@
 import Foundation
 
+// MARK: - Provenance-bearing model limits
+
+/// The authority behind a context, output, or pricing figure.
+///
+/// Raw integers used to erase this distinction at model-discovery time. That
+/// made a family-name guess indistinguishable from a deployment limit reported
+/// by the runtime. The order here is deliberately the product rule, not an
+/// incidental call-site order.
+public enum ModelEvidenceSource: String, Codable, CaseIterable, Sendable {
+    case manualOverride
+    case runtimeReport
+    case runtimeConfiguration
+    case providerCatalog
+    case modelsDevLive
+    case modelsDevCache
+    case bundledSnapshot
+    case curatedFamily
+
+    public var priority: Int {
+        switch self {
+        case .manualOverride: 800
+        case .runtimeReport: 700
+        case .runtimeConfiguration: 600
+        case .providerCatalog: 500
+        case .modelsDevLive: 400
+        case .modelsDevCache: 300
+        case .bundledSnapshot: 200
+        case .curatedFamily: 100
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .manualOverride: "manually set"
+        case .runtimeReport: "reported by this runtime"
+        case .runtimeConfiguration: "allocated by this runtime"
+        case .providerCatalog: "published by the provider"
+        case .modelsDevLive: "models.dev live registry"
+        case .modelsDevCache: "cached models.dev registry"
+        case .bundledSnapshot: "bundled metadata snapshot"
+        case .curatedFamily: "typical for this model family"
+        }
+    }
+
+    /// Whether the evidence describes the selected deployment rather than a
+    /// bundled/name-based fallback. models.dev remains published metadata, but
+    /// it did not observe the endpoint the user is calling.
+    public var isRuntimeObserved: Bool {
+        switch self {
+        case .manualOverride, .runtimeReport, .runtimeConfiguration, .providerCatalog:
+            true
+        case .modelsDevLive, .modelsDevCache, .bundledSnapshot, .curatedFamily:
+            false
+        }
+    }
+}
+
+/// Identifies the deployment and routing decision an evidence item belongs to.
+/// Endpoint fingerprints are deterministic across launches (unlike `Hasher`)
+/// and deliberately include the endpoint path. Requested model IDs retain
+/// route suffixes such as `:online`, so changing the route cannot reuse a
+/// learned/calibrated value from the unsuffixed model.
+public struct ModelEvidenceScope: Hashable, Codable, Sendable {
+    public let providerProfileID: UUID?
+    public let endpointFingerprint: String?
+    public let requestedModel: String
+    public let effectiveModel: String?
+
+    public init(
+        providerProfileID: UUID? = nil,
+        endpointFingerprint: String? = nil,
+        requestedModel: String,
+        effectiveModel: String? = nil
+    ) {
+        self.providerProfileID = providerProfileID
+        self.endpointFingerprint = endpointFingerprint
+        self.requestedModel = Self.normalizeModel(requestedModel)
+        let normalizedEffective = effectiveModel.map(Self.normalizeModel)
+        self.effectiveModel = normalizedEffective?.isEmpty == false ? normalizedEffective : nil
+    }
+
+    public init(profile: ProviderProfile, requestedModel: String, effectiveModel: String? = nil) {
+        self.init(
+            providerProfileID: profile.id,
+            endpointFingerprint: Self.fingerprint(endpoint: profile.endpoint),
+            requestedModel: requestedModel,
+            effectiveModel: effectiveModel
+        )
+    }
+
+    public static func fingerprint(endpoint: String) -> String? {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var normalized = trimmed
+        if var components = URLComponents(string: trimmed.contains("://") ? trimmed : "http://\(trimmed)") {
+            components.scheme = components.scheme?.lowercased()
+            components.host = components.host?.lowercased()
+            if (components.scheme == "https" && components.port == 443) ||
+                (components.scheme == "http" && components.port == 80) {
+                components.port = nil
+            }
+            while components.path.count > 1 && components.path.hasSuffix("/") {
+                components.path.removeLast()
+            }
+            components.fragment = nil
+            if let value = components.string { normalized = value }
+        }
+
+        // FNV-1a 64: stable, small, and intentionally non-cryptographic. The
+        // fingerprint is an invalidation key, not a security boundary.
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in normalized.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return String(format: "%016llx", hash)
+    }
+
+    public func applies(to target: ModelEvidenceScope) -> Bool {
+        if let providerProfileID, let targetID = target.providerProfileID,
+           providerProfileID != targetID { return false }
+        if let endpointFingerprint, let targetFingerprint = target.endpointFingerprint,
+           endpointFingerprint != targetFingerprint { return false }
+        if !requestedModel.isEmpty, !target.requestedModel.isEmpty,
+           requestedModel != target.requestedModel { return false }
+        if let effectiveModel, let targetEffective = target.effectiveModel,
+           effectiveModel != targetEffective { return false }
+        return true
+    }
+
+    private static func normalizeModel(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
+public struct ContextLimitEvidence: Hashable, Codable, Sendable, Identifiable {
+    public let value: Int
+    public let source: ModelEvidenceSource
+    public let scope: ModelEvidenceScope
+    public let exactModelMatch: Bool
+    public let detail: String?
+    public let observedAt: Date?
+
+    public init(
+        value: Int,
+        source: ModelEvidenceSource,
+        scope: ModelEvidenceScope,
+        exactModelMatch: Bool = true,
+        detail: String? = nil,
+        observedAt: Date? = nil
+    ) {
+        self.value = value
+        self.source = source
+        self.scope = scope
+        self.exactModelMatch = exactModelMatch
+        self.detail = detail
+        self.observedAt = observedAt
+    }
+
+    public var id: String {
+        "\(source.rawValue)|\(value)|\(scope.providerProfileID?.uuidString ?? "-")|\(scope.endpointFingerprint ?? "-")|\(scope.requestedModel)|\(scope.effectiveModel ?? "-")|\(exactModelMatch)|\(detail ?? "-")"
+    }
+}
+
+public struct OutputLimitEvidence: Hashable, Codable, Sendable, Identifiable {
+    public let value: Int
+    public let source: ModelEvidenceSource
+    public let scope: ModelEvidenceScope
+    public let exactModelMatch: Bool
+    public let detail: String?
+    public let observedAt: Date?
+
+    public init(
+        value: Int,
+        source: ModelEvidenceSource,
+        scope: ModelEvidenceScope,
+        exactModelMatch: Bool = true,
+        detail: String? = nil,
+        observedAt: Date? = nil
+    ) {
+        self.value = value
+        self.source = source
+        self.scope = scope
+        self.exactModelMatch = exactModelMatch
+        self.detail = detail
+        self.observedAt = observedAt
+    }
+
+    public var id: String {
+        "\(source.rawValue)|\(value)|\(scope.providerProfileID?.uuidString ?? "-")|\(scope.endpointFingerprint ?? "-")|\(scope.requestedModel)|\(scope.effectiveModel ?? "-")|\(exactModelMatch)|\(detail ?? "-")"
+    }
+}
+
+public struct ContextLimitResolution: Equatable, Sendable {
+    public let primary: ContextLimitEvidence
+    /// Valid, applicable evidence that disagrees with the selected value.
+    /// Kept for disclosure instead of flattened away during enrichment.
+    public let conflicts: [ContextLimitEvidence]
+
+    public init(primary: ContextLimitEvidence, conflicts: [ContextLimitEvidence]) {
+        self.primary = primary
+        self.conflicts = conflicts
+    }
+}
+
+/// The usable input budget for one prepared request. Output reservation and
+/// safety margin are explicit inputs, so a UI cannot accidentally present the
+/// full context window as available prompt capacity. Overage values are never
+/// clamped: negative remaining tokens and utilization above 1.0 are meaningful.
+public struct ContextBudget: Equatable, Sendable {
+    public let contextLimit: Int
+    public let requestedOutputTokens: Int
+    public let safetyMarginTokens: Int
+    public let inputTokens: Int
+    public let evidence: ContextLimitEvidence?
+
+    public init(
+        contextLimit: Int,
+        requestedOutputTokens: Int,
+        safetyMarginTokens: Int,
+        inputTokens: Int,
+        evidence: ContextLimitEvidence? = nil
+    ) {
+        self.contextLimit = max(0, contextLimit)
+        self.requestedOutputTokens = max(0, requestedOutputTokens)
+        self.safetyMarginTokens = max(0, safetyMarginTokens)
+        self.inputTokens = max(0, inputTokens)
+        self.evidence = evidence
+    }
+
+    public init(
+        resolution: ContextLimitResolution,
+        requestedOutputTokens: Int,
+        safetyMarginTokens: Int,
+        inputTokens: Int
+    ) {
+        self.init(
+            contextLimit: resolution.primary.value,
+            requestedOutputTokens: requestedOutputTokens,
+            safetyMarginTokens: safetyMarginTokens,
+            inputTokens: inputTokens,
+            evidence: resolution.primary
+        )
+    }
+
+    public var usableInputTokens: Int {
+        max(0, contextLimit - requestedOutputTokens - safetyMarginTokens)
+    }
+
+    public var remainingInputTokens: Int { usableInputTokens - inputTokens }
+
+    public var utilization: Double {
+        guard usableInputTokens > 0 else { return inputTokens == 0 ? 0 : .infinity }
+        return Double(inputTokens) / Double(usableInputTokens)
+    }
+
+    public func shouldCompact(at threshold: Double = 0.95) -> Bool {
+        utilization >= threshold
+    }
+
+    public var cannotFit: Bool { remainingInputTokens < 0 }
+}
+
+public enum ModelLimitEvidenceResolver {
+    public static func resolveContext(
+        _ evidence: [ContextLimitEvidence],
+        for scope: ModelEvidenceScope? = nil
+    ) -> ContextLimitResolution? {
+        let applicable = evidence
+            .filter { item in
+                item.value > 0 && (scope.map { item.scope.applies(to: $0) } ?? true)
+            }
+            .deduplicatedByID()
+            .sorted(by: contextPrecedes)
+        guard let primary = applicable.first else { return nil }
+        return ContextLimitResolution(
+            primary: primary,
+            conflicts: applicable.filter { $0.value != primary.value }
+        )
+    }
+
+    public static func resolveOutput(
+        _ evidence: [OutputLimitEvidence],
+        for scope: ModelEvidenceScope? = nil
+    ) -> OutputLimitEvidence? {
+        evidence
+            .filter { item in
+                item.value > 0 && (scope.map { item.scope.applies(to: $0) } ?? true)
+            }
+            .deduplicatedByID()
+            .sorted(by: outputPrecedes)
+            .first
+    }
+
+    private static func contextPrecedes(_ lhs: ContextLimitEvidence, _ rhs: ContextLimitEvidence) -> Bool {
+        if lhs.source.priority != rhs.source.priority { return lhs.source.priority > rhs.source.priority }
+        if lhs.exactModelMatch != rhs.exactModelMatch { return lhs.exactModelMatch }
+        return (lhs.observedAt ?? .distantPast) > (rhs.observedAt ?? .distantPast)
+    }
+
+    private static func outputPrecedes(_ lhs: OutputLimitEvidence, _ rhs: OutputLimitEvidence) -> Bool {
+        if lhs.source.priority != rhs.source.priority { return lhs.source.priority > rhs.source.priority }
+        if lhs.exactModelMatch != rhs.exactModelMatch { return lhs.exactModelMatch }
+        return (lhs.observedAt ?? .distantPast) > (rhs.observedAt ?? .distantPast)
+    }
+}
+
+private extension Array where Element: Identifiable, Element.ID: Hashable {
+    func deduplicatedByID() -> [Element] {
+        var seen = Set<Element.ID>()
+        return filter { seen.insert($0.id).inserted }
+    }
+}
+
 /// Where a context-window figure came from. The UI shows this so a
 /// fallback number never reads as something the provider actually
 /// published (house rule: unobserved numbers are never implied).
@@ -200,6 +514,7 @@ public enum ContextWindowTable {
         Entry(pattern: "command-r-plus", contextLength: 128_000),
         Entry(pattern: "command-r", contextLength: 128_000),
         // Microsoft
+        Entry(pattern: "phi-4-mini", contextLength: 128_000),
         Entry(pattern: "phi-4", contextLength: 16_384),
     ]
 
